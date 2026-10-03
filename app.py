@@ -45,7 +45,46 @@ def inicio():
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok"}), 200
+    return jsonify({
+        "status": "ok"
+    }), 200
+
+
+# =========================================================
+# TESTE DO POSTGRESQL
+# =========================================================
+
+@app.get("/db-test")
+def db_test():
+    database_url = os.environ.get("DATABASE_URL")
+
+    if not database_url:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "DATABASE_URL nao configurada."
+        }), 500
+
+    try:
+        import psycopg
+
+        with psycopg.connect(
+            database_url,
+            connect_timeout=10
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+
+        return jsonify({
+            "status": "ok",
+            "mensagem": "Conexao com PostgreSQL funcionando."
+        })
+
+    except Exception:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Nao foi possivel conectar ao PostgreSQL."
+        }), 500
 
 
 # =========================================================
@@ -239,7 +278,7 @@ def google_callback():
             token_request,
             timeout=20
         ) as response:
-            token_response = response.read().decode("utf-8")
+            response.read().decode("utf-8")
 
         return jsonify({
             "projeto": "Automacao Murici",
@@ -256,6 +295,13 @@ def google_callback():
         }), 502
 
 
+# =========================================================
+# EXECUCAO LOCAL
+# =========================================================
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
