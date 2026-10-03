@@ -17,6 +17,7 @@ LINKEDIN_CLIENT_SECRET = os.environ.get("LINKEDIN_CLIENT_SECRET")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 
+DATABASE_URL = os.environ.get("DATABASE_URL")
 TOKEN_ENCRYPTION_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY")
 
 LINKEDIN_REDIRECT_URI = (
@@ -79,6 +80,24 @@ def decrypt_token(value):
 
 
 # =========================================================
+# BANCO DE DADOS
+# =========================================================
+
+def get_database_connection():
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL nao configurada."
+        )
+
+    import psycopg
+
+    return psycopg.connect(
+        DATABASE_URL,
+        connect_timeout=10
+    )
+
+
+# =========================================================
 # PAGINA INICIAL
 # =========================================================
 
@@ -104,21 +123,8 @@ def health():
 
 @app.get("/db-test")
 def db_test():
-    database_url = os.environ.get("DATABASE_URL")
-
-    if not database_url:
-        return jsonify({
-            "status": "erro",
-            "mensagem": "DATABASE_URL nao configurada."
-        }), 500
-
     try:
-        import psycopg
-
-        with psycopg.connect(
-            database_url,
-            connect_timeout=10
-        ) as conn:
+        with get_database_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
                 cur.fetchone()
@@ -172,6 +178,59 @@ def crypto_test():
 
 
 # =========================================================
+# TESTE DE GRAVACAO SEGURA NO BANCO
+# =========================================================
+
+@app.get("/storage-test")
+def storage_test():
+    try:
+        encrypted_value = encrypt_token(
+            "teste-interno-de-armazenamento"
+        )
+
+        with get_database_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS security_test (
+                        id BIGSERIAL PRIMARY KEY,
+                        encrypted_value TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+
+                cur.execute("""
+                    INSERT INTO security_test (
+                        encrypted_value
+                    )
+                    VALUES (%s)
+                    RETURNING id
+                """, (encrypted_value,))
+
+                row = cur.fetchone()
+
+            conn.commit()
+
+        if not row:
+            return jsonify({
+                "status": "erro",
+                "mensagem": "Nao foi possivel gravar o teste."
+            }), 500
+
+        return jsonify({
+            "status": "ok",
+            "mensagem": "Gravacao criptografada no PostgreSQL funcionando.",
+            "teste_id": row[0]
+        })
+
+    except Exception:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Nao foi possivel executar o teste de armazenamento."
+        }), 500
+
+
+# =========================================================
 # LINKEDIN
 # =========================================================
 
@@ -188,6 +247,7 @@ def linkedin_login():
         }), 500
 
     state = secrets.token_urlsafe(32)
+
     session["linkedin_state"] = state
 
     params = {
@@ -264,18 +324,47 @@ def linkedin_callback():
         access_token = token_json.get("access_token")
         expires_in = token_json.get("expires_in")
 
-        if access_token:
-            encrypted_access_token = encrypt_token(
-                access_token
-            )
+        if not access_token:
+            return jsonify({
+                "erro": "LinkedIn nao retornou access_token."
+            }), 502
 
-            _ = encrypted_access_token
+        encrypted_access_token = encrypt_token(
+            access_token
+        )
+
+        with get_database_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    INSERT INTO linkedin_accounts (
+                        account_name,
+                        access_token,
+                        token_expires_at
+                    )
+                    VALUES (
+                        %s,
+                        %s,
+                        NOW() + (%s * INTERVAL '1 second')
+                    )
+                    ON CONFLICT (account_name)
+                    DO UPDATE SET
+                        access_token = EXCLUDED.access_token,
+                        token_expires_at = EXCLUDED.token_expires_at,
+                        updated_at = NOW()
+                """, (
+                    "LinkedIn Principal",
+                    encrypted_access_token,
+                    expires_in or 0
+                ))
+
+            conn.commit()
 
         return jsonify({
             "projeto": "Automacao Murici",
             "status": "linkedin_autorizado",
-            "mensagem": "Autorizacao do LinkedIn recebida com sucesso.",
-            "token_recebido": bool(access_token),
+            "mensagem": "LinkedIn autorizado e token armazenado com criptografia.",
+            "token_recebido": True,
             "expira_em": expires_in
         })
 
@@ -302,6 +391,7 @@ def google_login():
         }), 500
 
     state = secrets.token_urlsafe(32)
+
     session["google_state"] = state
 
     params = {
@@ -381,27 +471,61 @@ def google_callback():
         refresh_token = token_json.get("refresh_token")
         expires_in = token_json.get("expires_in")
 
-        encrypted_access_token = None
-        encrypted_refresh_token = None
+        if not access_token:
+            return jsonify({
+                "erro": "Google nao retornou access_token."
+            }), 502
 
-        if access_token:
-            encrypted_access_token = encrypt_token(
-                access_token
-            )
+        encrypted_access_token = encrypt_token(
+            access_token
+        )
+
+        encrypted_refresh_token = None
 
         if refresh_token:
             encrypted_refresh_token = encrypt_token(
                 refresh_token
             )
 
-        _ = encrypted_access_token
-        _ = encrypted_refresh_token
+        with get_database_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    INSERT INTO google_accounts (
+                        account_name,
+                        access_token,
+                        refresh_token,
+                        token_expires_at
+                    )
+                    VALUES (
+                        %s,
+                        %s,
+                        %s,
+                        NOW() + (%s * INTERVAL '1 second')
+                    )
+                    ON CONFLICT (account_name)
+                    DO UPDATE SET
+                        access_token = EXCLUDED.access_token,
+                        refresh_token = COALESCE(
+                            EXCLUDED.refresh_token,
+                            google_accounts.refresh_token
+                        ),
+                        token_expires_at = EXCLUDED.token_expires_at,
+                        updated_at = NOW()
+                """, (
+                    "Drive5",
+                    encrypted_access_token,
+                    encrypted_refresh_token,
+                    expires_in or 0
+                ))
+
+            conn.commit()
 
         return jsonify({
             "projeto": "Automacao Murici",
             "status": "google_autorizado",
-            "mensagem": "Autorizacao do Google recebida com sucesso.",
-            "token_recebido": bool(access_token),
+            "mensagem": "Google autorizado e token armazenado com criptografia.",
+            "token_recebido": True,
             "refresh_token_recebido": bool(refresh_token),
             "expira_em": expires_in
         })
@@ -427,4 +551,4 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=port
-)
+    )
