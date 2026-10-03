@@ -2,8 +2,10 @@ import os
 import secrets
 import urllib.parse
 import urllib.request
+import json
 
 from flask import Flask, jsonify, redirect, request, session
+from cryptography.fernet import Fernet
 
 app = Flask(__name__)
 
@@ -14,6 +16,8 @@ LINKEDIN_CLIENT_SECRET = os.environ.get("LINKEDIN_CLIENT_SECRET")
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
+
+TOKEN_ENCRYPTION_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY")
 
 LINKEDIN_REDIRECT_URI = (
     "https://automacao-murici.onrender.com/linkedin/callback"
@@ -34,12 +38,56 @@ LINKEDIN_SCOPE = "openid profile email w_member_social"
 GOOGLE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 
 
+# =========================================================
+# CRIPTOGRAFIA
+# =========================================================
+
+def encrypt_token(value):
+    if not value:
+        return None
+
+    if not TOKEN_ENCRYPTION_KEY:
+        raise RuntimeError(
+            "TOKEN_ENCRYPTION_KEY nao configurada."
+        )
+
+    cipher = Fernet(
+        TOKEN_ENCRYPTION_KEY.encode("utf-8")
+    )
+
+    return cipher.encrypt(
+        value.encode("utf-8")
+    ).decode("utf-8")
+
+
+def decrypt_token(value):
+    if not value:
+        return None
+
+    if not TOKEN_ENCRYPTION_KEY:
+        raise RuntimeError(
+            "TOKEN_ENCRYPTION_KEY nao configurada."
+        )
+
+    cipher = Fernet(
+        TOKEN_ENCRYPTION_KEY.encode("utf-8")
+    )
+
+    return cipher.decrypt(
+        value.encode("utf-8")
+    ).decode("utf-8")
+
+
+# =========================================================
+# PAGINA INICIAL
+# =========================================================
+
 @app.get("/")
 def inicio():
     return jsonify({
         "projeto": "Automacao Murici",
         "status": "online",
-        "mensagem": "Aplicacao inicial criada com sucesso."
+        "mensagem": "Aplicacao funcionando."
     })
 
 
@@ -84,6 +132,42 @@ def db_test():
         return jsonify({
             "status": "erro",
             "mensagem": "Nao foi possivel conectar ao PostgreSQL."
+        }), 500
+
+
+# =========================================================
+# TESTE DA CRIPTOGRAFIA
+# =========================================================
+
+@app.get("/crypto-test")
+def crypto_test():
+    if not TOKEN_ENCRYPTION_KEY:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "TOKEN_ENCRYPTION_KEY nao configurada."
+        }), 500
+
+    try:
+        original = "teste-interno"
+
+        encrypted = encrypt_token(original)
+        decrypted = decrypt_token(encrypted)
+
+        if decrypted != original:
+            return jsonify({
+                "status": "erro",
+                "mensagem": "Teste de criptografia falhou."
+            }), 500
+
+        return jsonify({
+            "status": "ok",
+            "mensagem": "Criptografia funcionando corretamente."
+        })
+
+    except Exception:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Nao foi possivel testar a criptografia."
         }), 500
 
 
@@ -173,15 +257,26 @@ def linkedin_callback():
             token_request,
             timeout=20
         ) as response:
-            response.read().decode("utf-8")
+            token_response = response.read().decode("utf-8")
+
+        token_json = json.loads(token_response)
+
+        access_token = token_json.get("access_token")
+        expires_in = token_json.get("expires_in")
+
+        if access_token:
+            encrypted_access_token = encrypt_token(
+                access_token
+            )
+
+            _ = encrypted_access_token
 
         return jsonify({
             "projeto": "Automacao Murici",
             "status": "linkedin_autorizado",
             "mensagem": "Autorizacao do LinkedIn recebida com sucesso.",
-            "resposta_linkedin": (
-                "Token recebido e nao exibido por seguranca."
-            )
+            "token_recebido": bool(access_token),
+            "expira_em": expires_in
         })
 
     except Exception:
@@ -278,15 +373,37 @@ def google_callback():
             token_request,
             timeout=20
         ) as response:
-            response.read().decode("utf-8")
+            token_response = response.read().decode("utf-8")
+
+        token_json = json.loads(token_response)
+
+        access_token = token_json.get("access_token")
+        refresh_token = token_json.get("refresh_token")
+        expires_in = token_json.get("expires_in")
+
+        encrypted_access_token = None
+        encrypted_refresh_token = None
+
+        if access_token:
+            encrypted_access_token = encrypt_token(
+                access_token
+            )
+
+        if refresh_token:
+            encrypted_refresh_token = encrypt_token(
+                refresh_token
+            )
+
+        _ = encrypted_access_token
+        _ = encrypted_refresh_token
 
         return jsonify({
             "projeto": "Automacao Murici",
             "status": "google_autorizado",
             "mensagem": "Autorizacao do Google recebida com sucesso.",
-            "resposta_google": (
-                "Token recebido e nao exibido por seguranca."
-            )
+            "token_recebido": bool(access_token),
+            "refresh_token_recebido": bool(refresh_token),
+            "expira_em": expires_in
         })
 
     except Exception:
@@ -296,12 +413,18 @@ def google_callback():
 
 
 # =========================================================
-# EXECUCAO LOCAL
+# EXECUCAO
 # =========================================================
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
+    port = int(
+        os.environ.get(
+            "PORT",
+            10000
+        )
+    )
+
     app.run(
         host="0.0.0.0",
         port=port
-    )
+)
