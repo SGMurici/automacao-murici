@@ -31,6 +31,7 @@ GOOGLE_REDIRECT_URI = (
 LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
 LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
 LINKEDIN_USERINFO_URL = "https://api.linkedin.com/v2/userinfo"
+LINKEDIN_POSTS_URL = "https://api.linkedin.com/rest/posts"
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -38,6 +39,8 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 LINKEDIN_SCOPE = "openid profile email w_member_social"
 
 GOOGLE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+
+LINKEDIN_VERSION = "202606"
 
 
 # =========================================================
@@ -232,7 +235,7 @@ def storage_test():
 
 
 # =========================================================
-# LINKEDIN
+# LINKEDIN - LOGIN
 # =========================================================
 
 @app.get("/linkedin/login")
@@ -267,6 +270,10 @@ def linkedin_login():
 
     return redirect(authorization_url)
 
+
+# =========================================================
+# LINKEDIN - CALLBACK
+# =========================================================
 
 @app.get("/linkedin/callback")
 def linkedin_callback():
@@ -416,6 +423,213 @@ def linkedin_callback():
     except Exception:
         return jsonify({
             "erro": "Nao foi possivel concluir a autorizacao do LinkedIn."
+        }), 502
+
+
+# =========================================================
+# LINKEDIN - PUBLICACAO
+# =========================================================
+
+def get_linkedin_account():
+    with get_database_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                SELECT
+                    linkedin_member_id,
+                    access_token
+                FROM linkedin_accounts
+                WHERE account_name = %s
+                LIMIT 1
+            """, (
+                "LinkedIn Principal",
+            ))
+
+            row = cur.fetchone()
+
+    if not row:
+        raise RuntimeError(
+            "Conta LinkedIn Principal nao encontrada."
+        )
+
+    linkedin_member_id = row[0]
+    encrypted_access_token = row[1]
+
+    if not linkedin_member_id:
+        raise RuntimeError(
+            "LinkedIn Member ID nao encontrado."
+        )
+
+    if not encrypted_access_token:
+        raise RuntimeError(
+            "Token do LinkedIn nao encontrado."
+        )
+
+    access_token = decrypt_token(
+        encrypted_access_token
+    )
+
+    return linkedin_member_id, access_token
+
+
+def publish_linkedin_text(commentary):
+    if not commentary:
+        raise RuntimeError(
+            "Texto da publicacao nao informado."
+        )
+
+    if len(commentary) > 3000:
+        raise RuntimeError(
+            "O texto excede o limite de 3000 caracteres."
+        )
+
+    linkedin_member_id, access_token = (
+        get_linkedin_account()
+    )
+
+    author_urn = (
+        "urn:li:person:"
+        + linkedin_member_id
+    )
+
+    payload = {
+        "author": author_urn,
+        "commentary": commentary,
+        "visibility": "PUBLIC",
+        "distribution": {
+            "feedDistribution": "MAIN_FEED",
+            "targetEntities": [],
+            "thirdPartyDistributionChannels": []
+        },
+        "lifecycleState": "PUBLISHED",
+        "isReshareDisabledByAuthor": False
+    }
+
+    request_data = json.dumps(
+        payload
+    ).encode("utf-8")
+
+    post_request = urllib.request.Request(
+        LINKEDIN_POSTS_URL,
+        data=request_data,
+        headers={
+            "Authorization": "Bearer " + access_token,
+            "X-Restli-Protocol-Version": "2.0.0",
+            "Linkedin-Version": LINKEDIN_VERSION,
+            "Content-Type": "application/json"
+        },
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(
+            post_request,
+            timeout=30
+        ) as response:
+
+            response_body = (
+                response.read()
+                .decode("utf-8")
+            )
+
+            post_id = response.headers.get(
+                "x-restli-id"
+            )
+
+            return {
+                "status_code": response.status,
+                "post_id": post_id,
+                "response_body": response_body
+            }
+
+    except urllib.error.HTTPError as error:
+        error_body = (
+            error.read()
+            .decode("utf-8")
+        )
+
+        raise RuntimeError(
+            "LinkedIn retornou erro HTTP "
+            + str(error.code)
+            + ": "
+            + error_body
+        )
+
+
+# =========================================================
+# TESTE CONTROLADO DE PUBLICACAO
+# =========================================================
+
+@app.get("/linkedin/publish-test")
+def linkedin_publish_test():
+    confirmation = request.args.get(
+        "confirmar"
+    )
+
+    if confirmation != "SIM":
+        return jsonify({
+            "status": "aguardando_confirmacao",
+            "mensagem": "Para publicar o teste, abra esta rota com ?confirmar=SIM."
+        })
+
+    test_text = (
+        "Teste técnico da Automação Murici.\n\n"
+        "Esta publicação confirma a comunicação entre "
+        "a aplicação e a API do LinkedIn.\n\n"
+        "#AutomacaoMurici #LinkedInAPI"
+    )
+
+    try:
+        result = publish_linkedin_text(
+            test_text
+        )
+
+        post_id = result.get(
+            "post_id"
+        )
+
+        with get_database_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    INSERT INTO editorial_posts (
+                        post_number,
+                        title,
+                        content,
+                        status,
+                        published_at,
+                        linkedin_post_id
+                    )
+                    VALUES (
+                        NULL,
+                        %s,
+                        %s,
+                        %s,
+                        NOW(),
+                        %s
+                    )
+                """, (
+                    "Teste técnico da Automação Murici",
+                    test_text,
+                    "publicado",
+                    post_id
+                ))
+
+            conn.commit()
+
+        return jsonify({
+            "projeto": "Automacao Murici",
+            "status": "linkedin_publicado",
+            "mensagem": "Poste de teste publicado com sucesso no LinkedIn.",
+            "post_id_recebido": bool(post_id),
+            "post_id": post_id
+        })
+
+    except Exception as error:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Nao foi possivel publicar o teste no LinkedIn.",
+            "detalhe": str(error)
         }), 502
 
 
