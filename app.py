@@ -30,6 +30,7 @@ GOOGLE_REDIRECT_URI = (
 
 LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
 LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
+LINKEDIN_USERINFO_URL = "https://api.linkedin.com/v2/userinfo"
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -329,9 +330,44 @@ def linkedin_callback():
                 "erro": "LinkedIn nao retornou access_token."
             }), 502
 
+        # -------------------------------------------------
+        # OBTEM O MEMBER ID PELO OPENID CONNECT
+        # -------------------------------------------------
+
+        userinfo_request = urllib.request.Request(
+            LINKEDIN_USERINFO_URL,
+            headers={
+                "Authorization": "Bearer " + access_token
+            },
+            method="GET"
+        )
+
+        with urllib.request.urlopen(
+            userinfo_request,
+            timeout=20
+        ) as response:
+            userinfo_response = response.read().decode("utf-8")
+
+        userinfo_json = json.loads(userinfo_response)
+
+        linkedin_member_id = userinfo_json.get("sub")
+
+        if not linkedin_member_id:
+            return jsonify({
+                "erro": "LinkedIn nao retornou o identificador do membro."
+            }), 502
+
+        # -------------------------------------------------
+        # CRIPTOGRAFA O TOKEN
+        # -------------------------------------------------
+
         encrypted_access_token = encrypt_token(
             access_token
         )
+
+        # -------------------------------------------------
+        # ARMAZENA TOKEN + MEMBER ID
+        # -------------------------------------------------
 
         with get_database_connection() as conn:
             with conn.cursor() as cur:
@@ -339,21 +375,29 @@ def linkedin_callback():
                 cur.execute("""
                     INSERT INTO linkedin_accounts (
                         account_name,
+                        linkedin_member_id,
                         access_token,
                         token_expires_at
                     )
                     VALUES (
                         %s,
                         %s,
+                        %s,
                         NOW() + (%s * INTERVAL '1 second')
                     )
                     ON CONFLICT (account_name)
                     DO UPDATE SET
-                        access_token = EXCLUDED.access_token,
-                        token_expires_at = EXCLUDED.token_expires_at,
-                        updated_at = NOW()
+                        linkedin_member_id =
+                            EXCLUDED.linkedin_member_id,
+                        access_token =
+                            EXCLUDED.access_token,
+                        token_expires_at =
+                            EXCLUDED.token_expires_at,
+                        updated_at =
+                            NOW()
                 """, (
                     "LinkedIn Principal",
+                    linkedin_member_id,
                     encrypted_access_token,
                     expires_in or 0
                 ))
@@ -363,8 +407,9 @@ def linkedin_callback():
         return jsonify({
             "projeto": "Automacao Murici",
             "status": "linkedin_autorizado",
-            "mensagem": "LinkedIn autorizado e token armazenado com criptografia.",
+            "mensagem": "LinkedIn autorizado, Member ID obtido e token armazenado com criptografia.",
             "token_recebido": True,
+            "member_id_obtido": True,
             "expira_em": expires_in
         })
 
@@ -505,13 +550,17 @@ def google_callback():
                     )
                     ON CONFLICT (account_name)
                     DO UPDATE SET
-                        access_token = EXCLUDED.access_token,
-                        refresh_token = COALESCE(
-                            EXCLUDED.refresh_token,
-                            google_accounts.refresh_token
-                        ),
-                        token_expires_at = EXCLUDED.token_expires_at,
-                        updated_at = NOW()
+                        access_token =
+                            EXCLUDED.access_token,
+                        refresh_token =
+                            COALESCE(
+                                EXCLUDED.refresh_token,
+                                google_accounts.refresh_token
+                            ),
+                        token_expires_at =
+                            EXCLUDED.token_expires_at,
+                        updated_at =
+                            NOW()
                 """, (
                     "Drive5",
                     encrypted_access_token,
