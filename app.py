@@ -2,6 +2,7 @@ import os
 import secrets
 import urllib.parse
 import urllib.request
+import urllib.error
 import json
 
 from flask import Flask, jsonify, redirect, request, session
@@ -427,7 +428,7 @@ def linkedin_callback():
 
 
 # =========================================================
-# LINKEDIN - PUBLICACAO
+# LINKEDIN - DADOS DA CONTA
 # =========================================================
 
 def get_linkedin_account():
@@ -471,6 +472,10 @@ def get_linkedin_account():
 
     return linkedin_member_id, access_token
 
+
+# =========================================================
+# LINKEDIN - PUBLICACAO
+# =========================================================
 
 def publish_linkedin_text(commentary):
     if not commentary:
@@ -557,84 +562,7 @@ def publish_linkedin_text(commentary):
 
 
 # =========================================================
-# TESTE CONTROLADO DE PUBLICACAO
-# =========================================================
-
-@app.get("/linkedin/publish-test")
-def linkedin_publish_test():
-    confirmation = request.args.get(
-        "confirmar"
-    )
-
-    if confirmation != "SIM":
-        return jsonify({
-            "status": "aguardando_confirmacao",
-            "mensagem": "Para publicar o teste, abra esta rota com ?confirmar=SIM."
-        })
-
-    test_text = (
-        "Teste técnico da Automação Murici.\n\n"
-        "Esta publicação confirma a comunicação entre "
-        "a aplicação e a API do LinkedIn.\n\n"
-        "#AutomacaoMurici #LinkedInAPI"
-    )
-
-    try:
-        result = publish_linkedin_text(
-            test_text
-        )
-
-        post_id = result.get(
-            "post_id"
-        )
-
-        with get_database_connection() as conn:
-            with conn.cursor() as cur:
-
-                cur.execute("""
-                    INSERT INTO editorial_posts (
-                        post_number,
-                        title,
-                        content,
-                        status,
-                        published_at,
-                        linkedin_post_id
-                    )
-                    VALUES (
-                        NULL,
-                        %s,
-                        %s,
-                        %s,
-                        NOW(),
-                        %s
-                    )
-                """, (
-                    "Teste técnico da Automação Murici",
-                    test_text,
-                    "publicado",
-                    post_id
-                ))
-
-            conn.commit()
-
-        return jsonify({
-            "projeto": "Automacao Murici",
-            "status": "linkedin_publicado",
-            "mensagem": "Poste de teste publicado com sucesso no LinkedIn.",
-            "post_id_recebido": bool(post_id),
-            "post_id": post_id
-        })
-
-    except Exception as error:
-        return jsonify({
-            "status": "erro",
-            "mensagem": "Nao foi possivel publicar o teste no LinkedIn.",
-            "detalhe": str(error)
-        }), 502
-
-
-# =========================================================
-# GOOGLE DRIVE
+# GOOGLE DRIVE - LOGIN
 # =========================================================
 
 @app.get("/google/login")
@@ -671,6 +599,10 @@ def google_login():
 
     return redirect(authorization_url)
 
+
+# =========================================================
+# GOOGLE DRIVE - CALLBACK
+# =========================================================
 
 @app.get("/google/callback")
 def google_callback():
@@ -795,23 +727,4 @@ def google_callback():
 
     except Exception:
         return jsonify({
-            "erro": "Nao foi possivel concluir a autorizacao do Google."
-        }), 502
-
-
-# =========================================================
-# EXECUCAO
-# =========================================================
-
-if __name__ == "__main__":
-    port = int(
-        os.environ.get(
-            "PORT",
-            10000
-        )
-    )
-
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
+            "erro": "Nao foi possi
