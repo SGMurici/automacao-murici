@@ -21,6 +21,8 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 TOKEN_ENCRYPTION_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY")
 
+PUBLISH_SECRET = os.environ.get("PUBLISH_SECRET")
+
 LINKEDIN_REDIRECT_URI = (
     "https://automacao-murici.onrender.com/linkedin/callback"
 )
@@ -474,7 +476,7 @@ def get_linkedin_account():
 
 
 # =========================================================
-# LINKEDIN - PUBLICACAO
+# LINKEDIN - PUBLICACAO INTERNA
 # =========================================================
 
 def publish_linkedin_text(commentary):
@@ -559,6 +561,147 @@ def publish_linkedin_text(commentary):
             + ": "
             + error_body
         )
+
+
+# =========================================================
+# LINKEDIN - PUBLICACAO PROTEGIDA
+# =========================================================
+
+@app.post("/linkedin/publish")
+def linkedin_publish():
+    if not PUBLISH_SECRET:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "PUBLISH_SECRET nao configurado."
+        }), 500
+
+    provided_secret = request.headers.get(
+        "X-Publish-Secret"
+    )
+
+    if not provided_secret:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Chave de publicacao nao informada."
+        }), 401
+
+    if not secrets.compare_digest(
+        provided_secret,
+        PUBLISH_SECRET
+    ):
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Chave de publicacao invalida."
+        }), 403
+
+    if not request.is_json:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "A requisicao deve utilizar JSON."
+        }), 400
+
+    data = request.get_json(
+        silent=True
+    )
+
+    if not isinstance(data, dict):
+        return jsonify({
+            "status": "erro",
+            "mensagem": "JSON invalido."
+        }), 400
+
+    commentary = data.get(
+        "content"
+    )
+
+    if not commentary or not isinstance(
+        commentary,
+        str
+    ):
+        return jsonify({
+            "status": "erro",
+            "mensagem": "O campo 'content' e obrigatorio."
+        }), 400
+
+    commentary = commentary.strip()
+
+    if not commentary:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "O campo 'content' nao pode estar vazio."
+        }), 400
+
+    if len(commentary) > 3000:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "O texto excede o limite de 3000 caracteres."
+        }), 400
+
+    post_title = data.get(
+        "title"
+    )
+
+    post_number = data.get(
+        "post_number"
+    )
+
+    try:
+        publication = publish_linkedin_text(
+            commentary
+        )
+
+        linkedin_post_id = publication.get(
+            "post_id"
+        )
+
+        with get_database_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    INSERT INTO editorial_posts (
+                        post_number,
+                        title,
+                        content,
+                        status,
+                        published_at,
+                        linkedin_post_id
+                    )
+                    VALUES (
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        NOW(),
+                        %s
+                    )
+                    RETURNING id
+                """, (
+                    post_number,
+                    post_title,
+                    commentary,
+                    "publicado",
+                    linkedin_post_id
+                ))
+
+                row = cur.fetchone()
+
+            conn.commit()
+
+        return jsonify({
+            "projeto": "Automacao Murici",
+            "status": "publicado",
+            "mensagem": "Publicacao realizada no LinkedIn e registrada no banco.",
+            "editorial_post_id": row[0],
+            "linkedin_post_id": linkedin_post_id
+        }), 201
+
+    except Exception as error:
+        return jsonify({
+            "projeto": "Automacao Murici",
+            "status": "erro",
+            "mensagem": "Nao foi possivel publicar no LinkedIn.",
+            "detalhe": str(error)
+        }), 502
 
 
 # =========================================================
