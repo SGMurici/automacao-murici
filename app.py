@@ -42,8 +42,30 @@ LINKEDIN_USERINFO_URL = "https://api.linkedin.com/v2/userinfo"
 
 LINKEDIN_PUBLISH_URL = "https://api.linkedin.com/v2/ugcPosts"
 
+LINKEDIN_ANALYTICS_URL = (
+    "https://api.linkedin.com/rest/memberCreatorPostAnalytics"
+)
+LINKEDIN_ANALYTICS_VERSION = os.environ.get(
+    "LINKEDIN_ANALYTICS_VERSION",
+    "202608",
+)
+
+LINKEDIN_OAUTH_SCOPE = os.environ.get(
+    "LINKEDIN_OAUTH_SCOPE",
+    "openid profile email w_member_social",
+)
+
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+
+class LinkedInAnalyticsError(RuntimeError):
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self.payload = payload
+        super().__init__(
+            f"LinkedIn analytics retornou HTTP {status_code}."
+        )
 
 
 def get_db_connection():
@@ -76,12 +98,11 @@ def decrypt_value(value):
     return fernet.decrypt(value.encode()).decode()
 
 
-def ensure_analytics_table():
+def ensure_analytics_tables():
     """
-    Cria a estrutura de armazenamento das métricas do LinkedIn.
+    Garante as tabelas atuais de armazenamento das metricas do LinkedIn.
 
-    Esta tabela fica preparada para receber os dados quando
-    o acesso oficial ao Community Management API estiver disponível.
+    A estrutura deve ser compativel com as tabelas ja criadas no Neon.
     """
 
     with get_db_connection() as conn:
@@ -92,25 +113,85 @@ def ensure_analytics_table():
                     id BIGSERIAL PRIMARY KEY,
 
                     editorial_post_id BIGINT
-                        REFERENCES editorial_posts(id),
+                        REFERENCES editorial_posts(id)
+                        ON DELETE SET NULL,
 
                     linkedin_post_id TEXT NOT NULL,
 
-                    collected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    measured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
                     impressions BIGINT,
                     members_reached BIGINT,
                     reactions BIGINT,
                     comments BIGINT,
                     reposts BIGINT,
-                    saves BIGINT,
-                    clicks BIGINT,
-                    follows BIGINT,
 
-                    raw_payload JSONB,
+                    post_saves BIGINT,
+                    post_sends BIGINT,
+                    link_clicks BIGINT,
+                    premium_cta_clicks BIGINT,
+
+                    followers_gained_from_content BIGINT,
+                    profile_views_from_content BIGINT,
+
+                    engagement_total BIGINT,
+
+                    source VARCHAR(50) NOT NULL DEFAULT 'linkedin_api',
+
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                    CONSTRAINT linkedin_post_metrics_unique_snapshot
+                        UNIQUE (linkedin_post_id, measured_at)
+                );
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_linkedin_post_metrics_post
+                    ON linkedin_post_metrics(linkedin_post_id);
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_linkedin_post_metrics_editorial
+                    ON linkedin_post_metrics(editorial_post_id);
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_linkedin_post_metrics_measured_at
+                    ON linkedin_post_metrics(measured_at);
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS linkedin_metrics_collection_runs (
+                    id BIGSERIAL PRIMARY KEY,
+
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    finished_at TIMESTAMPTZ,
+
+                    status VARCHAR(30) NOT NULL DEFAULT 'started',
+
+                    posts_found INTEGER DEFAULT 0,
+                    posts_updated INTEGER DEFAULT 0,
+                    metrics_saved INTEGER DEFAULT 0,
+
+                    error_message TEXT,
 
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_linkedin_metrics_runs_started
+                    ON linkedin_metrics_collection_runs(started_at);
                 """
             )
 
@@ -307,6 +388,179 @@ def publish_linkedin_text(commentary):
     return post_id
 
 
+def analytics_metric_type(element):
+    metric_type = element.get("metricType")
+
+    if isinstance(metric_type, str):
+        return metric_type
+
+    if isinstance(metric_type, dict):
+        for value in metric_type.values():
+            if isinstance(value, str):
+                return value
+
+    return None
+
+
+def analytics_count(element):
+    value = element.get("count")
+
+    if value is None:
+        value = element.get("value")
+
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, float):
+        return int(value)
+
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+
+    return None
+
+
+def linkedin_post_analytics(post_id):
+    """
+    Consulta as metricas oficiais de uma publicacao especifica.
+    """
+
+    access_token = linkedin_token_from_database()
+
+    if not access_token:
+        raise RuntimeError(
+            "Token do LinkedIn nao encontrado no banco."
+        )
+
+    metric_types = [
+        "IMPRESSION",
+        "MEMBERS_REACHED",
+        "RESHARE",
+        "REACTION",
+        "COMMENT",
+        "POST_SAVE",
+        "POST_SEND",
+        "LINK_CLICKS",
+        "PREMIUM_CTA_CLICKS",
+        "FOLLOWER_GAINED_FROM_CONTENT",
+        "PROFILE_VIEW_FROM_CONTENT",
+    ]
+
+    encoded_urn = urllib.parse.quote(post_id, safe="")
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Linkedin-Version": LINKEDIN_ANALYTICS_VERSION,
+        "X-Restli-Protocol-Version": "2.0.0",
+        "Content-Type": "application/json",
+    }
+
+    metrics = {}
+    raw_elements = []
+
+    for metric_type in metric_types:
+        url = (
+            f"{LINKEDIN_ANALYTICS_URL}"
+            f"?q=entity"
+            f"&entity=(share:{encoded_urn})"
+            f"&queryType={urllib.parse.quote(metric_type, safe='')}"
+            f"&aggregation=TOTAL"
+        )
+
+        status_code, response_data, _ = http_json_request(
+            url,
+            method="GET",
+            headers=headers,
+        )
+
+        if status_code != 200:
+            raise LinkedInAnalyticsError(
+                status_code,
+                response_data,
+            )
+
+        elements = response_data.get("elements", [])
+
+        if not isinstance(elements, list):
+            elements = []
+
+        for element in elements:
+            if not isinstance(element, dict):
+                continue
+
+            detected_metric = analytics_metric_type(element)
+            count = analytics_count(element)
+
+            if detected_metric and count is not None:
+                metrics[detected_metric] = count
+
+            raw_elements.append(element)
+
+    return metrics, {"elements": raw_elements}
+
+
+def calculate_engagement_total(metrics):
+    engagement_fields = [
+        "REACTION",
+        "COMMENT",
+        "RESHARE",
+        "POST_SAVE",
+        "POST_SEND",
+        "LINK_CLICKS",
+        "PREMIUM_CTA_CLICKS",
+    ]
+
+    return sum(
+        int(metrics.get(field, 0) or 0)
+        for field in engagement_fields
+    )
+
+
+def require_publish_secret():
+    if not PUBLISH_SECRET:
+        return (
+            jsonify(
+                {
+                    "status": "erro",
+                    "mensagem": "PUBLISH_SECRET nao configurado.",
+                }
+            ),
+            500,
+        )
+
+    provided_secret = request.headers.get("X-Publish-Secret")
+
+    if not provided_secret:
+        return (
+            jsonify(
+                {
+                    "status": "erro",
+                    "mensagem": "Chave de publicacao nao informada.",
+                }
+            ),
+            401,
+        )
+
+    if not secrets.compare_digest(provided_secret, PUBLISH_SECRET):
+        return (
+            jsonify(
+                {
+                    "status": "erro",
+                    "mensagem": "Chave de publicacao invalida.",
+                }
+            ),
+            403,
+        )
+
+    return None
+
+
 @app.get("/")
 def home():
     return jsonify(
@@ -384,7 +638,6 @@ def crypto_test():
 def storage_test():
     try:
         test_value = "teste-storage-automacao-murici"
-
         encrypted_value = encrypt_value(test_value)
 
         with get_db_connection() as conn:
@@ -442,7 +695,7 @@ def linkedin_login():
         "client_id": LINKEDIN_CLIENT_ID,
         "redirect_uri": LINKEDIN_REDIRECT_URI,
         "state": state,
-        "scope": "openid profile email w_member_social",
+        "scope": LINKEDIN_OAUTH_SCOPE,
     }
 
     authorization_url = (
@@ -520,7 +773,6 @@ def linkedin_callback():
             token_request,
             timeout=30
         ) as response:
-
             token_data = json.loads(
                 response.read().decode("utf-8")
             )
@@ -733,7 +985,6 @@ def google_callback():
             token_request,
             timeout=30
         ) as response:
-
             token_data = json.loads(
                 response.read().decode("utf-8")
             )
@@ -833,36 +1084,9 @@ def google_callback():
 
 @app.post("/linkedin/publish")
 def linkedin_publish():
-    if not PUBLISH_SECRET:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "PUBLISH_SECRET nao configurado.",
-            }
-        ), 500
-
-    provided_secret = request.headers.get(
-        "X-Publish-Secret"
-    )
-
-    if not provided_secret:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Chave de publicacao nao informada.",
-            }
-        ), 401
-
-    if not secrets.compare_digest(
-        provided_secret,
-        PUBLISH_SECRET
-    ):
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Chave de publicacao invalida.",
-            }
-        ), 403
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
 
     if not request.is_json:
         return jsonify(
@@ -937,9 +1161,7 @@ def linkedin_publish():
         return jsonify(
             {
                 "status": "publicado",
-                "mensagem": (
-                    "Publicacao realizada no LinkedIn."
-                ),
+                "mensagem": "Publicacao realizada no LinkedIn.",
                 "linkedin_post_id": post_id,
                 "editorial_post_id": editorial_post_id,
             }
@@ -956,53 +1178,23 @@ def linkedin_publish():
 
 @app.get("/analytics/prepare")
 def analytics_prepare():
-    """
-    Rota protegida para preparar/verificar a estrutura
-    de armazenamento das futuras metricas.
-    """
-
-    if not PUBLISH_SECRET:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "PUBLISH_SECRET nao configurado.",
-            }
-        ), 500
-
-    provided_secret = request.headers.get(
-        "X-Publish-Secret"
-    )
-
-    if not provided_secret:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Chave de publicacao nao informada.",
-            }
-        ), 401
-
-    if not secrets.compare_digest(
-        provided_secret,
-        PUBLISH_SECRET
-    ):
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Chave de publicacao invalida.",
-            }
-        ), 403
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
 
     try:
-        ensure_analytics_table()
+        ensure_analytics_tables()
 
         return jsonify(
             {
                 "status": "ok",
                 "mensagem": (
-                    "Estrutura de armazenamento de "
-                    "metricas preparada."
+                    "Estrutura de armazenamento de metricas preparada."
                 ),
-                "tabela": "linkedin_post_metrics",
+                "tabelas": [
+                    "linkedin_post_metrics",
+                    "linkedin_metrics_collection_runs",
+                ],
             }
         )
 
@@ -1021,40 +1213,12 @@ def analytics_record():
     Recebe uma coleta de metricas e grava no PostgreSQL.
 
     Esta rota nao consulta o LinkedIn.
-    Ela somente prepara o backend para receber dados
-    provenientes de uma futura integracao oficial.
+    Ela permite registrar dados fornecidos por uma fonte autorizada.
     """
 
-    if not PUBLISH_SECRET:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "PUBLISH_SECRET nao configurado.",
-            }
-        ), 500
-
-    provided_secret = request.headers.get(
-        "X-Publish-Secret"
-    )
-
-    if not provided_secret:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Chave de publicacao nao informada.",
-            }
-        ), 401
-
-    if not secrets.compare_digest(
-        provided_secret,
-        PUBLISH_SECRET
-    ):
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Chave de publicacao invalida.",
-            }
-        ), 403
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
 
     if not request.is_json:
         return jsonify(
@@ -1080,18 +1244,15 @@ def analytics_record():
         return jsonify(
             {
                 "status": "erro",
-                "mensagem": (
-                    "linkedin_post_id e obrigatorio."
-                ),
+                "mensagem": "linkedin_post_id e obrigatorio.",
             }
         ), 400
 
     try:
-        ensure_analytics_table()
+        ensure_analytics_tables()
 
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-
                 cur.execute(
                     """
                     SELECT id
@@ -1104,27 +1265,64 @@ def analytics_record():
                 )
 
                 row = cur.fetchone()
+                editorial_post_id = row[0] if row else None
 
-                editorial_post_id = (
-                    row[0] if row else None
+                impressions = data.get("impressions")
+                members_reached = data.get("members_reached")
+                reactions = data.get("reactions")
+                comments = data.get("comments")
+                reposts = data.get("reposts")
+                post_saves = data.get("post_saves")
+                post_sends = data.get("post_sends")
+                link_clicks = data.get("link_clicks")
+                premium_cta_clicks = data.get("premium_cta_clicks")
+                followers_gained = data.get(
+                    "followers_gained_from_content"
                 )
+                profile_views = data.get(
+                    "profile_views_from_content"
+                )
+
+                engagement_total = data.get("engagement_total")
+                if engagement_total is None:
+                    engagement_total = calculate_engagement_total(
+                        {
+                            "REACTION": reactions,
+                            "COMMENT": comments,
+                            "RESHARE": reposts,
+                            "POST_SAVE": post_saves,
+                            "POST_SEND": post_sends,
+                            "LINK_CLICKS": link_clicks,
+                            "PREMIUM_CTA_CLICKS": premium_cta_clicks,
+                        }
+                    )
 
                 cur.execute(
                     """
                     INSERT INTO linkedin_post_metrics (
                         editorial_post_id,
                         linkedin_post_id,
+                        measured_at,
                         impressions,
                         members_reached,
                         reactions,
                         comments,
                         reposts,
-                        saves,
-                        clicks,
-                        follows,
-                        raw_payload
+                        post_saves,
+                        post_sends,
+                        link_clicks,
+                        premium_cta_clicks,
+                        followers_gained_from_content,
+                        profile_views_from_content,
+                        engagement_total,
+                        source
                     )
                     VALUES (
+                        %s,
+                        %s,
+                        NOW(),
+                        %s,
+                        %s,
                         %s,
                         %s,
                         %s,
@@ -1142,15 +1340,19 @@ def analytics_record():
                     (
                         editorial_post_id,
                         linkedin_post_id,
-                        data.get("impressions"),
-                        data.get("members_reached"),
-                        data.get("reactions"),
-                        data.get("comments"),
-                        data.get("reposts"),
-                        data.get("saves"),
-                        data.get("clicks"),
-                        data.get("follows"),
-                        json.dumps(data),
+                        impressions,
+                        members_reached,
+                        reactions,
+                        comments,
+                        reposts,
+                        post_saves,
+                        post_sends,
+                        link_clicks,
+                        premium_cta_clicks,
+                        followers_gained,
+                        profile_views,
+                        engagement_total,
+                        data.get("source", "manual"),
                     ),
                 )
 
@@ -1161,9 +1363,7 @@ def analytics_record():
         return jsonify(
             {
                 "status": "ok",
-                "mensagem": (
-                    "Metricas armazenadas no PostgreSQL."
-                ),
+                "mensagem": "Metricas armazenadas no PostgreSQL.",
                 "metric_id": metric_id,
                 "editorial_post_id": editorial_post_id,
             }
@@ -1174,6 +1374,314 @@ def analytics_record():
             {
                 "status": "erro",
                 "mensagem": str(error),
+            }
+        ), 500
+
+
+@app.post("/analytics/collect")
+def analytics_collect():
+    """
+    Consulta as metricas oficiais do LinkedIn para as publicacoes
+    que possuem linkedin_post_id no editorial_posts.
+    """
+
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+
+    run_id = None
+    posts_found = 0
+    posts_updated = 0
+    metrics_saved = 0
+
+    try:
+        ensure_analytics_tables()
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO linkedin_metrics_collection_runs (
+                        status
+                    )
+                    VALUES ('started')
+                    RETURNING id;
+                    """
+                )
+                run_id = cur.fetchone()[0]
+            conn.commit()
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (linkedin_post_id)
+                        id,
+                        linkedin_post_id
+                    FROM editorial_posts
+                    WHERE linkedin_post_id IS NOT NULL
+                      AND TRIM(linkedin_post_id) <> ''
+                    ORDER BY linkedin_post_id, id DESC;
+                    """
+                )
+                posts = cur.fetchall()
+
+        posts_found = len(posts)
+
+        for editorial_post_id, linkedin_post_id in posts:
+            try:
+                metrics, _raw_payload = linkedin_post_analytics(
+                    linkedin_post_id
+                )
+
+                impressions = metrics.get("IMPRESSION")
+                members_reached = metrics.get("MEMBERS_REACHED")
+                reactions = metrics.get("REACTION")
+                comments = metrics.get("COMMENT")
+                reposts = metrics.get("RESHARE")
+                post_saves = metrics.get("POST_SAVE")
+                post_sends = metrics.get("POST_SEND")
+                link_clicks = metrics.get("LINK_CLICKS")
+                premium_cta_clicks = metrics.get(
+                    "PREMIUM_CTA_CLICKS"
+                )
+                followers_gained = metrics.get(
+                    "FOLLOWER_GAINED_FROM_CONTENT"
+                )
+                profile_views = metrics.get(
+                    "PROFILE_VIEW_FROM_CONTENT"
+                )
+
+                engagement_total = calculate_engagement_total(metrics)
+
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO linkedin_post_metrics (
+                                editorial_post_id,
+                                linkedin_post_id,
+                                measured_at,
+                                impressions,
+                                members_reached,
+                                reactions,
+                                comments,
+                                reposts,
+                                post_saves,
+                                post_sends,
+                                link_clicks,
+                                premium_cta_clicks,
+                                followers_gained_from_content,
+                                profile_views_from_content,
+                                engagement_total,
+                                source
+                            )
+                            VALUES (
+                                %s,
+                                %s,
+                                NOW(),
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                'linkedin_api'
+                            );
+                            """,
+                            (
+                                editorial_post_id,
+                                linkedin_post_id,
+                                impressions,
+                                members_reached,
+                                reactions,
+                                comments,
+                                reposts,
+                                post_saves,
+                                post_sends,
+                                link_clicks,
+                                premium_cta_clicks,
+                                followers_gained,
+                                profile_views,
+                                engagement_total,
+                            ),
+                        )
+
+                    conn.commit()
+
+                posts_updated += 1
+                metrics_saved += 1
+
+            except LinkedInAnalyticsError as error:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE linkedin_metrics_collection_runs
+                            SET
+                                finished_at = NOW(),
+                                status = %s,
+                                posts_found = %s,
+                                posts_updated = %s,
+                                metrics_saved = %s,
+                                error_message = %s
+                            WHERE id = %s;
+                            """,
+                            (
+                                "permission_required"
+                                if error.status_code == 403
+                                else "error",
+                                posts_found,
+                                posts_updated,
+                                metrics_saved,
+                                json.dumps(error.payload),
+                                run_id,
+                            ),
+                        )
+                    conn.commit()
+
+                if error.status_code == 403:
+                    return jsonify(
+                        {
+                            "status": "permission_required",
+                            "mensagem": (
+                                "O LinkedIn recusou a consulta de analytics. "
+                                "A aplicacao ainda precisa de acesso oficial "
+                                "a r_member_postAnalytics / Community Management API."
+                            ),
+                            "http_linkedin": error.status_code,
+                            "run_id": run_id,
+                            "posts_found": posts_found,
+                            "posts_updated": posts_updated,
+                        }
+                    ), 403
+
+                return jsonify(
+                    {
+                        "status": "erro",
+                        "mensagem": (
+                            "Falha ao consultar analytics do LinkedIn."
+                        ),
+                        "http_linkedin": error.status_code,
+                        "detalhe": error.payload,
+                        "run_id": run_id,
+                        "posts_found": posts_found,
+                        "posts_updated": posts_updated,
+                    }
+                ), 502
+
+            except Exception as error:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE linkedin_metrics_collection_runs
+                            SET
+                                finished_at = NOW(),
+                                status = 'error',
+                                posts_found = %s,
+                                posts_updated = %s,
+                                metrics_saved = %s,
+                                error_message = %s
+                            WHERE id = %s;
+                            """,
+                            (
+                                posts_found,
+                                posts_updated,
+                                metrics_saved,
+                                str(error),
+                                run_id,
+                            ),
+                        )
+                    conn.commit()
+
+                return jsonify(
+                    {
+                        "status": "erro",
+                        "mensagem": str(error),
+                        "run_id": run_id,
+                        "posts_found": posts_found,
+                        "posts_updated": posts_updated,
+                    }
+                ), 500
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE linkedin_metrics_collection_runs
+                    SET
+                        finished_at = NOW(),
+                        status = 'completed',
+                        posts_found = %s,
+                        posts_updated = %s,
+                        metrics_saved = %s,
+                        error_message = NULL
+                    WHERE id = %s;
+                    """,
+                    (
+                        posts_found,
+                        posts_updated,
+                        metrics_saved,
+                        run_id,
+                    ),
+                )
+            conn.commit()
+
+        return jsonify(
+            {
+                "status": "completed",
+                "mensagem": "Coleta de metricas do LinkedIn concluida.",
+                "run_id": run_id,
+                "posts_found": posts_found,
+                "posts_updated": posts_updated,
+                "metrics_saved": metrics_saved,
+            }
+        )
+
+    except Exception as error:
+        if run_id is not None:
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE linkedin_metrics_collection_runs
+                            SET
+                                finished_at = NOW(),
+                                status = 'error',
+                                posts_found = %s,
+                                posts_updated = %s,
+                                metrics_saved = %s,
+                                error_message = %s
+                            WHERE id = %s;
+                            """,
+                            (
+                                posts_found,
+                                posts_updated,
+                                metrics_saved,
+                                str(error),
+                                run_id,
+                            ),
+                        )
+                    conn.commit()
+            except Exception:
+                pass
+
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": str(error),
+                "run_id": run_id,
+                "posts_found": posts_found,
+                "posts_updated": posts_updated,
+                "metrics_saved": metrics_saved,
             }
         ), 500
 
