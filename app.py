@@ -727,4 +727,23 @@ def google_callback():
 
     except Exception:
         return jsonify({
-            "erro": "Nao foi possi
+            "erro": "Nao foi possivel concluir a autorizacao do Google."
+        }), 502
+
+
+# =========================================================
+# EXECUCAO
+# =========================================================
+
+if __name__ == "__main__":
+    port = int(
+        os.environ.get(
+            "PORT",
+            10000
+        )
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
