@@ -26,6 +26,10 @@ TOKEN_ENCRYPTION_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY")
 
 PUBLISH_SECRET = os.environ.get("PUBLISH_SECRET")
 
+LINKEDIN_ACCOUNT_NAME = "LinkedIn Principal"
+
+LINKEDIN_ACCOUNT_NAME = "LinkedIn Principal"
+
 
 LINKEDIN_REDIRECT_URI = (
     "https://automacao-murici.onrender.com/linkedin/callback"
@@ -208,7 +212,7 @@ def linkedin_token_from_database():
                 WHERE account_name = %s
                 LIMIT 1
                 """,
-                ("Drive5",),
+                (LINKEDIN_ACCOUNT_NAME,),
             )
 
             row = cur.fetchone()
@@ -234,7 +238,7 @@ def linkedin_member_id_from_database():
                 WHERE account_name = %s
                 LIMIT 1
                 """,
-                ("Drive5",),
+                (LINKEDIN_ACCOUNT_NAME,),
             )
 
             row = cur.fetchone()
@@ -255,7 +259,7 @@ def google_tokens_from_database():
                 WHERE account_name = %s
                 LIMIT 1
                 """,
-                ("Drive5",),
+                (LINKEDIN_ACCOUNT_NAME,),
             )
 
             row = cur.fetchone()
@@ -861,7 +865,7 @@ def linkedin_callback():
                     updated_at = NOW();
                 """,
                 (
-                    "Drive5",
+                    LINKEDIN_ACCOUNT_NAME,
                     member_id,
                     encrypted_token,
                     expires_in or 0,
