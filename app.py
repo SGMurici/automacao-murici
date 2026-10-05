@@ -5,6 +5,8 @@ import urllib.parse
 import urllib.request
 import urllib.error
 
+from datetime import datetime, timezone
+
 from flask import Flask, jsonify, redirect, request, session
 import psycopg
 from cryptography.fernet import Fernet
@@ -28,8 +30,6 @@ PUBLISH_SECRET = os.environ.get("PUBLISH_SECRET")
 
 LINKEDIN_ACCOUNT_NAME = "LinkedIn Principal"
 
-LINKEDIN_ACCOUNT_NAME = "LinkedIn Principal"
-
 
 LINKEDIN_REDIRECT_URI = (
     "https://automacao-murici.onrender.com/linkedin/callback"
@@ -49,6 +49,7 @@ LINKEDIN_PUBLISH_URL = "https://api.linkedin.com/v2/ugcPosts"
 LINKEDIN_ANALYTICS_URL = (
     "https://api.linkedin.com/rest/memberCreatorPostAnalytics"
 )
+
 LINKEDIN_ANALYTICS_VERSION = os.environ.get(
     "LINKEDIN_ANALYTICS_VERSION",
     "202608",
@@ -61,6 +62,9 @@ LINKEDIN_OAUTH_SCOPE = os.environ.get(
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+
+SCHEDULER_LOCK_KEY = 83746291
 
 
 class LinkedInAnalyticsError(RuntimeError):
@@ -105,8 +109,6 @@ def decrypt_value(value):
 def ensure_analytics_tables():
     """
     Garante as tabelas atuais de armazenamento das metricas do LinkedIn.
-
-    A estrutura deve ser compativel com as tabelas ja criadas no Neon.
     """
 
     with get_db_connection() as conn:
@@ -202,6 +204,93 @@ def ensure_analytics_tables():
         conn.commit()
 
 
+def ensure_scheduler_tables():
+    """
+    Garante a fila de publicacoes automaticas.
+    """
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS linkedin_publish_queue (
+                    id BIGSERIAL PRIMARY KEY,
+
+                    post_number INTEGER,
+
+                    title TEXT,
+
+                    content TEXT NOT NULL,
+
+                    scheduled_for TIMESTAMPTZ NOT NULL,
+
+                    status VARCHAR(30) NOT NULL DEFAULT 'agendado',
+
+                    attempts INTEGER NOT NULL DEFAULT 0,
+
+                    locked_at TIMESTAMPTZ,
+
+                    published_at TIMESTAMPTZ,
+
+                    linkedin_post_id TEXT,
+
+                    editorial_post_id BIGINT
+                        REFERENCES editorial_posts(id)
+                        ON DELETE SET NULL,
+
+                    error_message TEXT,
+
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                    idx_linkedin_publish_queue_due
+                ON linkedin_publish_queue(
+                    status,
+                    scheduled_for
+                );
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                    idx_linkedin_publish_queue_post_number
+                ON linkedin_publish_queue(post_number);
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                    idx_linkedin_publish_queue_linkedin_post
+                ON linkedin_publish_queue(linkedin_post_id);
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    uq_linkedin_publish_queue_active_post_number
+                ON linkedin_publish_queue(post_number)
+                WHERE post_number IS NOT NULL
+                  AND status IN (
+                      'agendado',
+                      'processando',
+                      'publicado'
+                  );
+                """
+            )
+
+        conn.commit()
+
+
 def linkedin_token_from_database():
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -250,6 +339,10 @@ def linkedin_member_id_from_database():
 
 
 def google_tokens_from_database():
+    """
+    Recupera os tokens da conta Google principal da automacao: Drive5.
+    """
+
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -259,7 +352,7 @@ def google_tokens_from_database():
                 WHERE account_name = %s
                 LIMIT 1
                 """,
-                (LINKEDIN_ACCOUNT_NAME,),
+                ("Drive5",),
             )
 
             row = cur.fetchone()
@@ -563,6 +656,233 @@ def require_publish_secret():
         )
 
     return None
+
+
+def parse_scheduled_for(value):
+    """
+    Converte uma data ISO 8601 em datetime com timezone.
+
+    A fila exige timezone explicito para evitar erro entre
+    horario do Brasil e UTC.
+    """
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            "scheduled_for e obrigatorio e deve ser uma data ISO 8601."
+        )
+
+    normalized = value.strip()
+
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        raise ValueError(
+            "scheduled_for invalido. Use ISO 8601, por exemplo "
+            "2026-10-10T14:30:00-03:00."
+        )
+
+    if parsed.tzinfo is None:
+        raise ValueError(
+            "scheduled_for precisa informar o timezone."
+        )
+
+    return parsed.astimezone(timezone.utc)
+
+
+def scheduler_publish_one():
+    """
+    Localiza uma publicacao vencida, bloqueia a fila e publica uma unica
+    publicacao.
+
+    O processamento e deliberadamente de uma publicacao por execucao.
+    Isso reduz o risco operacional e torna o scheduler mais previsivel.
+    """
+
+    ensure_scheduler_tables()
+
+    conn = get_db_connection()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_try_advisory_lock(%s);",
+                (SCHEDULER_LOCK_KEY,),
+            )
+
+            lock_row = cur.fetchone()
+
+            if not lock_row or not lock_row[0]:
+                return {
+                    "status": "busy",
+                    "mensagem": (
+                        "Outra execucao do scheduler ja esta em andamento."
+                    ),
+                }
+
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    post_number,
+                    title,
+                    content,
+                    scheduled_for,
+                    attempts
+                FROM linkedin_publish_queue
+                WHERE status = 'agendado'
+                  AND scheduled_for <= NOW()
+                ORDER BY scheduled_for ASC, id ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED;
+                """
+            )
+
+            row = cur.fetchone()
+
+            if not row:
+                cur.execute(
+                    "SELECT pg_advisory_unlock(%s);",
+                    (SCHEDULER_LOCK_KEY,),
+                )
+                conn.commit()
+
+                return {
+                    "status": "idle",
+                    "mensagem": "Nenhuma publicacao vencida na fila.",
+                }
+
+            (
+                queue_id,
+                post_number,
+                title,
+                content,
+                scheduled_for,
+                attempts,
+            ) = row
+
+            cur.execute(
+                """
+                UPDATE linkedin_publish_queue
+                SET
+                    status = 'processando',
+                    attempts = attempts + 1,
+                    locked_at = NOW(),
+                    updated_at = NOW(),
+                    error_message = NULL
+                WHERE id = %s;
+                """,
+                (queue_id,),
+            )
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
+    try:
+        post_id = publish_linkedin_text(content)
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO editorial_posts (
+                        post_number,
+                        title,
+                        content,
+                        status,
+                        published_at,
+                        linkedin_post_id,
+                        updated_at
+                    )
+                    VALUES (
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        NOW(),
+                        %s,
+                        NOW()
+                    )
+                    RETURNING id;
+                    """,
+                    (
+                        post_number,
+                        title,
+                        content,
+                        "publicado",
+                        post_id,
+                    ),
+                )
+
+                editorial_post_id = cur.fetchone()[0]
+
+                cur.execute(
+                    """
+                    UPDATE linkedin_publish_queue
+                    SET
+                        status = 'publicado',
+                        published_at = NOW(),
+                        linkedin_post_id = %s,
+                        editorial_post_id = %s,
+                        updated_at = NOW(),
+                        locked_at = NULL,
+                        error_message = NULL
+                    WHERE id = %s;
+                    """,
+                    (
+                        post_id,
+                        editorial_post_id,
+                        queue_id,
+                    ),
+                )
+
+            conn.commit()
+
+        return {
+            "status": "publicado",
+            "mensagem": "Publicacao da fila realizada no LinkedIn.",
+            "queue_id": queue_id,
+            "post_number": post_number,
+            "linkedin_post_id": post_id,
+            "editorial_post_id": editorial_post_id,
+        }
+
+    except Exception as error:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE linkedin_publish_queue
+                    SET
+                        status = 'erro',
+                        error_message = %s,
+                        updated_at = NOW(),
+                        locked_at = NULL
+                    WHERE id = %s;
+                    """,
+                    (
+                        str(error),
+                        queue_id,
+                    ),
+                )
+
+            conn.commit()
+
+        return {
+            "status": "erro",
+            "mensagem": (
+                "A publicacao foi retirada do processamento porque "
+                "ocorreu um erro. Ela nao sera republicada "
+                "automaticamente para evitar duplicidade."
+            ),
+            "detalhe": str(error),
+            "queue_id": queue_id,
+            "post_number": post_number,
+        }
 
 
 @app.get("/")
@@ -1022,6 +1342,7 @@ def google_callback():
         ), 400
 
     encrypted_access_token = encrypt_value(access_token)
+
     encrypted_refresh_token = (
         encrypt_value(refresh_token)
         if refresh_token
@@ -1089,6 +1410,7 @@ def google_callback():
 @app.post("/linkedin/publish")
 def linkedin_publish():
     auth_error = require_publish_secret()
+
     if auth_error:
         return auth_error
 
@@ -1180,9 +1502,322 @@ def linkedin_publish():
         ), 500
 
 
+@app.post("/scheduler/queue")
+def scheduler_queue():
+    """
+    Coloca uma publicacao na fila automatica.
+
+    JSON esperado:
+
+    {
+        "post_number": 41,
+        "title": "Titulo",
+        "content": "Texto completo",
+        "scheduled_for": "2026-10-10T14:30:00-03:00"
+    }
+    """
+
+    auth_error = require_publish_secret()
+
+    if auth_error:
+        return auth_error
+
+    if not request.is_json:
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": "A requisicao deve utilizar JSON.",
+            }
+        ), 400
+
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": "JSON invalido.",
+            }
+        ), 400
+
+    content = data.get("content")
+    title = data.get("title")
+    post_number = data.get("post_number")
+    scheduled_for = data.get("scheduled_for")
+
+    if not content or not isinstance(content, str):
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": "O campo content e obrigatorio.",
+            }
+        ), 400
+
+    if len(content.strip()) < 10:
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": "O campo content nao pode estar vazio.",
+            }
+        ), 400
+
+    try:
+        scheduled_datetime = parse_scheduled_for(
+            scheduled_for
+        )
+    except ValueError as error:
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": str(error),
+            }
+        ), 400
+
+    try:
+        ensure_scheduler_tables()
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+
+                if post_number is not None:
+                    try:
+                        post_number = int(post_number)
+                    except (TypeError, ValueError):
+                        return jsonify(
+                            {
+                                "status": "erro",
+                                "mensagem": (
+                                    "post_number deve ser numerico."
+                                ),
+                            }
+                        ), 400
+
+                    cur.execute(
+                        """
+                        SELECT id
+                        FROM editorial_posts
+                        WHERE post_number = %s
+                        LIMIT 1;
+                        """,
+                        (post_number,),
+                    )
+
+                    existing_published = cur.fetchone()
+
+                    if existing_published:
+                        return jsonify(
+                            {
+                                "status": "erro",
+                                "mensagem": (
+                                    "Esse post_number ja possui "
+                                    "uma publicacao registrada."
+                                ),
+                                "post_number": post_number,
+                                "editorial_post_id": (
+                                    existing_published[0]
+                                ),
+                            }
+                        ), 409
+
+                cur.execute(
+                    """
+                    INSERT INTO linkedin_publish_queue (
+                        post_number,
+                        title,
+                        content,
+                        scheduled_for,
+                        status,
+                        attempts,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        'agendado',
+                        0,
+                        NOW(),
+                        NOW()
+                    )
+                    RETURNING id;
+                    """,
+                    (
+                        post_number,
+                        title,
+                        content,
+                        scheduled_datetime,
+                    ),
+                )
+
+                queue_id = cur.fetchone()[0]
+
+            conn.commit()
+
+        return jsonify(
+            {
+                "status": "agendado",
+                "mensagem": (
+                    "Publicacao adicionada a fila automatica."
+                ),
+                "queue_id": queue_id,
+                "post_number": post_number,
+                "scheduled_for": scheduled_datetime.isoformat(),
+            }
+        )
+
+    except psycopg.errors.UniqueViolation:
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": (
+                    "Esse post_number ja possui uma entrada ativa "
+                    "na fila."
+                ),
+            }
+        ), 409
+
+    except Exception as error:
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": str(error),
+            }
+        ), 500
+
+
+@app.get("/scheduler/status")
+def scheduler_status():
+    """
+    Consulta o estado atual da fila.
+    """
+
+    auth_error = require_publish_secret()
+
+    if auth_error:
+        return auth_error
+
+    try:
+        ensure_scheduler_tables()
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        status,
+                        COUNT(*)
+                    FROM linkedin_publish_queue
+                    GROUP BY status
+                    ORDER BY status;
+                    """
+                )
+
+                counts_rows = cur.fetchall()
+
+                counts = {
+                    row[0]: row[1]
+                    for row in counts_rows
+                }
+
+                cur.execute(
+                    """
+                    SELECT
+                        id,
+                        post_number,
+                        title,
+                        scheduled_for,
+                        status,
+                        attempts
+                    FROM linkedin_publish_queue
+                    WHERE status = 'agendado'
+                    ORDER BY scheduled_for ASC, id ASC
+                    LIMIT 1;
+                    """
+                )
+
+                next_row = cur.fetchone()
+
+        next_publication = None
+
+        if next_row:
+            (
+                queue_id,
+                post_number,
+                title,
+                scheduled_for,
+                status,
+                attempts,
+            ) = next_row
+
+            next_publication = {
+                "queue_id": queue_id,
+                "post_number": post_number,
+                "title": title,
+                "scheduled_for": scheduled_for.isoformat(),
+                "status": status,
+                "attempts": attempts,
+            }
+
+        return jsonify(
+            {
+                "status": "ok",
+                "mensagem": "Fila automatica funcionando.",
+                "quantidades": counts,
+                "proxima_publicacao": next_publication,
+            }
+        )
+
+    except Exception as error:
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": str(error),
+            }
+        ), 500
+
+
+@app.post("/scheduler/run")
+def scheduler_run():
+    """
+    Executa uma publicacao vencida da fila.
+
+    O endpoint e protegido pelo PUBLISH_SECRET.
+    """
+
+    auth_error = require_publish_secret()
+
+    if auth_error:
+        return auth_error
+
+    try:
+        result = scheduler_publish_one()
+
+        if result["status"] == "publicado":
+            return jsonify(result), 200
+
+        if result["status"] == "idle":
+            return jsonify(result), 200
+
+        if result["status"] == "busy":
+            return jsonify(result), 409
+
+        return jsonify(result), 500
+
+    except Exception as error:
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": str(error),
+            }
+        ), 500
+
+
 @app.get("/analytics/prepare")
 def analytics_prepare():
     auth_error = require_publish_secret()
+
     if auth_error:
         return auth_error
 
@@ -1217,10 +1852,10 @@ def analytics_record():
     Recebe uma coleta de metricas e grava no PostgreSQL.
 
     Esta rota nao consulta o LinkedIn.
-    Ela permite registrar dados fornecidos por uma fonte autorizada.
     """
 
     auth_error = require_publish_secret()
+
     if auth_error:
         return auth_error
 
@@ -1279,15 +1914,22 @@ def analytics_record():
                 post_saves = data.get("post_saves")
                 post_sends = data.get("post_sends")
                 link_clicks = data.get("link_clicks")
-                premium_cta_clicks = data.get("premium_cta_clicks")
+                premium_cta_clicks = data.get(
+                    "premium_cta_clicks"
+                )
+
                 followers_gained = data.get(
                     "followers_gained_from_content"
                 )
+
                 profile_views = data.get(
                     "profile_views_from_content"
                 )
 
-                engagement_total = data.get("engagement_total")
+                engagement_total = data.get(
+                    "engagement_total"
+                )
+
                 if engagement_total is None:
                     engagement_total = calculate_engagement_total(
                         {
@@ -1297,7 +1939,9 @@ def analytics_record():
                             "POST_SAVE": post_saves,
                             "POST_SEND": post_sends,
                             "LINK_CLICKS": link_clicks,
-                            "PREMIUM_CTA_CLICKS": premium_cta_clicks,
+                            "PREMIUM_CTA_CLICKS": (
+                                premium_cta_clicks
+                            ),
                         }
                     )
 
@@ -1390,6 +2034,7 @@ def analytics_collect():
     """
 
     auth_error = require_publish_secret()
+
     if auth_error:
         return auth_error
 
@@ -1412,7 +2057,9 @@ def analytics_collect():
                     RETURNING id;
                     """
                 )
+
                 run_id = cur.fetchone()[0]
+
             conn.commit()
 
         with get_db_connection() as conn:
@@ -1428,35 +2075,44 @@ def analytics_collect():
                     ORDER BY linkedin_post_id, id DESC;
                     """
                 )
+
                 posts = cur.fetchall()
 
         posts_found = len(posts)
 
         for editorial_post_id, linkedin_post_id in posts:
+
             try:
                 metrics, _raw_payload = linkedin_post_analytics(
                     linkedin_post_id
                 )
 
                 impressions = metrics.get("IMPRESSION")
-                members_reached = metrics.get("MEMBERS_REACHED")
+                members_reached = metrics.get(
+                    "MEMBERS_REACHED"
+                )
                 reactions = metrics.get("REACTION")
                 comments = metrics.get("COMMENT")
                 reposts = metrics.get("RESHARE")
                 post_saves = metrics.get("POST_SAVE")
                 post_sends = metrics.get("POST_SEND")
                 link_clicks = metrics.get("LINK_CLICKS")
+
                 premium_cta_clicks = metrics.get(
                     "PREMIUM_CTA_CLICKS"
                 )
+
                 followers_gained = metrics.get(
                     "FOLLOWER_GAINED_FROM_CONTENT"
                 )
+
                 profile_views = metrics.get(
                     "PROFILE_VIEW_FROM_CONTENT"
                 )
 
-                engagement_total = calculate_engagement_total(metrics)
+                engagement_total = calculate_engagement_total(
+                    metrics
+                )
 
                 with get_db_connection() as conn:
                     with conn.cursor() as cur:
@@ -1523,6 +2179,7 @@ def analytics_collect():
                 metrics_saved += 1
 
             except LinkedInAnalyticsError as error:
+
                 with get_db_connection() as conn:
                     with conn.cursor() as cur:
                         cur.execute(
@@ -1538,9 +2195,11 @@ def analytics_collect():
                             WHERE id = %s;
                             """,
                             (
-                                "permission_required"
-                                if error.status_code == 403
-                                else "error",
+                                (
+                                    "permission_required"
+                                    if error.status_code == 403
+                                    else "error"
+                                ),
                                 posts_found,
                                 posts_updated,
                                 metrics_saved,
@@ -1548,6 +2207,7 @@ def analytics_collect():
                                 run_id,
                             ),
                         )
+
                     conn.commit()
 
                 if error.status_code == 403:
@@ -1555,9 +2215,11 @@ def analytics_collect():
                         {
                             "status": "permission_required",
                             "mensagem": (
-                                "O LinkedIn recusou a consulta de analytics. "
-                                "A aplicacao ainda precisa de acesso oficial "
-                                "a r_member_postAnalytics / Community Management API."
+                                "O LinkedIn recusou a consulta de "
+                                "analytics. A aplicacao ainda precisa "
+                                "de acesso oficial a "
+                                "r_member_postAnalytics / "
+                                "Community Management API."
                             ),
                             "http_linkedin": error.status_code,
                             "run_id": run_id,
@@ -1570,7 +2232,8 @@ def analytics_collect():
                     {
                         "status": "erro",
                         "mensagem": (
-                            "Falha ao consultar analytics do LinkedIn."
+                            "Falha ao consultar analytics "
+                            "do LinkedIn."
                         ),
                         "http_linkedin": error.status_code,
                         "detalhe": error.payload,
@@ -1581,6 +2244,7 @@ def analytics_collect():
                 ), 502
 
             except Exception as error:
+
                 with get_db_connection() as conn:
                     with conn.cursor() as cur:
                         cur.execute(
@@ -1603,6 +2267,7 @@ def analytics_collect():
                                 run_id,
                             ),
                         )
+
                     conn.commit()
 
                 return jsonify(
@@ -1636,12 +2301,15 @@ def analytics_collect():
                         run_id,
                     ),
                 )
+
             conn.commit()
 
         return jsonify(
             {
                 "status": "completed",
-                "mensagem": "Coleta de metricas do LinkedIn concluida.",
+                "mensagem": (
+                    "Coleta de metricas do LinkedIn concluida."
+                ),
                 "run_id": run_id,
                 "posts_found": posts_found,
                 "posts_updated": posts_updated,
@@ -1650,6 +2318,7 @@ def analytics_collect():
         )
 
     except Exception as error:
+
         if run_id is not None:
             try:
                 with get_db_connection() as conn:
@@ -1674,7 +2343,9 @@ def analytics_collect():
                                 run_id,
                             ),
                         )
+
                     conn.commit()
+
             except Exception:
                 pass
 
