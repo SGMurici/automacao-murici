@@ -512,6 +512,39 @@ def google_drive_readonly_check(account_name="Drive5"):
         "teste": "somente_leitura",
     }
 
+def google_drive_accounts_health():
+    """Verifica, em leitura, todas as contas Google autorizadas."""
+    accounts = google_authorized_accounts()
+    results = []
+    for account in accounts:
+        account_name = account["account_name"]
+        item = {
+            "conta": account_name,
+            "status": "erro",
+        }
+        try:
+            query = urllib.parse.urlencode({
+                "pageSize": "1",
+                "fields": "files(id)",
+            })
+            response_data, _ = google_drive_api_request(
+                "GET",
+                f"{GOOGLE_DRIVE_FILES_URL}?{query}",
+                account_name=account_name,
+            )
+            item.update({
+                "status": "ok",
+                "arquivos_acessiveis": len(response_data.get("files", [])),
+            })
+        except Exception as error:
+            item["mensagem"] = str(error)
+        results.append(item)
+    return {
+        "status": "ok",
+        "contas_testadas": len(results),
+        "contas": results,
+    }
+
 def google_drive_test(account_name="Drive5"):
     """Cria uma pasta de teste na conta Google Drive autorizada."""
     account_name = normalize_google_account_name(account_name)
@@ -1146,6 +1179,17 @@ def google_drive_check_route():
         return jsonify(google_drive_readonly_check(account_name))
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
+    except Exception as error:
+        return jsonify({"status": "erro", "mensagem": str(error)}), 500
+
+@app.get("/google-drive/health")
+def google_drive_health_route():
+    """Teste autenticado de todas as contas Google autorizadas; somente leitura."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    try:
+        return jsonify(google_drive_accounts_health())
     except Exception as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 500
 
