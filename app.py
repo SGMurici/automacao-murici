@@ -5,7 +5,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from flask import Flask, jsonify, redirect, request, session
 import psycopg
@@ -62,6 +62,9 @@ LINKEDIN_OAUTH_SCOPE = os.environ.get(
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+GOOGLE_DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files"
+
 
 
 SCHEDULER_LOCK_KEY = 83746291
@@ -347,7 +350,7 @@ def google_tokens_from_database():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT access_token, refresh_token
+                SELECT access_token, refresh_token, token_expires_at
                 FROM google_accounts
                 WHERE account_name = %s
                 LIMIT 1
@@ -358,12 +361,223 @@ def google_tokens_from_database():
             row = cur.fetchone()
 
             if not row:
-                return None, None
+                return None, None, None
 
             access_token = decrypt_value(row[0]) if row[0] else None
             refresh_token = decrypt_value(row[1]) if row[1] else None
 
-            return access_token, refresh_token
+            return access_token, refresh_token, row[2]
+
+
+def refresh_google_access_token():
+    """
+    Usa o refresh token criptografado do Drive5 para obter um novo
+    access token quando necessario e grava o novo prazo no PostgreSQL.
+    """
+
+    access_token, refresh_token, token_expires_at = (
+        google_tokens_from_database()
+    )
+
+    if not refresh_token:
+        raise RuntimeError(
+            "Refresh token do Google Drive5 nao encontrado no banco."
+        )
+
+    token_payload = urllib.parse.urlencode(
+        {
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        }
+    ).encode("utf-8")
+
+    token_request = urllib.request.Request(
+        GOOGLE_TOKEN_URL,
+        data=token_payload,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded"
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(
+            token_request,
+            timeout=30
+        ) as response:
+            token_data = json.loads(
+                response.read().decode("utf-8")
+            )
+
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8")
+
+        try:
+            detail = json.loads(body)
+        except json.JSONDecodeError:
+            detail = body
+
+        raise RuntimeError(
+            "Falha ao renovar o token do Google: "
+            f"HTTP {error.code}: {json.dumps(detail)}"
+        )
+
+    new_access_token = token_data.get("access_token")
+    expires_in = token_data.get("expires_in")
+
+    if not new_access_token:
+        raise RuntimeError(
+            "Google nao retornou um novo access token."
+        )
+
+    encrypted_access_token = encrypt_value(new_access_token)
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE google_accounts
+                SET
+                    access_token = %s,
+                    token_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                    updated_at = NOW()
+                WHERE account_name = %s;
+                """,
+                (
+                    encrypted_access_token,
+                    expires_in or 0,
+                    "Drive5",
+                ),
+            )
+
+        conn.commit()
+
+    return new_access_token
+
+
+def google_drive_access_token():
+    """
+    Retorna um access token valido para o Drive5.
+
+    Se o token estiver ausente ou proximo do vencimento, usa o
+    refresh token armazenado para obter outro.
+    """
+
+    access_token, refresh_token, token_expires_at = (
+        google_tokens_from_database()
+    )
+
+    if not access_token:
+        raise RuntimeError(
+            "Token de acesso do Google Drive5 nao encontrado no banco."
+        )
+
+    if not refresh_token:
+        raise RuntimeError(
+            "Refresh token do Google Drive5 nao encontrado no banco."
+        )
+
+    should_refresh = False
+
+    if token_expires_at is None:
+        should_refresh = True
+    else:
+        now = datetime.now(timezone.utc)
+        expires_at = token_expires_at
+
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+        # Renova cinco minutos antes do vencimento.
+        should_refresh = expires_at <= (
+            now + timedelta(minutes=5)
+        )
+
+    if should_refresh:
+        return refresh_google_access_token()
+
+    return access_token
+
+
+def google_drive_api_request(
+    method,
+    url,
+    data=None,
+):
+    """
+    Faz uma chamada autenticada a Google Drive API v3.
+    """
+
+    access_token = google_drive_access_token()
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+
+    status_code, response_data, response_headers = http_json_request(
+        url,
+        method=method,
+        headers=headers,
+        data=data,
+    )
+
+    if status_code not in (200, 201):
+        raise RuntimeError(
+            "Google Drive recusou a requisicao. "
+            f"HTTP {status_code}: {json.dumps(response_data)}"
+        )
+
+    return response_data, response_headers
+
+
+def google_drive_test():
+    """
+    Teste real de acesso a API do Google Drive5.
+
+    Cria uma pasta de teste usando o escopo drive.file. A pasta fica
+    no Drive5 para comprovar que a aplicacao consegue gravar no Drive.
+    """
+
+    timestamp = datetime.now(timezone.utc).strftime(
+        "%Y%m%d-%H%M%S"
+    )
+
+    folder_name = (
+        "Automacao Murici - Teste Drive5 - "
+        f"{timestamp}"
+    )
+
+    payload = {
+        "name": folder_name,
+        "mimeType": "application/vnd.google-apps.folder",
+    }
+
+    response_data, _ = google_drive_api_request(
+        "POST",
+        GOOGLE_DRIVE_FILES_URL,
+        data=payload,
+    )
+
+    folder_id = response_data.get("id")
+
+    if not folder_id:
+        raise RuntimeError(
+            "Google Drive criou a resposta, mas nao retornou o ID da pasta."
+        )
+
+    return {
+        "status": "ok",
+        "mensagem": (
+            "Acesso real a Google Drive API confirmado. "
+            "Uma pasta de teste foi criada no Drive5."
+        ),
+        "conta": "Drive5",
+        "pasta_teste": folder_name,
+        "folder_id": folder_id,
+    }
 
 
 def http_json_request(
@@ -948,6 +1162,29 @@ def crypto_test():
                 "mensagem": "Criptografia funcionando corretamente.",
             }
         )
+
+    except Exception as error:
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": str(error),
+            }
+        ), 500
+
+
+@app.get("/google-drive/test")
+def google_drive_test_route():
+    """
+    Executa um teste real de escrita na Google Drive API usando Drive5.
+    """
+
+    auth_error = require_publish_secret()
+
+    if auth_error:
+        return auth_error
+
+    try:
+        return jsonify(google_drive_test())
 
     except Exception as error:
         return jsonify(
