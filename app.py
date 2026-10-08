@@ -45,6 +45,8 @@ LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
 LINKEDIN_USERINFO_URL = "https://api.linkedin.com/v2/userinfo"
 
 LINKEDIN_PUBLISH_URL = "https://api.linkedin.com/v2/ugcPosts"
+LINKEDIN_ASSETS_URL = "https://api.linkedin.com/v2/assets?action=registerUpload"
+GOOGLE_DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files"
 
 LINKEDIN_ANALYTICS_URL = (
     "https://api.linkedin.com/rest/memberCreatorPostAnalytics"
@@ -245,7 +247,15 @@ def ensure_scheduler_tables():
 
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                    drive_file_id TEXT,
+                    google_account_name TEXT,
+                    media_mime_type TEXT,
+                    media_title TEXT,
+                    media_description TEXT,
+                    linkedin_media_urn TEXT,
+                    media_status VARCHAR(30)
                 );
                 """
             )
@@ -736,6 +746,209 @@ def publish_linkedin_text(commentary):
     return post_id
 
 
+
+def ensure_multimedia_columns():
+    """Garante as colunas de mídia sem alterar ou apagar dados existentes."""
+    statements = [
+        "ALTER TABLE linkedin_publish_queue ADD COLUMN IF NOT EXISTS drive_file_id TEXT",
+        "ALTER TABLE linkedin_publish_queue ADD COLUMN IF NOT EXISTS google_account_name TEXT",
+        "ALTER TABLE linkedin_publish_queue ADD COLUMN IF NOT EXISTS media_mime_type TEXT",
+        "ALTER TABLE linkedin_publish_queue ADD COLUMN IF NOT EXISTS media_title TEXT",
+        "ALTER TABLE linkedin_publish_queue ADD COLUMN IF NOT EXISTS media_description TEXT",
+        "ALTER TABLE linkedin_publish_queue ADD COLUMN IF NOT EXISTS linkedin_media_urn TEXT",
+        "ALTER TABLE linkedin_publish_queue ADD COLUMN IF NOT EXISTS media_status VARCHAR(30)",
+    ]
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            for statement in statements:
+                cur.execute(statement)
+        conn.commit()
+
+
+def google_drive_download_binary(file_id, account_name="Drive5"):
+    """Baixa uma mídia do Drive em modo somente leitura."""
+    if not file_id:
+        raise RuntimeError("drive_file_id nao informado.")
+
+    account_name = normalize_google_account_name(account_name)
+    access_token = google_drive_access_token(account_name)
+    url = (
+        f"{GOOGLE_DRIVE_FILES_URL}/"
+        f"{urllib.parse.quote(str(file_id), safe='')}?alt=media"
+    )
+
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {access_token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as response:
+            body = response.read()
+            mime_type = response.headers.get(
+                "Content-Type", "application/octet-stream"
+            )
+            return body, mime_type
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Google Drive recusou o download do arquivo {file_id}: "
+            f"HTTP {error.code}: {detail}"
+        )
+    except urllib.error.URLError as error:
+        raise RuntimeError(
+            f"Erro de comunicacao com Google Drive: {error.reason}"
+        )
+
+
+def linkedin_register_image_upload(access_token, member_id):
+    payload = {
+        "registerUploadRequest": {
+            "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
+            "owner": f"urn:li:person:{member_id}",
+            "serviceRelationships": [
+                {
+                    "relationshipType": "OWNER",
+                    "identifier": "urn:li:userGeneratedContent",
+                }
+            ],
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "X-Restli-Protocol-Version": "2.0.0",
+    }
+    status_code, response_data, _ = http_json_request(
+        LINKEDIN_ASSETS_URL,
+        method="POST",
+        headers=headers,
+        data=payload,
+    )
+    if status_code not in (200, 201):
+        raise RuntimeError(
+            "LinkedIn recusou o registro do upload da imagem. "
+            f"HTTP {status_code}: {json.dumps(response_data)}"
+        )
+
+    value = response_data.get("value", {})
+    mechanism = value.get("uploadMechanism", {}).get(
+        "com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest"
+    )
+    upload_url = mechanism.get("uploadUrl") if isinstance(mechanism, dict) else None
+    asset_urn = value.get("asset")
+    if not upload_url or not asset_urn:
+        raise RuntimeError(
+            "LinkedIn registrou o upload, mas nao retornou uploadUrl/asset."
+        )
+    return upload_url, asset_urn
+
+
+def linkedin_upload_binary(upload_url, access_token, binary_data, mime_type):
+    req = urllib.request.Request(
+        upload_url,
+        data=binary_data,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": mime_type or "application/octet-stream",
+        },
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as response:
+            if response.status not in (200, 201, 202):
+                raise RuntimeError(
+                    f"Upload binario rejeitado pelo LinkedIn: HTTP {response.status}."
+                )
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Upload binario rejeitado pelo LinkedIn: HTTP {error.code}: {body}"
+        )
+    except urllib.error.URLError as error:
+        raise RuntimeError(
+            f"Erro de comunicacao no upload da imagem para o LinkedIn: {error.reason}"
+        )
+
+
+def publish_linkedin_image(
+    commentary,
+    drive_file_id,
+    google_account_name="Drive5",
+    media_mime_type=None,
+    media_title=None,
+    media_description=None,
+):
+    """Publica texto + imagem; se a mídia falhar, o texto não é publicado."""
+    access_token = linkedin_token_from_database()
+    member_id = linkedin_member_id_from_database()
+    if not access_token:
+        raise RuntimeError("Token do LinkedIn nao encontrado no banco.")
+    if not member_id:
+        raise RuntimeError("LinkedIn Member ID nao encontrado no banco.")
+
+    binary_data, detected_mime = google_drive_download_binary(
+        drive_file_id, google_account_name
+    )
+    mime_type = media_mime_type or detected_mime or "image/png"
+    if not mime_type.lower().startswith("image/"):
+        raise RuntimeError(
+            f"O arquivo {drive_file_id} nao e uma imagem: {mime_type}."
+        )
+
+    upload_url, asset_urn = linkedin_register_image_upload(
+        access_token, member_id
+    )
+    linkedin_upload_binary(
+        upload_url, access_token, binary_data, mime_type
+    )
+
+    payload = {
+        "author": f"urn:li:person:{member_id}",
+        "lifecycleState": "PUBLISHED",
+        "specificContent": {
+            "com.linkedin.ugc.ShareContent": {
+                "shareCommentary": {"text": commentary},
+                "shareMediaCategory": "IMAGE",
+                "media": [
+                    {
+                        "status": "READY",
+                        "description": {"text": media_description or ""},
+                        "media": asset_urn,
+                        "title": {"text": media_title or ""},
+                    }
+                ],
+            }
+        },
+        "visibility": {
+            "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
+        },
+    }
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "X-Restli-Protocol-Version": "2.0.0",
+        "Content-Type": "application/json",
+    }
+    status_code, response_data, response_headers = http_json_request(
+        LINKEDIN_PUBLISH_URL,
+        method="POST",
+        headers=headers,
+        data=payload,
+    )
+    if status_code not in (200, 201):
+        raise RuntimeError(
+            "LinkedIn recusou a publicacao com imagem. "
+            f"HTTP {status_code}: {json.dumps(response_data)}"
+        )
+    post_id = response_headers.get("x-restli-id")
+    if not post_id and isinstance(response_data, dict):
+        post_id = response_data.get("id")
+    if not post_id:
+        raise RuntimeError(
+            "LinkedIn publicou, mas nao retornou o ID da publicacao com imagem."
+        )
+    return post_id, asset_urn
+
 def analytics_metric_type(element):
     metric_type = element.get("metricType")
 
@@ -944,44 +1157,27 @@ def parse_scheduled_for(value):
 
 
 def scheduler_publish_one():
-    """
-    Localiza uma publicacao vencida, bloqueia a fila e publica uma unica
-    publicacao.
-
-    O processamento e deliberadamente de uma publicacao por execucao.
-    Isso reduz o risco operacional e torna o scheduler mais previsivel.
-    """
-
+    """Processa uma publicação vencida, com ou sem mídia."""
     ensure_scheduler_tables()
+    ensure_multimedia_columns()
 
     conn = get_db_connection()
-
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT pg_try_advisory_lock(%s);",
-                (SCHEDULER_LOCK_KEY,),
-            )
-
+            cur.execute("SELECT pg_try_advisory_lock(%s);", (SCHEDULER_LOCK_KEY,))
             lock_row = cur.fetchone()
-
             if not lock_row or not lock_row[0]:
                 return {
                     "status": "busy",
-                    "mensagem": (
-                        "Outra execucao do scheduler ja esta em andamento."
-                    ),
+                    "mensagem": "Outra execucao do scheduler ja esta em andamento.",
                 }
 
             cur.execute(
                 """
                 SELECT
-                    id,
-                    post_number,
-                    title,
-                    content,
-                    scheduled_for,
-                    attempts
+                    id, post_number, title, content, scheduled_for, attempts,
+                    drive_file_id, google_account_name, media_mime_type,
+                    media_title, media_description
                 FROM linkedin_publish_queue
                 WHERE status = 'agendado'
                   AND scheduled_for <= NOW()
@@ -990,107 +1186,73 @@ def scheduler_publish_one():
                 FOR UPDATE SKIP LOCKED;
                 """
             )
-
             row = cur.fetchone()
-
             if not row:
-                cur.execute(
-                    "SELECT pg_advisory_unlock(%s);",
-                    (SCHEDULER_LOCK_KEY,),
-                )
+                cur.execute("SELECT pg_advisory_unlock(%s);", (SCHEDULER_LOCK_KEY,))
                 conn.commit()
-
-                return {
-                    "status": "idle",
-                    "mensagem": "Nenhuma publicacao vencida na fila.",
-                }
+                return {"status": "idle", "mensagem": "Nenhuma publicacao vencida na fila."}
 
             (
-                queue_id,
-                post_number,
-                title,
-                content,
-                scheduled_for,
-                attempts,
+                queue_id, post_number, title, content, scheduled_for, attempts,
+                drive_file_id, google_account_name, media_mime_type,
+                media_title, media_description,
             ) = row
 
             cur.execute(
                 """
                 UPDATE linkedin_publish_queue
-                SET
-                    status = 'processando',
-                    attempts = attempts + 1,
-                    locked_at = NOW(),
-                    updated_at = NOW(),
-                    error_message = NULL
+                SET status = 'processando', attempts = attempts + 1,
+                    locked_at = NOW(), updated_at = NOW(), error_message = NULL,
+                    media_status = CASE WHEN drive_file_id IS NULL THEN media_status ELSE 'processando' END
                 WHERE id = %s;
                 """,
                 (queue_id,),
             )
-
         conn.commit()
-
     finally:
         conn.close()
 
     try:
-        post_id = publish_linkedin_text(content)
+        if drive_file_id:
+            post_id, media_urn = publish_linkedin_image(
+                content,
+                drive_file_id,
+                google_account_name or "Drive5",
+                media_mime_type,
+                media_title,
+                media_description,
+            )
+        else:
+            post_id = publish_linkedin_text(content)
+            media_urn = None
 
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     INSERT INTO editorial_posts (
-                        post_number,
-                        title,
-                        content,
-                        status,
-                        published_at,
-                        linkedin_post_id,
-                        updated_at
+                        post_number, title, content, status, published_at,
+                        linkedin_post_id, updated_at
                     )
-                    VALUES (
-                        %s,
-                        %s,
-                        %s,
-                        %s,
-                        NOW(),
-                        %s,
-                        NOW()
-                    )
+                    VALUES (%s, %s, %s, 'publicado', NOW(), %s, NOW())
                     RETURNING id;
                     """,
-                    (
-                        post_number,
-                        title,
-                        content,
-                        "publicado",
-                        post_id,
-                    ),
+                    (post_number, title, content, post_id),
                 )
-
                 editorial_post_id = cur.fetchone()[0]
 
                 cur.execute(
                     """
                     UPDATE linkedin_publish_queue
-                    SET
-                        status = 'publicado',
-                        published_at = NOW(),
-                        linkedin_post_id = %s,
-                        editorial_post_id = %s,
-                        updated_at = NOW(),
-                        locked_at = NULL,
-                        error_message = NULL
+                    SET status = 'publicado', published_at = NOW(),
+                        linkedin_post_id = %s, editorial_post_id = %s,
+                        linkedin_media_urn = %s,
+                        media_status = CASE WHEN %s IS NULL THEN media_status ELSE 'publicado' END,
+                        updated_at = NOW(), locked_at = NULL, error_message = NULL
                     WHERE id = %s;
                     """,
-                    (
-                        post_id,
-                        editorial_post_id,
-                        queue_id,
-                    ),
+                    (post_id, editorial_post_id, media_urn, media_urn, queue_id),
                 )
-
             conn.commit()
 
         return {
@@ -1100,6 +1262,7 @@ def scheduler_publish_one():
             "post_number": post_number,
             "linkedin_post_id": post_id,
             "editorial_post_id": editorial_post_id,
+            "media": bool(media_urn),
         }
 
     except Exception as error:
@@ -1108,27 +1271,20 @@ def scheduler_publish_one():
                 cur.execute(
                     """
                     UPDATE linkedin_publish_queue
-                    SET
-                        status = 'erro',
-                        error_message = %s,
-                        updated_at = NOW(),
-                        locked_at = NULL
+                    SET status = 'erro', error_message = %s,
+                        media_status = CASE WHEN drive_file_id IS NULL THEN media_status ELSE 'erro' END,
+                        updated_at = NOW(), locked_at = NULL
                     WHERE id = %s;
                     """,
-                    (
-                        str(error),
-                        queue_id,
-                    ),
+                    (str(error), queue_id),
                 )
-
             conn.commit()
 
         return {
             "status": "erro",
             "mensagem": (
-                "A publicacao foi retirada do processamento porque "
-                "ocorreu um erro. Ela nao sera republicada "
-                "automaticamente para evitar duplicidade."
+                "A publicacao foi retirada do processamento porque ocorreu um erro. "
+                "Ela nao sera republicada automaticamente para evitar duplicidade."
             ),
             "detalhe": str(error),
             "queue_id": queue_id,
@@ -1868,6 +2024,17 @@ def scheduler_queue():
     title = data.get("title")
     post_number = data.get("post_number")
     scheduled_for = data.get("scheduled_for")
+    drive_file_id = data.get("drive_file_id")
+    google_account_name = data.get("google_account_name") or "Drive5"
+    media_mime_type = data.get("media_mime_type")
+    media_title = data.get("media_title")
+    media_description = data.get("media_description")
+
+    if drive_file_id:
+        try:
+            google_account_name = normalize_google_account_name(google_account_name)
+        except ValueError as error:
+            return jsonify({"status": "erro", "mensagem": str(error)}), 400
 
     if not content or not isinstance(content, str):
         return jsonify(
@@ -1899,6 +2066,7 @@ def scheduler_queue():
 
     try:
         ensure_scheduler_tables()
+        ensure_multimedia_columns()
 
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -1946,32 +2114,21 @@ def scheduler_queue():
                 cur.execute(
                     """
                     INSERT INTO linkedin_publish_queue (
-                        post_number,
-                        title,
-                        content,
-                        scheduled_for,
-                        status,
-                        attempts,
-                        created_at,
-                        updated_at
+                        post_number, title, content, scheduled_for, status, attempts,
+                        created_at, updated_at, drive_file_id, google_account_name,
+                        media_mime_type, media_title, media_description, media_status
                     )
                     VALUES (
-                        %s,
-                        %s,
-                        %s,
-                        %s,
-                        'agendado',
-                        0,
-                        NOW(),
-                        NOW()
+                        %s, %s, %s, %s, 'agendado', 0, NOW(), NOW(),
+                        %s, %s, %s, %s, %s,
+                        CASE WHEN %s IS NULL THEN NULL ELSE 'pendente' END
                     )
                     RETURNING id;
                     """,
                     (
-                        post_number,
-                        title,
-                        content,
-                        scheduled_datetime,
+                        post_number, title, content, scheduled_datetime,
+                        drive_file_id, google_account_name, media_mime_type,
+                        media_title, media_description, drive_file_id,
                     ),
                 )
 
@@ -2053,7 +2210,10 @@ def scheduler_status():
                         title,
                         scheduled_for,
                         status,
-                        attempts
+                        attempts,
+                        drive_file_id,
+                        google_account_name,
+                        media_status
                     FROM linkedin_publish_queue
                     WHERE status = 'agendado'
                     ORDER BY scheduled_for ASC, id ASC
@@ -2073,6 +2233,9 @@ def scheduler_status():
                 scheduled_for,
                 status,
                 attempts,
+                next_drive_file_id,
+                next_google_account_name,
+                next_media_status,
             ) = next_row
 
             next_publication = {
@@ -2082,6 +2245,9 @@ def scheduler_status():
                 "scheduled_for": scheduled_for.isoformat(),
                 "status": status,
                 "attempts": attempts,
+                "drive_file_id": next_drive_file_id,
+                "google_account_name": next_google_account_name,
+                "media_status": next_media_status,
             }
 
         return jsonify(
@@ -2100,6 +2266,29 @@ def scheduler_status():
                 "mensagem": str(error),
             }
         ), 500
+
+
+@app.get("/google-drive/file-check/<file_id>")
+def google_drive_file_check(file_id):
+    """Valida leitura de uma arte no Drive sem publicar no LinkedIn."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+
+    preferred = request.args.get("account") or "Drive5"
+    try:
+        account = normalize_google_account_name(preferred)
+        data, mime_type = google_drive_download_binary(file_id, account)
+        return jsonify({
+            "status": "ok",
+            "conta": account,
+            "drive_file_id": file_id,
+            "mime_type": mime_type,
+            "bytes": len(data),
+            "teste": "somente_leitura",
+        })
+    except Exception as error:
+        return jsonify({"status": "erro", "mensagem": str(error)}), 500
 
 
 @app.post("/scheduler/run")
