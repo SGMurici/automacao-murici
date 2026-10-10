@@ -1157,6 +1157,10 @@ def health():
 
 @app.get("/db-test")
 def db_test():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -1171,24 +1175,31 @@ def db_test():
             }
         )
 
-    except Exception:
-        app.logger.exception("Falha no teste de banco de dados")
+    except Exception as error:
         return jsonify(
             {
                 "status": "erro",
-                "mensagem": "Falha ao conectar ao banco de dados.",
+                "mensagem": str(error),
             }
         ), 500
 
+
 @app.get("/crypto-test")
 def crypto_test():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+
     try:
         original = "automacao-murici-teste"
+
         encrypted = encrypt_value(original)
         decrypted = decrypt_value(encrypted)
 
         if decrypted != original:
-            raise RuntimeError("Falha na validacao da criptografia.")
+            raise RuntimeError(
+                "Falha na validacao da criptografia."
+            )
 
         return jsonify(
             {
@@ -1197,14 +1208,14 @@ def crypto_test():
             }
         )
 
-    except Exception:
-        app.logger.exception("Falha no teste de criptografia")
+    except Exception as error:
         return jsonify(
             {
                 "status": "erro",
-                "mensagem": "Falha na validacao da criptografia.",
+                "mensagem": str(error),
             }
         ), 500
+
 
 @app.get("/google-drive/accounts")
 def google_drive_accounts_route():
@@ -1268,6 +1279,10 @@ def google_drive_router_route():
 
 @app.get("/storage-test")
 def storage_test():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+
     try:
         test_value = "teste-storage-automacao-murici"
         encrypted_value = encrypt_value(test_value)
@@ -1300,11 +1315,12 @@ def storage_test():
             }
         )
 
-    except Exception as error:
+    except Exception:
+        app.logger.exception("Falha no teste de armazenamento")
         return jsonify(
             {
                 "status": "erro",
-                "mensagem": str(error),
+                "mensagem": "Falha no teste de armazenamento.",
             }
         ), 500
 
