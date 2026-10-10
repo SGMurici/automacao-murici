@@ -945,195 +945,167 @@ def parse_scheduled_for(value):
 
 def scheduler_publish_one():
     """
-    Localiza uma publicacao vencida, bloqueia a fila e publica uma unica
-    publicacao.
+    Localiza e processa no maximo uma publicacao vencida.
 
-    O processamento e deliberadamente de uma publicacao por execucao.
-    Isso reduz o risco operacional e torna o scheduler mais previsivel.
+    Mantem uma conexao dedicada aberta durante toda a operacao para que
+    o advisory lock continue ativo enquanto a chamada ao LinkedIn ocorre.
     """
-
     ensure_scheduler_tables()
 
-    conn = get_db_connection()
+    lock_conn = get_db_connection()
+    lock_acquired = False
 
     try:
-        with conn.cursor() as cur:
+        with lock_conn.cursor() as cur:
             cur.execute(
                 "SELECT pg_try_advisory_lock(%s);",
                 (SCHEDULER_LOCK_KEY,),
             )
-
             lock_row = cur.fetchone()
+            lock_acquired = bool(lock_row and lock_row[0])
 
-            if not lock_row or not lock_row[0]:
-                return {
-                    "status": "busy",
-                    "mensagem": (
-                        "Outra execucao do scheduler ja esta em andamento."
-                    ),
-                }
+        if not lock_acquired:
+            return {
+                "status": "busy",
+                "mensagem": "Outra execucao do scheduler ja esta em andamento.",
+            }
 
-            cur.execute(
-                """
-                SELECT
-                    id,
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        id,
+                        post_number,
+                        title,
+                        content,
+                        scheduled_for,
+                        attempts
+                    FROM linkedin_publish_queue
+                    WHERE status = 'agendado'
+                      AND scheduled_for <= NOW()
+                    ORDER BY scheduled_for ASC, id ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED;
+                    """
+                )
+                row = cur.fetchone()
+
+                if not row:
+                    return {
+                        "status": "idle",
+                        "mensagem": "Nenhuma publicacao vencida na fila.",
+                    }
+
+                (
+                    queue_id,
                     post_number,
                     title,
                     content,
                     scheduled_for,
-                    attempts
-                FROM linkedin_publish_queue
-                WHERE status = 'agendado'
-                  AND scheduled_for <= NOW()
-                ORDER BY scheduled_for ASC, id ASC
-                LIMIT 1
-                FOR UPDATE SKIP LOCKED;
-                """
-            )
-
-            row = cur.fetchone()
-
-            if not row:
-                cur.execute(
-                    "SELECT pg_advisory_unlock(%s);",
-                    (SCHEDULER_LOCK_KEY,),
-                )
-                conn.commit()
-
-                return {
-                    "status": "idle",
-                    "mensagem": "Nenhuma publicacao vencida na fila.",
-                }
-
-            (
-                queue_id,
-                post_number,
-                title,
-                content,
-                scheduled_for,
-                attempts,
-            ) = row
-
-            cur.execute(
-                """
-                UPDATE linkedin_publish_queue
-                SET
-                    status = 'processando',
-                    attempts = attempts + 1,
-                    locked_at = NOW(),
-                    updated_at = NOW(),
-                    error_message = NULL
-                WHERE id = %s;
-                """,
-                (queue_id,),
-            )
-
-        conn.commit()
-
-    finally:
-        conn.close()
-
-    try:
-        post_id = publish_linkedin_text(content)
-
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO editorial_posts (
-                        post_number,
-                        title,
-                        content,
-                        status,
-                        published_at,
-                        linkedin_post_id,
-                        updated_at
-                    )
-                    VALUES (
-                        %s,
-                        %s,
-                        %s,
-                        %s,
-                        NOW(),
-                        %s,
-                        NOW()
-                    )
-                    RETURNING id;
-                    """,
-                    (
-                        post_number,
-                        title,
-                        content,
-                        "publicado",
-                        post_id,
-                    ),
-                )
-
-                editorial_post_id = cur.fetchone()[0]
+                    attempts,
+                ) = row
 
                 cur.execute(
                     """
                     UPDATE linkedin_publish_queue
                     SET
-                        status = 'publicado',
-                        published_at = NOW(),
-                        linkedin_post_id = %s,
-                        editorial_post_id = %s,
+                        status = 'processando',
+                        attempts = attempts + 1,
+                        locked_at = NOW(),
                         updated_at = NOW(),
-                        locked_at = NULL,
                         error_message = NULL
                     WHERE id = %s;
                     """,
-                    (
-                        post_id,
-                        editorial_post_id,
-                        queue_id,
-                    ),
+                    (queue_id,),
                 )
-
             conn.commit()
 
-        return {
-            "status": "publicado",
-            "mensagem": "Publicacao da fila realizada no LinkedIn.",
-            "queue_id": queue_id,
-            "post_number": post_number,
-            "linkedin_post_id": post_id,
-            "editorial_post_id": editorial_post_id,
-        }
+        try:
+            post_id = publish_linkedin_text(content)
 
-    except Exception as error:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE linkedin_publish_queue
-                    SET
-                        status = 'erro',
-                        error_message = %s,
-                        updated_at = NOW(),
-                        locked_at = NULL
-                    WHERE id = %s;
-                    """,
-                    (
-                        str(error),
-                        queue_id,
-                    ),
-                )
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO editorial_posts (
+                            post_number,
+                            title,
+                            content,
+                            status,
+                            published_at,
+                            linkedin_post_id,
+                            updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, NOW(), %s, NOW())
+                        RETURNING id;
+                        """,
+                        (post_number, title, content, "publicado", post_id),
+                    )
+                    editorial_post_id = cur.fetchone()[0]
 
-            conn.commit()
+                    cur.execute(
+                        """
+                        UPDATE linkedin_publish_queue
+                        SET
+                            status = 'publicado',
+                            published_at = NOW(),
+                            linkedin_post_id = %s,
+                            editorial_post_id = %s,
+                            updated_at = NOW(),
+                            locked_at = NULL,
+                            error_message = NULL
+                        WHERE id = %s;
+                        """,
+                        (post_id, editorial_post_id, queue_id),
+                    )
+                conn.commit()
 
-        return {
-            "status": "erro",
-            "mensagem": (
-                "A publicacao foi retirada do processamento porque "
-                "ocorreu um erro. Ela nao sera republicada "
-                "automaticamente para evitar duplicidade."
-            ),
-            "detalhe": str(error),
-            "queue_id": queue_id,
-            "post_number": post_number,
-        }
+            return {
+                "status": "publicado",
+                "mensagem": "Publicacao da fila realizada no LinkedIn.",
+                "queue_id": queue_id,
+                "post_number": post_number,
+                "linkedin_post_id": post_id,
+                "editorial_post_id": editorial_post_id,
+            }
+
+        except Exception as error:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE linkedin_publish_queue
+                        SET
+                            status = 'erro',
+                            error_message = %s,
+                            updated_at = NOW(),
+                            locked_at = NULL
+                        WHERE id = %s;
+                        """,
+                        (str(error), queue_id),
+                    )
+                conn.commit()
+
+            return {
+                "status": "erro",
+                "mensagem": (
+                    "A publicacao foi retirada do processamento porque ocorreu "
+                    "um erro. Ela nao sera republicada automaticamente para evitar duplicidade."
+                ),
+                "detalhe": str(error),
+                "queue_id": queue_id,
+                "post_number": post_number,
+            }
+
+    finally:
+        if lock_acquired:
+            try:
+                with lock_conn.cursor() as cur:
+                    cur.execute("SELECT pg_advisory_unlock(%s);", (SCHEDULER_LOCK_KEY,))
+            except Exception:
+                app.logger.exception("Falha ao liberar bloqueio do scheduler")
+        lock_conn.close()
 
 
 @app.get("/")
