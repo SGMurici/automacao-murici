@@ -341,14 +341,19 @@ def linkedin_member_id_from_database():
             return row[0]
 
 
-def normalize_google_account_name(account_name="Drive5"):
-    """Fixa o Google Drive operacional na única conta autorizada: Drive5."""
-    if account_name is None or not str(account_name).strip():
+def normalize_google_account_name(account_name):
+    """Valida o identificador lógico de uma conta Google Drive."""
+    if account_name is None:
         return "Drive5"
-    normalized = str(account_name).strip()
-    if normalized != "Drive5":
-        raise ValueError("Esta versão usa apenas a conta Google Drive5.")
-    return "Drive5"
+    account_name = str(account_name).strip()
+    if not account_name:
+        return "Drive5"
+    if len(account_name) > 50 or not account_name.startswith("Drive"):
+        raise ValueError("A conta Google deve usar o formato DriveN, por exemplo Drive5.")
+    suffix = account_name[5:]
+    if not suffix.isdigit():
+        raise ValueError("A conta Google deve usar o formato DriveN, por exemplo Drive5.")
+    return account_name
 
 
 def google_tokens_from_database(account_name="Drive5"):
@@ -381,7 +386,6 @@ def google_authorized_accounts():
                 """
                 SELECT account_name, provider, token_expires_at, updated_at
                 FROM google_accounts
-                WHERE account_name = 'Drive5'
                 ORDER BY account_name;
                 """
             )
@@ -543,7 +547,12 @@ def google_drive_health_check():
 
 
 def google_drive_route_account(preferred_account=None):
-    """Valida a única conta operacional configurada, Drive5, sem alterar arquivos."""
+    """Seleciona uma conta autorizada e funcional para uma operacao de Drive.
+
+    A conta preferida e respeitada quando existe e responde a uma leitura simples.
+    Se ela nao estiver disponivel, a funcao percorre as demais contas autorizadas.
+    Nenhum arquivo e criado, alterado ou removido durante a selecao.
+    """
     contas = google_authorized_accounts()
     if not contas:
         raise RuntimeError("Nenhuma conta Google Drive autorizada foi encontrada.")
@@ -1148,6 +1157,9 @@ def health():
 
 @app.get("/db-test")
 def db_test():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -1173,6 +1185,9 @@ def db_test():
 
 @app.get("/crypto-test")
 def crypto_test():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
     try:
         original = "automacao-murici-teste"
 
@@ -1262,6 +1277,9 @@ def google_drive_router_route():
 
 @app.get("/storage-test")
 def storage_test():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
     try:
         test_value = "teste-storage-automacao-murici"
         encrypted_value = encrypt_value(test_value)
