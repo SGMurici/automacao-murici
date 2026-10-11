@@ -18,7 +18,10 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY")
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=os.environ.get("FLASK_ENV") == "production",
+    SESSION_COOKIE_SECURE=(
+        os.environ.get("FLASK_ENV", "").lower() == "production"
+        or os.environ.get("RENDER", "").lower() == "true"
+    ),
     MAX_CONTENT_LENGTH=1 * 1024 * 1024,
 )
 
@@ -50,7 +53,8 @@ LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
 LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
 LINKEDIN_USERINFO_URL = "https://api.linkedin.com/v2/userinfo"
 
-LINKEDIN_PUBLISH_URL = "https://api.linkedin.com/v2/ugcPosts"
+LINKEDIN_PUBLISH_URL = "https://api.linkedin.com/rest/posts"
+LINKEDIN_API_VERSION = os.environ.get("LINKEDIN_API_VERSION", "202608")
 
 LINKEDIN_ANALYTICS_URL = (
     "https://api.linkedin.com/rest/memberCreatorPostAnalytics"
@@ -59,6 +63,12 @@ LINKEDIN_ANALYTICS_URL = (
 LINKEDIN_ANALYTICS_VERSION = os.environ.get(
     "LINKEDIN_ANALYTICS_VERSION",
     "202608",
+)
+
+# Coleta automatica desativada por padrao; as metricas serao analisadas a partir de relatorios enviados manualmente.
+LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED = (
+    os.environ.get("LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
 )
 
 LINKEDIN_OAUTH_SCOPE = os.environ.get(
@@ -552,8 +562,12 @@ def google_drive_health_check():
                 "arquivos_acessiveis": teste.get("arquivos_acessiveis", 0),
                 "teste": "somente_leitura",
             })
-        except Exception as error:
-            resultado["mensagem"] = str(error)
+        except Exception:
+            app.logger.exception(
+                "Falha na verificacao somente leitura do Google Drive para conta=%s",
+                account_name,
+            )
+            resultado["mensagem"] = "Falha na verificacao; consulte os logs do servidor."
         resultados.append(resultado)
 
     total = len(resultados)
@@ -712,22 +726,20 @@ def publish_linkedin_text(commentary):
 
     payload = {
         "author": author_urn,
-        "lifecycleState": "PUBLISHED",
-        "specificContent": {
-            "com.linkedin.ugc.ShareContent": {
-                "shareCommentary": {
-                    "text": commentary
-                },
-                "shareMediaCategory": "NONE"
-            }
+        "commentary": commentary,
+        "visibility": "PUBLIC",
+        "distribution": {
+            "feedDistribution": "MAIN_FEED",
+            "targetEntities": [],
+            "thirdPartyDistributionChannels": [],
         },
-        "visibility": {
-            "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
-        }
+        "lifecycleState": "PUBLISHED",
+        "isReshareDisabledByAuthor": False,
     }
 
     headers = {
         "Authorization": f"Bearer {access_token}",
+        "Linkedin-Version": LINKEDIN_API_VERSION,
         "X-Restli-Protocol-Version": "2.0.0",
         "Content-Type": "application/json",
     }
@@ -782,14 +794,15 @@ def analytics_count(element):
         return None
 
     if isinstance(value, int):
-        return value
+        return value if value >= 0 else None
 
     if isinstance(value, float):
-        return int(value)
+        return int(value) if value >= 0 else None
 
     if isinstance(value, str):
         try:
-            return int(value)
+            parsed = int(value)
+            return parsed if parsed >= 0 else None
         except ValueError:
             return None
 
@@ -799,7 +812,21 @@ def analytics_count(element):
 def linkedin_post_analytics(post_id):
     """
     Consulta as metricas oficiais de uma publicacao especifica.
+
+    A API do LinkedIn exige o tipo de URN correto no finder `entity`:
+    `ugc` para urn:li:ugcPost e `share` para urn:li:share.
     """
+
+    if not isinstance(post_id, str):
+        raise ValueError("linkedin_post_id deve ser uma URN do LinkedIn.")
+    if post_id.startswith("urn:li:ugcPost:"):
+        entity_type = "ugc"
+    elif post_id.startswith("urn:li:share:"):
+        entity_type = "share"
+    else:
+        raise ValueError(
+            "Tipo de linkedin_post_id nao reconhecido; esperado urn:li:ugcPost ou urn:li:share."
+        )
 
     access_token = linkedin_token_from_database()
 
@@ -823,6 +850,7 @@ def linkedin_post_analytics(post_id):
     ]
 
     encoded_urn = urllib.parse.quote(post_id, safe="")
+    entity_filter = f"({entity_type}:{encoded_urn})"
 
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -838,7 +866,7 @@ def linkedin_post_analytics(post_id):
         url = (
             f"{LINKEDIN_ANALYTICS_URL}"
             f"?q=entity"
-            f"&entity=(share:{encoded_urn})"
+            f"&entity={entity_filter}"
             f"&queryType={urllib.parse.quote(metric_type, safe='')}"
             f"&aggregation=TOTAL"
         )
@@ -1198,13 +1226,9 @@ def db_test():
             }
         )
 
-    except Exception as error:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": str(error),
-            }
-        ), 500
+    except Exception:
+        app.logger.exception("Falha no teste de conexao com PostgreSQL")
+        return safe_error_response("Falha na conexao com PostgreSQL. Consulte os logs do servidor.")
 
 
 @app.get("/crypto-test")
@@ -1231,13 +1255,9 @@ def crypto_test():
             }
         )
 
-    except Exception as error:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": str(error),
-            }
-        ), 500
+    except Exception:
+        app.logger.exception("Falha no teste de criptografia")
+        return safe_error_response("Falha no teste de criptografia. Consulte os logs do servidor.")
 
 
 @app.get("/google-drive/accounts")
@@ -1816,14 +1836,33 @@ def linkedin_publish():
     title = data.get("title")
     post_number = data.get("post_number")
 
-    if not commentary or not isinstance(commentary, str):
+    if not isinstance(commentary, str) or len(commentary.strip()) < 10:
         return jsonify(
             {
                 "status": "erro",
-                "mensagem": "O campo content e obrigatorio.",
+                "mensagem": "O campo content deve conter ao menos 10 caracteres.",
             }
         ), 400
 
+    if title is not None and not isinstance(title, str):
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": "title deve ser texto ou nulo.",
+            }
+        ), 400
+
+    if post_number is not None:
+        if isinstance(post_number, bool):
+            return jsonify({"status": "erro", "mensagem": "post_number deve ser um inteiro positivo."}), 400
+        try:
+            post_number = int(post_number)
+        except (TypeError, ValueError):
+            return jsonify({"status": "erro", "mensagem": "post_number deve ser um inteiro positivo."}), 400
+        if post_number < 1:
+            return jsonify({"status": "erro", "mensagem": "post_number deve ser um inteiro positivo."}), 400
+
+    post_id = None
     try:
         post_id = publish_linkedin_text(commentary)
 
@@ -1873,13 +1912,24 @@ def linkedin_publish():
             }
         )
 
-    except Exception as error:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": str(error),
-            }
-        ), 500
+    except Exception:
+        app.logger.exception(
+            "Falha na publicacao direta; linkedin_post_id_retornado=%s",
+            bool(post_id),
+        )
+        if post_id:
+            return jsonify({
+                "status": "reconciliacao_manual",
+                "mensagem": (
+                    "O LinkedIn retornou um identificador, mas o registro local falhou. "
+                    "Confira a publicacao no LinkedIn antes de tentar novamente."
+                ),
+                "linkedin_post_id": post_id,
+                "reconciliacao_manual": True,
+            }), 500
+        return safe_error_response(
+            "Nao foi possivel confirmar a publicacao. Consulte os logs antes de tentar novamente."
+        )
 
 
 @app.post("/scheduler/queue")
@@ -1925,6 +1975,19 @@ def scheduler_queue():
     post_number = data.get("post_number")
     scheduled_for = data.get("scheduled_for")
 
+    if title is not None and not isinstance(title, str):
+        return jsonify({"status": "erro", "mensagem": "title deve ser texto ou nulo."}), 400
+
+    if post_number is not None:
+        if isinstance(post_number, bool):
+            return jsonify({"status": "erro", "mensagem": "post_number deve ser um inteiro positivo."}), 400
+        try:
+            post_number = int(post_number)
+        except (TypeError, ValueError):
+            return jsonify({"status": "erro", "mensagem": "post_number deve ser um inteiro positivo."}), 400
+        if post_number < 1:
+            return jsonify({"status": "erro", "mensagem": "post_number deve ser um inteiro positivo."}), 400
+
     if not content or not isinstance(content, str):
         return jsonify(
             {
@@ -1960,18 +2023,6 @@ def scheduler_queue():
             with conn.cursor() as cur:
 
                 if post_number is not None:
-                    try:
-                        post_number = int(post_number)
-                    except (TypeError, ValueError):
-                        return jsonify(
-                            {
-                                "status": "erro",
-                                "mensagem": (
-                                    "post_number deve ser numerico."
-                                ),
-                            }
-                        ), 400
-
                     cur.execute(
                         """
                         SELECT id
@@ -2058,13 +2109,9 @@ def scheduler_queue():
             }
         ), 409
 
-    except Exception as error:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": str(error),
-            }
-        ), 500
+    except Exception:
+        app.logger.exception("Falha ao enfileirar publicacao")
+        return safe_error_response("Falha ao adicionar a publicacao na fila. Consulte os logs do servidor.")
 
 
 @app.get("/scheduler/status")
@@ -2149,13 +2196,9 @@ def scheduler_status():
             }
         )
 
-    except Exception as error:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": str(error),
-            }
-        ), 500
+    except Exception:
+        app.logger.exception("Falha ao consultar status do scheduler")
+        return safe_error_response("Falha ao consultar a fila. Consulte os logs do servidor.")
 
 
 @app.post("/scheduler/run")
@@ -2185,13 +2228,9 @@ def scheduler_run():
 
         return jsonify(result), 500
 
-    except Exception as error:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": str(error),
-            }
-        ), 500
+    except Exception:
+        app.logger.exception("Falha na execucao do scheduler")
+        return safe_error_response("Falha na execucao do scheduler. Consulte os logs do servidor.")
 
 
 @app.get("/analytics/prepare")
@@ -2217,13 +2256,9 @@ def analytics_prepare():
             }
         )
 
-    except Exception as error:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": str(error),
-            }
-        ), 500
+    except Exception:
+        app.logger.exception("Falha ao preparar tabelas de analytics")
+        return safe_error_response("Falha ao preparar as tabelas de analytics. Consulte os logs do servidor.")
 
 
 @app.post("/analytics/record")
@@ -2444,9 +2479,20 @@ def analytics_record():
 @app.post("/analytics/collect")
 def analytics_collect():
     """
-    Consulta as metricas oficiais do LinkedIn para as publicacoes
-    que possuem linkedin_post_id no editorial_posts.
+    Coleta automatica opcional. Fica desativada enquanto as metricas
+    forem tratadas por relatorios enviados manualmente.
     """
+
+    if not LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED:
+        return jsonify(
+            {
+                "status": "desativado",
+                "mensagem": (
+                    "A coleta automatica esta desativada. Envie os relatorios "
+                    "do LinkedIn manualmente para analise."
+                ),
+            }
+        ), 410
 
     auth_error = require_publish_secret()
 
@@ -2685,10 +2731,11 @@ def analytics_collect():
 
                     conn.commit()
 
+                app.logger.exception("Falha na coleta de analytics do LinkedIn para run_id=%s", run_id)
                 return jsonify(
                     {
                         "status": "erro",
-                        "mensagem": str(error),
+                        "mensagem": "Falha na coleta de analytics. Consulte os logs do servidor.",
                         "run_id": run_id,
                         "posts_found": posts_found,
                         "posts_updated": posts_updated,
@@ -2764,10 +2811,11 @@ def analytics_collect():
             except Exception:
                 pass
 
+        app.logger.exception("Falha geral na coleta de analytics do LinkedIn para run_id=%s", run_id)
         return jsonify(
             {
                 "status": "erro",
-                "mensagem": str(error),
+                "mensagem": "Falha na coleta de analytics. Consulte os logs do servidor.",
                 "run_id": run_id,
                 "posts_found": posts_found,
                 "posts_updated": posts_updated,
