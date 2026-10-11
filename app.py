@@ -15,6 +15,12 @@ from cryptography.fernet import Fernet
 app = Flask(__name__)
 
 app.secret_key = os.environ.get("FLASK_SECRET_KEY")
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("FLASK_ENV") == "production",
+    MAX_CONTENT_LENGTH=1 * 1024 * 1024,
+)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -83,7 +89,23 @@ def get_db_connection():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL nao configurado.")
 
-    return psycopg.connect(DATABASE_URL)
+    return psycopg.connect(DATABASE_URL, connect_timeout=10)
+
+
+def require_session_secret():
+    """Evita iniciar fluxos OAuth com sessoes Flask sem chave segura."""
+    if not app.secret_key:
+        app.logger.error("FLASK_SECRET_KEY nao configurado")
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Configuracao de sessao indisponivel no servidor.",
+        }), 500
+    return None
+
+
+def safe_error_response(message="Falha interna. Consulte os logs do servidor.", status=500):
+    """Resposta externa sem expor SQL, tokens ou detalhes internos."""
+    return jsonify({"status": "erro", "mensagem": message}), status
 
 
 def get_fernet():
@@ -1202,7 +1224,10 @@ def google_drive_accounts_route():
 
 @app.get("/google-drive/check")
 def google_drive_check_route():
-    """Teste somente leitura; nao exige PUBLISH_SECRET e nao altera o Drive."""
+    """Verifica acesso ao Drive; pode renovar tokens armazenados no banco."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
     try:
         account_name = normalize_google_account_name(request.args.get("account", "Drive5"))
         return jsonify(google_drive_readonly_check(account_name))
@@ -1299,6 +1324,9 @@ def storage_test():
 
 @app.get("/linkedin/login")
 def linkedin_login():
+    session_error = require_session_secret()
+    if session_error:
+        return session_error
     if not LINKEDIN_CLIENT_ID:
         return jsonify(
             {
@@ -1329,6 +1357,9 @@ def linkedin_login():
 
 @app.get("/linkedin/callback")
 def linkedin_callback():
+    session_error = require_session_secret()
+    if session_error:
+        return session_error
     error = request.args.get("error")
 
     if error:
@@ -1509,6 +1540,9 @@ def linkedin_callback():
 
 @app.get("/google/login")
 def google_login():
+    session_error = require_session_secret()
+    if session_error:
+        return session_error
     if not GOOGLE_CLIENT_ID:
         return jsonify(
             {
@@ -1547,6 +1581,9 @@ def google_login():
 
 @app.get("/google/callback")
 def google_callback():
+    session_error = require_session_secret()
+    if session_error:
+        return session_error
     error = request.args.get("error")
 
     if error:
