@@ -1093,31 +1093,60 @@ def scheduler_publish_one():
             }
 
         except Exception as error:
-            with get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE linkedin_publish_queue
-                        SET
-                            status = 'erro',
-                            error_message = %s,
-                            updated_at = NOW(),
-                            locked_at = NULL
-                        WHERE id = %s;
-                        """,
-                        (str(error), queue_id),
-                    )
-                conn.commit()
+            app.logger.exception(
+                "Falha no processamento da fila id=%s, post_number=%s; "
+                "post_id_retornado=%s",
+                queue_id,
+                post_number,
+                bool(locals().get("post_id")),
+            )
+            # If LinkedIn returned an ID, publication may already exist even if
+            # the local DB write failed. Keep the row out of automatic retries.
+            if locals().get("post_id"):
+                safe_message = (
+                    "O LinkedIn pode ter recebido a publicacao, mas o registro local falhou. "
+                    "Confira a publicacao no LinkedIn antes de qualquer nova tentativa."
+                )
+                stored_error = (
+                    "RECONCILIACAO MANUAL NECESSARIA: LinkedIn retornou um identificador, "
+                    "mas o processamento local falhou. Consulte os logs do servidor."
+                )
+            else:
+                safe_message = (
+                    "A publicacao falhou e nao sera repetida automaticamente. "
+                    "Consulte os logs para identificar a causa."
+                )
+                stored_error = (
+                    "Falha antes da confirmacao da publicacao no LinkedIn. "
+                    "Consulte os logs do servidor para detalhes."
+                )
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE linkedin_publish_queue
+                            SET
+                                status = 'erro',
+                                error_message = %s,
+                                updated_at = NOW(),
+                                locked_at = NULL
+                            WHERE id = %s;
+                            """,
+                            (stored_error, queue_id),
+                        )
+                    conn.commit()
+            except Exception:
+                app.logger.exception(
+                    "Tambem falhou a gravacao do erro na fila id=%s", queue_id
+                )
 
             return {
                 "status": "erro",
-                "mensagem": (
-                    "A publicacao foi retirada do processamento porque ocorreu "
-                    "um erro. Ela nao sera republicada automaticamente para evitar duplicidade."
-                ),
-                "detalhe": str(error),
+                "mensagem": safe_message,
                 "queue_id": queue_id,
                 "post_number": post_number,
+                "reconciliacao_manual": bool(locals().get("post_id")),
             }
 
     finally:
@@ -1218,8 +1247,9 @@ def google_drive_accounts_route():
         return auth_error
     try:
         return jsonify({"status": "ok", "contas": google_authorized_accounts()})
-    except Exception as error:
-        return jsonify({"status": "erro", "mensagem": str(error)}), 500
+    except Exception:
+        app.logger.exception("Falha na rota /google-drive/accounts")
+        return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
 
 
 @app.get("/google-drive/check")
@@ -1233,10 +1263,11 @@ def google_drive_check_route():
         return jsonify(google_drive_readonly_check(account_name))
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
-    except Exception as error:
-        return jsonify({"status": "erro", "mensagem": str(error)}), 500
+    except Exception:
+        app.logger.exception("Falha na rota /google-drive/check")
+        return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
 
-@app.get("/google-drive/test")
+@app.post("/google-drive/test")
 def google_drive_test_route():
     auth_error = require_publish_secret()
     if auth_error:
@@ -1246,8 +1277,9 @@ def google_drive_test_route():
         return jsonify(google_drive_test(account_name))
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
-    except Exception as error:
-        return jsonify({"status": "erro", "mensagem": str(error)}), 500
+    except Exception:
+        app.logger.exception("Falha na rota /google-drive/test")
+        return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
 
 @app.get("/google-drive/health")
 def google_drive_health_route():
@@ -1256,8 +1288,9 @@ def google_drive_health_route():
         return auth_error
     try:
         return jsonify(google_drive_health_check())
-    except Exception as error:
-        return jsonify({"status": "erro", "mensagem": str(error)}), 500
+    except Exception:
+        app.logger.exception("Falha na rota /google-drive/health")
+        return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
 
 
 @app.get("/google-drive/router")
@@ -1270,11 +1303,12 @@ def google_drive_router_route():
         return jsonify(google_drive_route_account(preferred))
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
-    except Exception as error:
-        return jsonify({"status": "erro", "mensagem": str(error)}), 500
+    except Exception:
+        app.logger.exception("Falha na rota /google-drive/router")
+        return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
 
 
-@app.get("/storage-test")
+@app.post("/storage-test")
 def storage_test():
     auth_error = require_publish_secret()
     if auth_error:
@@ -2225,11 +2259,45 @@ def analytics_record():
 
     linkedin_post_id = data.get("linkedin_post_id")
 
-    if not linkedin_post_id:
+    if not isinstance(linkedin_post_id, str) or not linkedin_post_id.strip():
         return jsonify(
             {
                 "status": "erro",
-                "mensagem": "linkedin_post_id e obrigatorio.",
+                "mensagem": "linkedin_post_id deve ser um texto nao vazio.",
+            }
+        ), 400
+    linkedin_post_id = linkedin_post_id.strip()
+    if len(linkedin_post_id) > 512:
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": "linkedin_post_id excede o tamanho permitido.",
+            }
+        ), 400
+
+    metric_fields = (
+        "impressions", "members_reached", "reactions", "comments", "reposts",
+        "post_saves", "post_sends", "link_clicks", "premium_cta_clicks",
+        "followers_gained_from_content", "profile_views_from_content", "engagement_total",
+    )
+    for field in metric_fields:
+        value = data.get(field)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
+            return jsonify(
+                {
+                    "status": "erro",
+                    "mensagem": f"{field} deve ser um inteiro nao negativo ou nulo.",
+                }
+            ), 400
+
+    source = data.get("source", "manual")
+    if not isinstance(source, str) or source not in {"manual", "linkedin_api"}:
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": "source deve ser 'manual' ou 'linkedin_api'.",
             }
         ), 400
 
@@ -2346,7 +2414,7 @@ def analytics_record():
                         followers_gained,
                         profile_views,
                         engagement_total,
-                        data.get("source", "manual"),
+                        source,
                     ),
                 )
 
@@ -2363,11 +2431,12 @@ def analytics_record():
             }
         )
 
-    except Exception as error:
+    except Exception:
+        app.logger.exception("Falha ao registrar metricas do LinkedIn")
         return jsonify(
             {
                 "status": "erro",
-                "mensagem": str(error),
+                "mensagem": "Nao foi possivel registrar as metricas. Consulte os logs do servidor.",
             }
         ), 500
 
