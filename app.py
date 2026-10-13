@@ -1151,80 +1151,86 @@ def home():
     )
 
 
-@app.get("/diagnostico")
+@app.route("/diagnostico", methods=["GET", "POST"])
 def diagnostico_page():
-    """Pagina simples para executar verificacoes protegidas pelo segredo de publicacao."""
+    """Pagina de diagnostico sem JavaScript; executa testes no servidor."""
+    import html
+
+    resultados = []
+    status_geral = None
+
+    if request.method == "POST":
+        provided_secret = request.form.get("publish_secret", "")
+        if not PUBLISH_SECRET:
+            status_geral = "PUBLISH_SECRET nao esta configurado no servidor."
+        elif not provided_secret or not secrets.compare_digest(provided_secret, PUBLISH_SECRET):
+            status_geral = "Chave incorreta. Confira a chave configurada no Render e tente novamente."
+        else:
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT NOW();")
+                        db_time = cur.fetchone()[0]
+                resultados.append(("Banco de dados", "OK", "Conexao com PostgreSQL funcionando."))
+            except Exception:
+                app.logger.exception("Falha no teste de banco pela pagina de diagnostico")
+                resultados.append(("Banco de dados", "ERRO", "Falha na conexao. Consulte os logs do Render."))
+
+            try:
+                original = "automacao-murici-diagnostico"
+                if decrypt_value(encrypt_value(original)) != original:
+                    raise RuntimeError("Validacao de criptografia falhou")
+                resultados.append(("Criptografia", "OK", "Criptografia e descriptografia funcionando."))
+            except Exception:
+                app.logger.exception("Falha no teste de criptografia pela pagina de diagnostico")
+                resultados.append(("Criptografia", "ERRO", "Falha na criptografia. Consulte os logs do Render."))
+
+            try:
+                drive_result = google_drive_readonly_check("Drive5")
+                resultados.append(("Google Drive — Drive5", "OK", drive_result.get("mensagem", "Acesso somente leitura confirmado.")))
+            except Exception:
+                app.logger.exception("Falha no teste de leitura do Drive5 pela pagina de diagnostico")
+                resultados.append(("Google Drive — Drive5", "ERRO", "Falha no acesso somente leitura. Consulte os logs do Render."))
+
+    result_html = ""
+    if status_geral:
+        result_html = '<p class="error">' + html.escape(status_geral) + '</p>'
+    elif resultados:
+        cards = []
+        for nome, status, mensagem in resultados:
+            classe = "ok" if status == "OK" else "error"
+            cards.append(
+                '<section class="result"><h2>' + html.escape(nome) + ' — '
+                + html.escape(status) + '</h2><p class="' + classe + '">'
+                + html.escape(mensagem) + '</p></section>'
+            )
+        result_html = "\n".join(cards)
+    else:
+        result_html = '<p>Preencha a chave e toque em “Executar verificações”.</p>'
+
     return """<!doctype html>
-<html lang="pt-BR">
-<head>
-<meta charset="utf-8">
+<html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title>Diagnóstico | Automação Murici</title>
 <style>
-body{font-family:system-ui,-apple-system,sans-serif;max-width:760px;margin:0 auto;padding:22px;line-height:1.5;color:#202124;background:#f7f8fa}
+body{font-family:system-ui,-apple-system,sans-serif;max-width:760px;margin:0 auto;padding:18px;line-height:1.5;color:#202124;background:#f7f8fa}
 main{background:#fff;border:1px solid #dadce0;border-radius:14px;padding:20px}
 h1{font-size:1.5rem;margin-top:0}p{color:#444}
 label{display:block;font-weight:600;margin:16px 0 6px}
 input{box-sizing:border-box;width:100%;padding:12px;border:1px solid #999;border-radius:8px;font-size:16px}
 button{margin-top:14px;padding:12px 16px;border:0;border-radius:8px;background:#174ea6;color:white;font-size:16px;font-weight:600}
-button:disabled{opacity:.6}
-pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f1f3f4;padding:12px;border-radius:8px}
-.small{font-size:.9rem;color:#555}
-</style>
-</head>
-<body><main>
+.result{border-top:1px solid #ddd;margin-top:16px;padding-top:8px}.ok{color:#137333}.error{color:#b3261e}.small{font-size:.9rem;color:#555}
+</style></head><body><main>
 <h1>Diagnóstico da Automação Murici</h1>
-<p>Esta página testa a conexão com o banco, a criptografia e o acesso somente de leitura ao Google Drive da conta Drive5.</p>
-<p class="small">A chave é usada apenas nos cabeçalhos das solicitações desta página. Não é gravada no navegador nem enviada a outro domínio. Use apenas em um dispositivo confiável.</p>
-<label for="secret">Chave de publicação (PUBLISH_SECRET)</label>
-<input id="secret" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Digite a chave configurada no Render">
-<button id="run" type="button">Executar verificações</button>
-<h2>Resultados</h2><pre id="results" aria-live="polite">Aguardando execução.</pre>
-</main>
-<script>
-const button=document.getElementById('run');
-const secretInput=document.getElementById('secret');
-const results=document.getElementById('results');
-const checks=[
-  ['Banco de dados','/db-test'],
-  ['Criptografia','/crypto-test'],
-  ['Google Drive — Drive5','/google-drive/check?account=Drive5']
-];
-
-if (!button || !secretInput || !results) {
-  document.body.insertAdjacentHTML('afterbegin','<p style="padding:12px;background:#fee;color:#900">Erro: elementos do diagnóstico não foram encontrados. Recarregue a página.</p>');
-} else {
-  results.textContent='Página carregada. Preencha a chave e toque em “Executar verificações”.';
-  button.addEventListener('click',async()=>{
-    const secret=secretInput.value;
-    if(!secret){results.textContent='Informe a chave de publicação.';secretInput.focus();return;}
-    button.disabled=true;
-    results.textContent='Executando verificações…';
-    const lines=[];
-    try {
-      for(const [label,path] of checks){
-        try {
-          const response=await fetch(path,{method:'GET',headers:{'X-Publish-Secret':secret},cache:'no-store',credentials:'same-origin'});
-          let body;
-          try { body=await response.json(); }
-          catch(_) { body={mensagem:'Resposta não reconhecida.'}; }
-          lines.push(label+' — HTTP '+response.status+'\n'+JSON.stringify(body,null,2));
-        } catch(error) {
-          lines.push(label+' — falha de rede: '+String(error));
-        }
-        results.textContent=lines.join('\n\n');
-      }
-    } catch(error) {
-      results.textContent=lines.join('\n\n')+'\n\nErro inesperado: '+String(error);
-    } finally {
-      secretInput.value='';
-      button.disabled=false;
-    }
-  });
-}
-</script>
-</body></html>"""
+<p>Executa verificações do banco de dados, da criptografia e do acesso somente de leitura ao Google Drive da conta Drive5.</p>
+<p class="small">A chave é enviada somente para este servidor por HTTPS e não é exibida nos resultados. Use apenas em dispositivo confiável. Este diagnóstico não cria, altera ou exclui arquivos no Drive.</p>
+<form method="post" action="/diagnostico" autocomplete="off">
+<label for="publish_secret">Chave de publicação (PUBLISH_SECRET)</label>
+<input id="publish_secret" name="publish_secret" type="password" required autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Digite a chave configurada no Render">
+<button type="submit">Executar verificações</button>
+</form><h2>Resultados</h2>""" + result_html + """
+</main></body></html>"""
 
 
 @app.get("/health")
