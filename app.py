@@ -1191,27 +1191,38 @@ const checks=[
   ['Criptografia','/crypto-test'],
   ['Google Drive — Drive5','/google-drive/check?account=Drive5']
 ];
-button.addEventListener('click',async()=>{
-  const secret=secretInput.value;
-  if(!secret){results.textContent='Informe a chave de publicação.';return;}
-  button.disabled=true;
-  results.textContent='Executando verificações…';
-  const lines=[];
-  try{
-    for(const [label,path] of checks){
-      try{
-        const response=await fetch(path,{method:'GET',headers:{'X-Publish-Secret':secret},cache:'no-store',credentials:'same-origin'});
-        let body;
-        try{body=await response.json();}catch(_){body={mensagem:'Resposta não reconhecida.'};}
-        lines.push(label+' — HTTP '+response.status+'\n'+JSON.stringify(body,null,2));
-      }catch(error){lines.push(label+' — falha de rede: '+String(error));}
-      results.textContent=lines.join('\n\n');
+
+if (!button || !secretInput || !results) {
+  document.body.insertAdjacentHTML('afterbegin','<p style="padding:12px;background:#fee;color:#900">Erro: elementos do diagnóstico não foram encontrados. Recarregue a página.</p>');
+} else {
+  results.textContent='Página carregada. Preencha a chave e toque em “Executar verificações”.';
+  button.addEventListener('click',async()=>{
+    const secret=secretInput.value;
+    if(!secret){results.textContent='Informe a chave de publicação.';secretInput.focus();return;}
+    button.disabled=true;
+    results.textContent='Executando verificações…';
+    const lines=[];
+    try {
+      for(const [label,path] of checks){
+        try {
+          const response=await fetch(path,{method:'GET',headers:{'X-Publish-Secret':secret},cache:'no-store',credentials:'same-origin'});
+          let body;
+          try { body=await response.json(); }
+          catch(_) { body={mensagem:'Resposta não reconhecida.'}; }
+          lines.push(label+' — HTTP '+response.status+'\n'+JSON.stringify(body,null,2));
+        } catch(error) {
+          lines.push(label+' — falha de rede: '+String(error));
+        }
+        results.textContent=lines.join('\n\n');
+      }
+    } catch(error) {
+      results.textContent=lines.join('\n\n')+'\n\nErro inesperado: '+String(error);
+    } finally {
+      secretInput.value='';
+      button.disabled=false;
     }
-  }finally{
-    secretInput.value='';
-    button.disabled=false;
-  }
-});
+  });
+}
 </script>
 </body></html>"""
 
