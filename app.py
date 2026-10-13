@@ -1151,6 +1151,71 @@ def home():
     )
 
 
+@app.get("/diagnostico")
+def diagnostico_page():
+    """Pagina simples para executar verificacoes protegidas pelo segredo de publicacao."""
+    return """<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Diagnóstico | Automação Murici</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;max-width:760px;margin:0 auto;padding:22px;line-height:1.5;color:#202124;background:#f7f8fa}
+main{background:#fff;border:1px solid #dadce0;border-radius:14px;padding:20px}
+h1{font-size:1.5rem;margin-top:0}p{color:#444}
+label{display:block;font-weight:600;margin:16px 0 6px}
+input{box-sizing:border-box;width:100%;padding:12px;border:1px solid #999;border-radius:8px;font-size:16px}
+button{margin-top:14px;padding:12px 16px;border:0;border-radius:8px;background:#174ea6;color:white;font-size:16px;font-weight:600}
+button:disabled{opacity:.6}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f1f3f4;padding:12px;border-radius:8px}
+.small{font-size:.9rem;color:#555}
+</style>
+</head>
+<body><main>
+<h1>Diagnóstico da Automação Murici</h1>
+<p>Esta página testa a conexão com o banco, a criptografia e o acesso somente de leitura ao Google Drive da conta Drive5.</p>
+<p class="small">A chave é usada apenas nos cabeçalhos das solicitações desta página. Não é gravada no navegador nem enviada a outro domínio. Use apenas em um dispositivo confiável.</p>
+<label for="secret">Chave de publicação (PUBLISH_SECRET)</label>
+<input id="secret" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Digite a chave configurada no Render">
+<button id="run" type="button">Executar verificações</button>
+<h2>Resultados</h2><pre id="results" aria-live="polite">Aguardando execução.</pre>
+</main>
+<script>
+const button=document.getElementById('run');
+const secretInput=document.getElementById('secret');
+const results=document.getElementById('results');
+const checks=[
+  ['Banco de dados','/db-test'],
+  ['Criptografia','/crypto-test'],
+  ['Google Drive — Drive5','/google-drive/check?account=Drive5']
+];
+button.addEventListener('click',async()=>{
+  const secret=secretInput.value;
+  if(!secret){results.textContent='Informe a chave de publicação.';return;}
+  button.disabled=true;
+  results.textContent='Executando verificações…';
+  const lines=[];
+  try{
+    for(const [label,path] of checks){
+      try{
+        const response=await fetch(path,{method:'GET',headers:{'X-Publish-Secret':secret},cache:'no-store',credentials:'same-origin'});
+        let body;
+        try{body=await response.json();}catch(_){body={mensagem:'Resposta não reconhecida.'};}
+        lines.push(label+' — HTTP '+response.status+'\n'+JSON.stringify(body,null,2));
+      }catch(error){lines.push(label+' — falha de rede: '+String(error));}
+      results.textContent=lines.join('\n\n');
+    }
+  }finally{
+    secretInput.value='';
+    button.disabled=false;
+  }
+});
+</script>
+</body></html>"""
+
+
 @app.get("/health")
 def health():
     return jsonify(
