@@ -65,11 +65,9 @@ LINKEDIN_ANALYTICS_VERSION = os.environ.get(
     "202608",
 )
 
-# Coleta automatica desativada por padrao; as metricas serao analisadas a partir de relatorios enviados manualmente.
-LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED = (
-    os.environ.get("LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED", "false").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
+# As metricas do LinkedIn sao tratadas exclusivamente a partir de relatorios
+# fornecidos manualmente. Uma variavel de ambiente nao pode reativar a coleta.
+LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED = False
 
 LINKEDIN_OAUTH_SCOPE = os.environ.get(
     "LINKEDIN_OAUTH_SCOPE",
@@ -406,17 +404,23 @@ def google_tokens_from_database(account_name="Drive5"):
 
 
 def google_authorized_accounts():
-    """Lista somente metadados das contas Google autorizadas."""
+    """Retorna somente metadados da conta Google autorizada: Drive5."""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT account_name, provider, token_expires_at, updated_at
                 FROM google_accounts
-                ORDER BY account_name;
-                """
+                WHERE account_name = %s
+                LIMIT 1;
+                """,
+                ("Drive5",),
             )
-            rows = cur.fetchall()
+            row = cur.fetchone()
+
+    if not row:
+        return []
+
     return [
         {
             "account_name": row[0],
@@ -424,9 +428,7 @@ def google_authorized_accounts():
             "token_expires_at": row[2].isoformat() if row[2] else None,
             "updated_at": row[3].isoformat() if row[3] else None,
         }
-        for row in rows
     ]
-
 
 def refresh_google_access_token(account_name="Drive5"):
     """Renova o access token da conta Google informada."""
@@ -2532,351 +2534,16 @@ def analytics_record():
 
 @app.post("/analytics/collect")
 def analytics_collect():
-    """
-    Coleta automatica opcional. Fica desativada enquanto as metricas
-    forem tratadas por relatorios enviados manualmente.
-    """
-
-    if not LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED:
-        return jsonify(
-            {
-                "status": "desativado",
-                "mensagem": (
-                    "A coleta automatica esta desativada. Envie os relatorios "
-                    "do LinkedIn manualmente para analise."
-                ),
-            }
-        ), 410
-
-    auth_error = require_publish_secret()
-
-    if auth_error:
-        return auth_error
-
-    run_id = None
-    posts_found = 0
-    posts_updated = 0
-    metrics_saved = 0
-
-    try:
-        ensure_analytics_tables()
-
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO linkedin_metrics_collection_runs (
-                        status
-                    )
-                    VALUES ('started')
-                    RETURNING id;
-                    """
-                )
-
-                run_id = cur.fetchone()[0]
-
-            conn.commit()
-
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT DISTINCT ON (linkedin_post_id)
-                        id,
-                        linkedin_post_id
-                    FROM editorial_posts
-                    WHERE linkedin_post_id IS NOT NULL
-                      AND TRIM(linkedin_post_id) <> ''
-                    ORDER BY linkedin_post_id, id DESC;
-                    """
-                )
-
-                posts = cur.fetchall()
-
-        posts_found = len(posts)
-
-        for editorial_post_id, linkedin_post_id in posts:
-
-            try:
-                metrics, _raw_payload = linkedin_post_analytics(
-                    linkedin_post_id
-                )
-
-                impressions = metrics.get("IMPRESSION")
-                members_reached = metrics.get(
-                    "MEMBERS_REACHED"
-                )
-                reactions = metrics.get("REACTION")
-                comments = metrics.get("COMMENT")
-                reposts = metrics.get("RESHARE")
-                post_saves = metrics.get("POST_SAVE")
-                post_sends = metrics.get("POST_SEND")
-                link_clicks = metrics.get("LINK_CLICKS")
-
-                premium_cta_clicks = metrics.get(
-                    "PREMIUM_CTA_CLICKS"
-                )
-
-                followers_gained = metrics.get(
-                    "FOLLOWER_GAINED_FROM_CONTENT"
-                )
-
-                profile_views = metrics.get(
-                    "PROFILE_VIEW_FROM_CONTENT"
-                )
-
-                engagement_total = calculate_engagement_total(
-                    metrics
-                )
-
-                with get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            INSERT INTO linkedin_post_metrics (
-                                editorial_post_id,
-                                linkedin_post_id,
-                                measured_at,
-                                impressions,
-                                members_reached,
-                                reactions,
-                                comments,
-                                reposts,
-                                post_saves,
-                                post_sends,
-                                link_clicks,
-                                premium_cta_clicks,
-                                followers_gained_from_content,
-                                profile_views_from_content,
-                                engagement_total,
-                                source
-                            )
-                            VALUES (
-                                %s,
-                                %s,
-                                NOW(),
-                                %s,
-                                %s,
-                                %s,
-                                %s,
-                                %s,
-                                %s,
-                                %s,
-                                %s,
-                                %s,
-                                %s,
-                                %s,
-                                %s,
-                                'linkedin_api'
-                            );
-                            """,
-                            (
-                                editorial_post_id,
-                                linkedin_post_id,
-                                impressions,
-                                members_reached,
-                                reactions,
-                                comments,
-                                reposts,
-                                post_saves,
-                                post_sends,
-                                link_clicks,
-                                premium_cta_clicks,
-                                followers_gained,
-                                profile_views,
-                                engagement_total,
-                            ),
-                        )
-
-                    conn.commit()
-
-                posts_updated += 1
-                metrics_saved += 1
-
-            except LinkedInAnalyticsError as error:
-
-                with get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            UPDATE linkedin_metrics_collection_runs
-                            SET
-                                finished_at = NOW(),
-                                status = %s,
-                                posts_found = %s,
-                                posts_updated = %s,
-                                metrics_saved = %s,
-                                error_message = %s
-                            WHERE id = %s;
-                            """,
-                            (
-                                (
-                                    "permission_required"
-                                    if error.status_code == 403
-                                    else "error"
-                                ),
-                                posts_found,
-                                posts_updated,
-                                metrics_saved,
-                                json.dumps(error.payload),
-                                run_id,
-                            ),
-                        )
-
-                    conn.commit()
-
-                if error.status_code == 403:
-                    return jsonify(
-                        {
-                            "status": "permission_required",
-                            "mensagem": (
-                                "O LinkedIn recusou a consulta de "
-                                "analytics. A aplicacao ainda precisa "
-                                "de acesso oficial a "
-                                "r_member_postAnalytics / "
-                                "Community Management API."
-                            ),
-                            "http_linkedin": error.status_code,
-                            "run_id": run_id,
-                            "posts_found": posts_found,
-                            "posts_updated": posts_updated,
-                        }
-                    ), 403
-
-                return jsonify(
-                    {
-                        "status": "erro",
-                        "mensagem": (
-                            "Falha ao consultar analytics "
-                            "do LinkedIn."
-                        ),
-                        "http_linkedin": error.status_code,
-                        "detalhe": error.payload,
-                        "run_id": run_id,
-                        "posts_found": posts_found,
-                        "posts_updated": posts_updated,
-                    }
-                ), 502
-
-            except Exception as error:
-
-                with get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            UPDATE linkedin_metrics_collection_runs
-                            SET
-                                finished_at = NOW(),
-                                status = 'error',
-                                posts_found = %s,
-                                posts_updated = %s,
-                                metrics_saved = %s,
-                                error_message = %s
-                            WHERE id = %s;
-                            """,
-                            (
-                                posts_found,
-                                posts_updated,
-                                metrics_saved,
-                                str(error),
-                                run_id,
-                            ),
-                        )
-
-                    conn.commit()
-
-                app.logger.exception("Falha na coleta de analytics do LinkedIn para run_id=%s", run_id)
-                return jsonify(
-                    {
-                        "status": "erro",
-                        "mensagem": "Falha na coleta de analytics. Consulte os logs do servidor.",
-                        "run_id": run_id,
-                        "posts_found": posts_found,
-                        "posts_updated": posts_updated,
-                    }
-                ), 500
-
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE linkedin_metrics_collection_runs
-                    SET
-                        finished_at = NOW(),
-                        status = 'completed',
-                        posts_found = %s,
-                        posts_updated = %s,
-                        metrics_saved = %s,
-                        error_message = NULL
-                    WHERE id = %s;
-                    """,
-                    (
-                        posts_found,
-                        posts_updated,
-                        metrics_saved,
-                        run_id,
-                    ),
-                )
-
-            conn.commit()
-
-        return jsonify(
-            {
-                "status": "completed",
-                "mensagem": (
-                    "Coleta de metricas do LinkedIn concluida."
-                ),
-                "run_id": run_id,
-                "posts_found": posts_found,
-                "posts_updated": posts_updated,
-                "metrics_saved": metrics_saved,
-            }
-        )
-
-    except Exception as error:
-
-        if run_id is not None:
-            try:
-                with get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            UPDATE linkedin_metrics_collection_runs
-                            SET
-                                finished_at = NOW(),
-                                status = 'error',
-                                posts_found = %s,
-                                posts_updated = %s,
-                                metrics_saved = %s,
-                                error_message = %s
-                            WHERE id = %s;
-                            """,
-                            (
-                                posts_found,
-                                posts_updated,
-                                metrics_saved,
-                                str(error),
-                                run_id,
-                            ),
-                        )
-
-                    conn.commit()
-
-            except Exception:
-                pass
-
-        app.logger.exception("Falha geral na coleta de analytics do LinkedIn para run_id=%s", run_id)
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Falha na coleta de analytics. Consulte os logs do servidor.",
-                "run_id": run_id,
-                "posts_found": posts_found,
-                "posts_updated": posts_updated,
-                "metrics_saved": metrics_saved,
-            }
-        ), 500
-
+    """Endpoint legado permanentemente desativado: metricas sao manuais."""
+    return jsonify(
+        {
+            "status": "desativado",
+            "mensagem": (
+                "A coleta automatica de metricas esta permanentemente desativada. "
+                "Envie os relatorios do LinkedIn manualmente para analise."
+            ),
+        }
+    ), 410
 
 if __name__ == "__main__":
     app.run(
