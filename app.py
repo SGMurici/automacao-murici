@@ -374,13 +374,18 @@ def linkedin_member_id_from_database():
 
 
 def normalize_google_account_name(account_name):
-    """Impede que a automacao use qualquer conta Google diferente de Drive5."""
-    if account_name is None or not str(account_name).strip():
+    """Valida o identificador lógico de uma conta Google Drive."""
+    if account_name is None:
         return "Drive5"
-    normalized = str(account_name).strip()
-    if normalized != "Drive5":
-        raise ValueError("Esta automacao esta configurada para usar exclusivamente a conta Drive5.")
-    return "Drive5"
+    account_name = str(account_name).strip()
+    if not account_name:
+        return "Drive5"
+    if len(account_name) > 50 or not account_name.startswith("Drive"):
+        raise ValueError("A conta Google deve usar o formato DriveN, por exemplo Drive5.")
+    suffix = account_name[5:]
+    if not suffix.isdigit():
+        raise ValueError("A conta Google deve usar o formato DriveN, por exemplo Drive5.")
+    return account_name
 
 
 def google_tokens_from_database(account_name="Drive5"):
@@ -540,48 +545,89 @@ def google_drive_readonly_check(account_name="Drive5"):
     }
 
 def google_drive_health_check():
-    """Verifica somente a conta Drive5, sem modificar arquivos no Drive."""
-    try:
-        teste = google_drive_readonly_check("Drive5")
-        return {
-            "status": "ok",
-            "total_contas": 1,
-            "contas_ok": 1,
-            "contas_com_erro": 0,
-            "contas": [{
-                "conta": "Drive5",
+    """Verifica todas as contas Google autorizadas sem modificar nenhum Drive."""
+    contas = google_authorized_accounts()
+    resultados = []
+
+    for conta in contas:
+        account_name = conta["account_name"]
+        resultado = {
+            "conta": account_name,
+            "status": "erro",
+        }
+        try:
+            teste = google_drive_readonly_check(account_name)
+            resultado.update({
                 "status": "ok",
                 "arquivos_acessiveis": teste.get("arquivos_acessiveis", 0),
                 "teste": "somente_leitura",
-            }],
-        }
-    except Exception:
-        app.logger.exception("Falha na verificacao somente leitura do Google Drive para Drive5")
-        return {
-            "status": "erro",
-            "total_contas": 1,
-            "contas_ok": 0,
-            "contas_com_erro": 1,
-            "contas": [{
-                "conta": "Drive5",
-                "status": "erro",
-                "mensagem": "Falha na verificacao; consulte os logs do servidor.",
-            }],
-        }
+            })
+        except Exception:
+            app.logger.exception(
+                "Falha na verificacao somente leitura do Google Drive para conta=%s",
+                account_name,
+            )
+            resultado["mensagem"] = "Falha na verificacao; consulte os logs do servidor."
+        resultados.append(resultado)
+
+    total = len(resultados)
+    saudaveis = sum(1 for item in resultados if item["status"] == "ok")
+
+    return {
+        "status": "ok" if total == saudaveis else "parcial",
+        "total_contas": total,
+        "contas_ok": saudaveis,
+        "contas_com_erro": total - saudaveis,
+        "contas": resultados,
+    }
 
 
 def google_drive_route_account(preferred_account=None):
-    """Valida somente Drive5; nunca faz fallback para outra conta."""
+    """Seleciona uma conta autorizada e funcional para uma operacao de Drive.
+
+    A conta preferida e respeitada quando existe e responde a uma leitura simples.
+    Se ela nao estiver disponivel, a funcao percorre as demais contas autorizadas.
+    Nenhum arquivo e criado, alterado ou removido durante a selecao.
+    """
+    contas = google_authorized_accounts()
+    if not contas:
+        raise RuntimeError("Nenhuma conta Google Drive autorizada foi encontrada.")
+
+    nomes = [item["account_name"] for item in contas]
+    candidatos = []
+
     if preferred_account:
-        normalize_google_account_name(preferred_account)
-    teste = google_drive_readonly_check("Drive5")
-    return {
-        "status": "ok",
-        "conta_selecionada": "Drive5",
-        "preferida": "Drive5",
-        "arquivos_acessiveis": teste.get("arquivos_acessiveis", 0),
-        "mensagem": "Conta Drive5 validada por leitura; nenhuma outra conta foi consultada.",
-    }
+        preferred = normalize_google_account_name(preferred_account)
+        if preferred in nomes:
+            candidatos.append(preferred)
+
+    candidatos.extend(
+        item["account_name"]
+        for item in contas
+        if item["account_name"] not in candidatos
+    )
+
+    erros = []
+
+    for account_name in candidatos:
+        try:
+            google_drive_readonly_check(account_name)
+            return {
+                "status": "ok",
+                "conta_selecionada": account_name,
+                "preferida": preferred_account,
+                "mensagem": "Conta Google Drive selecionada pelo roteador após validação somente leitura.",
+            }
+        except Exception as error:
+            erros.append({
+                "conta": account_name,
+                "erro": str(error),
+            })
+
+    raise RuntimeError(
+        "Nenhuma conta Google Drive disponível respondeu ao teste somente leitura. "
+        + json.dumps(erros, ensure_ascii=False)
+    )
 
 
 def google_drive_test(account_name="Drive5"):
@@ -1151,88 +1197,6 @@ def home():
     )
 
 
-@app.route("/diagnostico", methods=["GET", "POST"])
-def diagnostico_page():
-    """Pagina de diagnostico sem JavaScript; executa testes no servidor."""
-    import html
-
-    resultados = []
-    status_geral = None
-
-    if request.method == "POST":
-        provided_secret = request.form.get("publish_secret", "")
-        if not PUBLISH_SECRET:
-            status_geral = "PUBLISH_SECRET nao esta configurado no servidor."
-        elif not provided_secret or not secrets.compare_digest(provided_secret, PUBLISH_SECRET):
-            status_geral = "Chave incorreta. Confira a chave configurada no Render e tente novamente."
-        else:
-            try:
-                with get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT NOW();")
-                        db_time = cur.fetchone()[0]
-                resultados.append(("Banco de dados", "OK", "Conexao com PostgreSQL funcionando."))
-            except Exception:
-                app.logger.exception("Falha no teste de banco pela pagina de diagnostico")
-                resultados.append(("Banco de dados", "ERRO", "Falha na conexao. Consulte os logs do Render."))
-
-            try:
-                original = "automacao-murici-diagnostico"
-                if decrypt_value(encrypt_value(original)) != original:
-                    raise RuntimeError("Validacao de criptografia falhou")
-                resultados.append(("Criptografia", "OK", "Criptografia e descriptografia funcionando."))
-            except Exception:
-                app.logger.exception("Falha no teste de criptografia pela pagina de diagnostico")
-                resultados.append(("Criptografia", "ERRO", "Falha na criptografia. Consulte os logs do Render."))
-
-            try:
-                drive_result = google_drive_readonly_check("Drive5")
-                resultados.append(("Google Drive — Drive5", "OK", drive_result.get("mensagem", "Acesso somente leitura confirmado.")))
-            except Exception:
-                app.logger.exception("Falha no teste de leitura do Drive5 pela pagina de diagnostico")
-                resultados.append(("Google Drive — Drive5", "ERRO", "Falha no acesso somente leitura. Consulte os logs do Render."))
-
-    result_html = ""
-    if status_geral:
-        result_html = '<p class="error">' + html.escape(status_geral) + '</p>'
-    elif resultados:
-        cards = []
-        for nome, status, mensagem in resultados:
-            classe = "ok" if status == "OK" else "error"
-            cards.append(
-                '<section class="result"><h2>' + html.escape(nome) + ' — '
-                + html.escape(status) + '</h2><p class="' + classe + '">'
-                + html.escape(mensagem) + '</p></section>'
-            )
-        result_html = "\n".join(cards)
-    else:
-        result_html = '<p>Preencha a chave e toque em “Executar verificações”.</p>'
-
-    return """<!doctype html>
-<html lang="pt-BR"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex,nofollow">
-<title>Diagnóstico | Automação Murici</title>
-<style>
-body{font-family:system-ui,-apple-system,sans-serif;max-width:760px;margin:0 auto;padding:18px;line-height:1.5;color:#202124;background:#f7f8fa}
-main{background:#fff;border:1px solid #dadce0;border-radius:14px;padding:20px}
-h1{font-size:1.5rem;margin-top:0}p{color:#444}
-label{display:block;font-weight:600;margin:16px 0 6px}
-input{box-sizing:border-box;width:100%;padding:12px;border:1px solid #999;border-radius:8px;font-size:16px}
-button{margin-top:14px;padding:12px 16px;border:0;border-radius:8px;background:#174ea6;color:white;font-size:16px;font-weight:600}
-.result{border-top:1px solid #ddd;margin-top:16px;padding-top:8px}.ok{color:#137333}.error{color:#b3261e}.small{font-size:.9rem;color:#555}
-</style></head><body><main>
-<h1>Diagnóstico da Automação Murici</h1>
-<p>Executa verificações do banco de dados, da criptografia e do acesso somente de leitura ao Google Drive da conta Drive5.</p>
-<p class="small">A chave é enviada somente para este servidor por HTTPS e não é exibida nos resultados. Use apenas em dispositivo confiável. Este diagnóstico não cria, altera ou exclui arquivos no Drive.</p>
-<form method="post" action="/diagnostico" autocomplete="off">
-<label for="publish_secret">Chave de publicação (PUBLISH_SECRET)</label>
-<input id="publish_secret" name="publish_secret" type="password" required autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Digite a chave configurada no Render">
-<button type="submit">Executar verificações</button>
-</form><h2>Resultados</h2>""" + result_html + """
-</main></body></html>"""
-
-
 @app.get("/health")
 def health():
     return jsonify(
@@ -1302,8 +1266,7 @@ def google_drive_accounts_route():
     if auth_error:
         return auth_error
     try:
-        contas = [c for c in google_authorized_accounts() if c.get("account_name") == "Drive5"]
-        return jsonify({"status": "ok", "contas": contas})
+        return jsonify({"status": "ok", "contas": google_authorized_accounts()})
     except Exception:
         app.logger.exception("Falha na rota /google-drive/accounts")
         return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
@@ -2149,6 +2112,123 @@ def scheduler_queue():
     except Exception:
         app.logger.exception("Falha ao enfileirar publicacao")
         return safe_error_response("Falha ao adicionar a publicacao na fila. Consulte os logs do servidor.")
+
+
+
+@app.post("/scheduler/queue/batch")
+def scheduler_queue_batch():
+    """
+    Adiciona várias publicações à fila em uma única requisição.
+    Não publica imediatamente: cada item fica apenas agendado.
+    JSON: {"items": [{"post_number": 41, "title": "...", "content": "...",
+      "scheduled_for": "2026-11-08T09:00:00-03:00"}]}
+    """
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    if not request.is_json:
+        return jsonify({"status": "erro", "mensagem": "A requisicao deve utilizar JSON."}), 400
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        return jsonify({"status": "erro", "mensagem": "Envie um objeto JSON com uma lista 'items'."}), 400
+
+    items = data["items"]
+    if not items:
+        return jsonify({"status": "erro", "mensagem": "A lista items nao pode estar vazia."}), 400
+    if len(items) > 100:
+        return jsonify({"status": "erro", "mensagem": "Limite de 100 itens por requisicao."}), 400
+
+    normalized, seen_numbers = [], set()
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            return jsonify({"status": "erro", "item": index, "mensagem": "Cada item deve ser um objeto."}), 400
+        content, title = item.get("content"), item.get("title")
+        post_number, scheduled_for = item.get("post_number"), item.get("scheduled_for")
+        if not isinstance(content, str) or len(content.strip()) < 10:
+            return jsonify({"status": "erro", "item": index, "mensagem": "content deve conter ao menos 10 caracteres."}), 400
+        if title is not None and not isinstance(title, str):
+            return jsonify({"status": "erro", "item": index, "mensagem": "title deve ser texto ou nulo."}), 400
+        if post_number is not None:
+            if isinstance(post_number, bool):
+                return jsonify({"status": "erro", "item": index, "mensagem": "post_number deve ser um inteiro positivo."}), 400
+            try:
+                post_number = int(post_number)
+            except (TypeError, ValueError):
+                return jsonify({"status": "erro", "item": index, "mensagem": "post_number deve ser um inteiro positivo."}), 400
+            if post_number < 1:
+                return jsonify({"status": "erro", "item": index, "mensagem": "post_number deve ser um inteiro positivo."}), 400
+            if post_number in seen_numbers:
+                return jsonify({"status": "erro", "item": index, "mensagem": "Há post_number repetido dentro do lote.", "post_number": post_number}), 409
+            seen_numbers.add(post_number)
+        try:
+            scheduled_datetime = parse_scheduled_for(scheduled_for)
+        except ValueError as error:
+            return jsonify({"status": "erro", "item": index, "mensagem": str(error)}), 400
+        normalized.append({
+            "post_number": post_number,
+            "title": title.strip() if isinstance(title, str) and title.strip() else None,
+            "content": content.strip(),
+            "scheduled_for": scheduled_datetime,
+        })
+
+    try:
+        ensure_scheduler_tables()
+        inserted = []
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Confere conflitos antes de inserir qualquer item do lote.
+                for item in normalized:
+                    number = item["post_number"]
+                    if number is None:
+                        continue
+                    cur.execute("SELECT id FROM editorial_posts WHERE post_number = %s LIMIT 1;", (number,))
+                    published = cur.fetchone()
+                    if published:
+                        return jsonify({
+                            "status": "erro",
+                            "mensagem": "Esse post_number ja possui uma publicacao registrada.",
+                            "post_number": number,
+                            "editorial_post_id": published[0],
+                        }), 409
+                    cur.execute("""
+                        SELECT id FROM linkedin_publish_queue
+                        WHERE post_number = %s AND status IN ('agendado', 'publicando')
+                        LIMIT 1;
+                    """, (number,))
+                    queued = cur.fetchone()
+                    if queued:
+                        return jsonify({
+                            "status": "erro",
+                            "mensagem": "Esse post_number ja esta na fila ativa.",
+                            "post_number": number,
+                            "queue_id": queued[0],
+                        }), 409
+                for item in normalized:
+                    cur.execute("""
+                        INSERT INTO linkedin_publish_queue (
+                            post_number, title, content, scheduled_for,
+                            status, attempts, created_at, updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, 'agendado', 0, NOW(), NOW())
+                        RETURNING id;
+                    """, (item["post_number"], item["title"], item["content"], item["scheduled_for"]))
+                    inserted.append({
+                        "queue_id": cur.fetchone()[0],
+                        "post_number": item["post_number"],
+                        "title": item["title"],
+                        "scheduled_for": item["scheduled_for"].isoformat(),
+                        "status": "agendado",
+                    })
+        return jsonify({
+            "status": "ok",
+            "mensagem": "Lote adicionado à fila. Nenhuma publicação foi enviada imediatamente.",
+            "quantidade": len(inserted),
+            "itens": inserted,
+        }), 201
+    except Exception:
+        app.logger.exception("Falha ao adicionar lote à fila de publicacao")
+        return safe_error_response("Falha ao adicionar o lote à fila. Consulte os logs do servidor.")
 
 
 @app.get("/scheduler/status")
