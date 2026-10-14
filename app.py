@@ -374,18 +374,13 @@ def linkedin_member_id_from_database():
 
 
 def normalize_google_account_name(account_name):
-    """Valida o identificador lógico de uma conta Google Drive."""
-    if account_name is None:
+    """Restringe toda operacao Google Drive a conta primaria Drive5."""
+    if account_name is None or not str(account_name).strip():
         return "Drive5"
     account_name = str(account_name).strip()
-    if not account_name:
-        return "Drive5"
-    if len(account_name) > 50 or not account_name.startswith("Drive"):
-        raise ValueError("A conta Google deve usar o formato DriveN, por exemplo Drive5.")
-    suffix = account_name[5:]
-    if not suffix.isdigit():
-        raise ValueError("A conta Google deve usar o formato DriveN, por exemplo Drive5.")
-    return account_name
+    if account_name != "Drive5":
+        raise ValueError("Esta automacao utiliza exclusivamente a conta Drive5.")
+    return "Drive5"
 
 
 def google_tokens_from_database(account_name="Drive5"):
@@ -545,113 +540,55 @@ def google_drive_readonly_check(account_name="Drive5"):
     }
 
 def google_drive_health_check():
-    """Verifica todas as contas Google autorizadas sem modificar nenhum Drive."""
-    contas = google_authorized_accounts()
-    resultados = []
-
-    for conta in contas:
-        account_name = conta["account_name"]
-        resultado = {
-            "conta": account_name,
-            "status": "erro",
-        }
-        try:
-            teste = google_drive_readonly_check(account_name)
-            resultado.update({
+    """Verifica exclusivamente Drive5, sem modificar arquivos no Drive."""
+    try:
+        teste = google_drive_readonly_check("Drive5")
+        return {
+            "status": "ok",
+            "total_contas": 1,
+            "contas_ok": 1,
+            "contas_com_erro": 0,
+            "contas": [{
+                "conta": "Drive5",
                 "status": "ok",
                 "arquivos_acessiveis": teste.get("arquivos_acessiveis", 0),
                 "teste": "somente_leitura",
-            })
-        except Exception:
-            app.logger.exception(
-                "Falha na verificacao somente leitura do Google Drive para conta=%s",
-                account_name,
-            )
-            resultado["mensagem"] = "Falha na verificacao; consulte os logs do servidor."
-        resultados.append(resultado)
-
-    total = len(resultados)
-    saudaveis = sum(1 for item in resultados if item["status"] == "ok")
-
-    return {
-        "status": "ok" if total == saudaveis else "parcial",
-        "total_contas": total,
-        "contas_ok": saudaveis,
-        "contas_com_erro": total - saudaveis,
-        "contas": resultados,
-    }
+            }],
+        }
+    except Exception:
+        app.logger.exception("Falha na verificacao somente leitura do Google Drive para Drive5")
+        return {
+            "status": "erro",
+            "total_contas": 1,
+            "contas_ok": 0,
+            "contas_com_erro": 1,
+            "contas": [{
+                "conta": "Drive5",
+                "status": "erro",
+                "mensagem": "Falha na verificacao; consulte os logs do servidor.",
+            }],
+        }
 
 
 def google_drive_route_account(preferred_account=None):
-    """Seleciona uma conta autorizada e funcional para uma operacao de Drive.
-
-    A conta preferida e respeitada quando existe e responde a uma leitura simples.
-    Se ela nao estiver disponivel, a funcao percorre as demais contas autorizadas.
-    Nenhum arquivo e criado, alterado ou removido durante a selecao.
-    """
-    contas = google_authorized_accounts()
-    if not contas:
-        raise RuntimeError("Nenhuma conta Google Drive autorizada foi encontrada.")
-
-    nomes = [item["account_name"] for item in contas]
-    candidatos = []
-
+    """Usa exclusivamente Drive5; nunca consulta contas alternativas."""
     if preferred_account:
-        preferred = normalize_google_account_name(preferred_account)
-        if preferred in nomes:
-            candidatos.append(preferred)
-
-    candidatos.extend(
-        item["account_name"]
-        for item in contas
-        if item["account_name"] not in candidatos
-    )
-
-    erros = []
-
-    for account_name in candidatos:
-        try:
-            google_drive_readonly_check(account_name)
-            return {
-                "status": "ok",
-                "conta_selecionada": account_name,
-                "preferida": preferred_account,
-                "mensagem": "Conta Google Drive selecionada pelo roteador após validação somente leitura.",
-            }
-        except Exception as error:
-            erros.append({
-                "conta": account_name,
-                "erro": str(error),
-            })
-
-    raise RuntimeError(
-        "Nenhuma conta Google Drive disponível respondeu ao teste somente leitura. "
-        + json.dumps(erros, ensure_ascii=False)
-    )
+        normalize_google_account_name(preferred_account)
+    teste = google_drive_readonly_check("Drive5")
+    return {
+        "status": "ok",
+        "conta_selecionada": "Drive5",
+        "preferida": "Drive5",
+        "arquivos_acessiveis": teste.get("arquivos_acessiveis", 0),
+        "mensagem": "Conta Drive5 validada por leitura; nenhuma outra conta foi consultada.",
+    }
 
 
 def google_drive_test(account_name="Drive5"):
-    """Cria uma pasta de teste na conta Google Drive autorizada."""
+    """Compatibilidade com rota antiga: executa apenas verificacao de leitura."""
     account_name = normalize_google_account_name(account_name)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    folder_name = f"Automacao Murici - Teste {account_name} - {timestamp}"
-    payload = {
-        "name": folder_name,
-        "mimeType": "application/vnd.google-apps.folder",
-    }
-    response_data, _ = google_drive_api_request(
-        "POST", GOOGLE_DRIVE_FILES_URL, data=payload, account_name=account_name
-    )
-    folder_id = response_data.get("id")
-    if not folder_id:
-        raise RuntimeError("Google Drive criou a resposta, mas nao retornou o ID da pasta.")
-    return {
-        "status": "ok",
-        "mensagem": "Acesso real a Google Drive API confirmado. Uma pasta de teste foi criada na conta autorizada.",
-        "conta": account_name,
-        "pasta_teste": folder_name,
-        "folder_id": folder_id,
-    }
+    return google_drive_readonly_check(account_name)
+
 
 def http_json_request(
     url,
