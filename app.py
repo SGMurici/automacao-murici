@@ -2132,14 +2132,14 @@ def scheduler_queue_batch():
                         }), 409
                     cur.execute("""
                         SELECT id FROM linkedin_publish_queue
-                        WHERE post_number = %s AND status IN ('agendado', 'publicando')
+                        WHERE post_number = %s AND status IN ('agendado', 'publicando', 'processando', 'publicado')
                         LIMIT 1;
                     """, (number,))
                     queued = cur.fetchone()
                     if queued:
                         return jsonify({
                             "status": "erro",
-                            "mensagem": "Esse post_number ja esta na fila ativa.",
+                            "mensagem": "Esse post_number ja existe na fila ou possui publicacao em andamento/concluida.",
                             "post_number": number,
                             "queue_id": queued[0],
                         }), 409
