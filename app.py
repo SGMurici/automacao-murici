@@ -65,9 +65,11 @@ LINKEDIN_ANALYTICS_VERSION = os.environ.get(
     "202608",
 )
 
-# As metricas do LinkedIn sao tratadas exclusivamente a partir de relatorios
-# fornecidos manualmente. Uma variavel de ambiente nao pode reativar a coleta.
-LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED = False
+# Coleta automatica desativada por padrao; as metricas serao analisadas a partir de relatorios enviados manualmente.
+LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED = (
+    os.environ.get("LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 
 LINKEDIN_OAUTH_SCOPE = os.environ.get(
     "LINKEDIN_OAUTH_SCOPE",
@@ -78,6 +80,7 @@ GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 GOOGLE_DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files"
+GOOGLE_DRIVE_ART_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_ART_FOLDER_ID", "").strip()
 
 
 
@@ -372,13 +375,18 @@ def linkedin_member_id_from_database():
 
 
 def normalize_google_account_name(account_name):
-    """Restringe toda operacao Google Drive a conta primaria Drive5."""
-    if account_name is None or not str(account_name).strip():
+    """Valida o identificador lógico de uma conta Google Drive."""
+    if account_name is None:
         return "Drive5"
     account_name = str(account_name).strip()
-    if account_name != "Drive5":
-        raise ValueError("Esta automacao utiliza exclusivamente a conta Drive5.")
-    return "Drive5"
+    if not account_name:
+        return "Drive5"
+    if len(account_name) > 50 or not account_name.startswith("Drive"):
+        raise ValueError("A conta Google deve usar o formato DriveN, por exemplo Drive5.")
+    suffix = account_name[5:]
+    if not suffix.isdigit():
+        raise ValueError("A conta Google deve usar o formato DriveN, por exemplo Drive5.")
+    return account_name
 
 
 def google_tokens_from_database(account_name="Drive5"):
@@ -404,23 +412,17 @@ def google_tokens_from_database(account_name="Drive5"):
 
 
 def google_authorized_accounts():
-    """Retorna somente metadados da conta Google autorizada: Drive5."""
+    """Lista somente metadados das contas Google autorizadas."""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT account_name, provider, token_expires_at, updated_at
                 FROM google_accounts
-                WHERE account_name = %s
-                LIMIT 1;
-                """,
-                ("Drive5",),
+                ORDER BY account_name;
+                """
             )
-            row = cur.fetchone()
-
-    if not row:
-        return []
-
+            rows = cur.fetchall()
     return [
         {
             "account_name": row[0],
@@ -428,7 +430,9 @@ def google_authorized_accounts():
             "token_expires_at": row[2].isoformat() if row[2] else None,
             "updated_at": row[3].isoformat() if row[3] else None,
         }
+        for row in rows
     ]
+
 
 def refresh_google_access_token(account_name="Drive5"):
     """Renova o access token da conta Google informada."""
@@ -541,56 +545,168 @@ def google_drive_readonly_check(account_name="Drive5"):
         "teste": "somente_leitura",
     }
 
-def google_drive_health_check():
-    """Verifica exclusivamente Drive5, sem modificar arquivos no Drive."""
-    try:
-        teste = google_drive_readonly_check("Drive5")
-        return {
-            "status": "ok",
-            "total_contas": 1,
-            "contas_ok": 1,
-            "contas_com_erro": 0,
-            "contas": [{
-                "conta": "Drive5",
-                "status": "ok",
-                "arquivos_acessiveis": teste.get("arquivos_acessiveis", 0),
-                "teste": "somente_leitura",
-            }],
-        }
-    except Exception:
-        app.logger.exception("Falha na verificacao somente leitura do Google Drive para Drive5")
-        return {
-            "status": "erro",
-            "total_contas": 1,
-            "contas_ok": 0,
-            "contas_com_erro": 1,
-            "contas": [{
-                "conta": "Drive5",
-                "status": "erro",
-                "mensagem": "Falha na verificacao; consulte os logs do servidor.",
-            }],
-        }
+def google_drive_list_art_folder(account_name="Drive5"):
+    """Lista metadados dos arquivos da pasta configurada, sem baixar ou alterar arquivos."""
+    account_name = normalize_google_account_name(account_name)
+    folder_id = GOOGLE_DRIVE_ART_FOLDER_ID
+    if not folder_id:
+        raise RuntimeError("GOOGLE_DRIVE_ART_FOLDER_ID nao configurado.")
 
+    files = []
+    page_token = None
+    # Limite de seguranca: no maximo 10 paginas de 100 arquivos.
+    for _ in range(10):
+        params = {
+            "q": f"'{folder_id}' in parents and trashed = false",
+            "pageSize": "100",
+            "orderBy": "name",
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+            "fields": "nextPageToken,files(id,name,mimeType,size,modifiedTime,webViewLink,parents)",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        query = urllib.parse.urlencode(params)
+        response_data, _ = google_drive_api_request(
+            "GET", f"{GOOGLE_DRIVE_FILES_URL}?{query}", account_name=account_name
+        )
+        page_files = response_data.get("files", [])
+        if isinstance(page_files, list):
+            for item in page_files:
+                if not isinstance(item, dict):
+                    continue
+                files.append({
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "mimeType": item.get("mimeType"),
+                    "size": item.get("size"),
+                    "modifiedTime": item.get("modifiedTime"),
+                    "webViewLink": item.get("webViewLink"),
+                    "parents": item.get("parents", []),
+                })
+        page_token = response_data.get("nextPageToken")
+        if not page_token:
+            break
 
-def google_drive_route_account(preferred_account=None):
-    """Usa exclusivamente Drive5; nunca consulta contas alternativas."""
-    if preferred_account:
-        normalize_google_account_name(preferred_account)
-    teste = google_drive_readonly_check("Drive5")
     return {
         "status": "ok",
-        "conta_selecionada": "Drive5",
-        "preferida": "Drive5",
-        "arquivos_acessiveis": teste.get("arquivos_acessiveis", 0),
-        "mensagem": "Conta Drive5 validada por leitura; nenhuma outra conta foi consultada.",
+        "mensagem": "Metadados listados em modo somente leitura; nenhum arquivo foi baixado ou alterado.",
+        "conta": account_name,
+        "pasta_id": folder_id,
+        "quantidade": len(files),
+        "limite_paginas": 10,
+        "arquivos": files,
     }
 
 
-def google_drive_test(account_name="Drive5"):
-    """Compatibilidade com rota antiga: executa apenas verificacao de leitura."""
-    account_name = normalize_google_account_name(account_name)
-    return google_drive_readonly_check(account_name)
+def google_drive_health_check():
+    """Verifica todas as contas Google autorizadas sem modificar nenhum Drive."""
+    contas = google_authorized_accounts()
+    resultados = []
 
+    for conta in contas:
+        account_name = conta["account_name"]
+        resultado = {
+            "conta": account_name,
+            "status": "erro",
+        }
+        try:
+            teste = google_drive_readonly_check(account_name)
+            resultado.update({
+                "status": "ok",
+                "arquivos_acessiveis": teste.get("arquivos_acessiveis", 0),
+                "teste": "somente_leitura",
+            })
+        except Exception:
+            app.logger.exception(
+                "Falha na verificacao somente leitura do Google Drive para conta=%s",
+                account_name,
+            )
+            resultado["mensagem"] = "Falha na verificacao; consulte os logs do servidor."
+        resultados.append(resultado)
+
+    total = len(resultados)
+    saudaveis = sum(1 for item in resultados if item["status"] == "ok")
+
+    return {
+        "status": "ok" if total == saudaveis else "parcial",
+        "total_contas": total,
+        "contas_ok": saudaveis,
+        "contas_com_erro": total - saudaveis,
+        "contas": resultados,
+    }
+
+
+def google_drive_route_account(preferred_account=None):
+    """Seleciona uma conta autorizada e funcional para uma operacao de Drive.
+
+    A conta preferida e respeitada quando existe e responde a uma leitura simples.
+    Se ela nao estiver disponivel, a funcao percorre as demais contas autorizadas.
+    Nenhum arquivo e criado, alterado ou removido durante a selecao.
+    """
+    contas = google_authorized_accounts()
+    if not contas:
+        raise RuntimeError("Nenhuma conta Google Drive autorizada foi encontrada.")
+
+    nomes = [item["account_name"] for item in contas]
+    candidatos = []
+
+    if preferred_account:
+        preferred = normalize_google_account_name(preferred_account)
+        if preferred in nomes:
+            candidatos.append(preferred)
+
+    candidatos.extend(
+        item["account_name"]
+        for item in contas
+        if item["account_name"] not in candidatos
+    )
+
+    erros = []
+
+    for account_name in candidatos:
+        try:
+            google_drive_readonly_check(account_name)
+            return {
+                "status": "ok",
+                "conta_selecionada": account_name,
+                "preferida": preferred_account,
+                "mensagem": "Conta Google Drive selecionada pelo roteador após validação somente leitura.",
+            }
+        except Exception as error:
+            erros.append({
+                "conta": account_name,
+                "erro": str(error),
+            })
+
+    raise RuntimeError(
+        "Nenhuma conta Google Drive disponível respondeu ao teste somente leitura. "
+        + json.dumps(erros, ensure_ascii=False)
+    )
+
+
+def google_drive_test(account_name="Drive5"):
+    """Cria uma pasta de teste na conta Google Drive autorizada."""
+    account_name = normalize_google_account_name(account_name)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    folder_name = f"Automacao Murici - Teste {account_name} - {timestamp}"
+    payload = {
+        "name": folder_name,
+        "mimeType": "application/vnd.google-apps.folder",
+    }
+    response_data, _ = google_drive_api_request(
+        "POST", GOOGLE_DRIVE_FILES_URL, data=payload, account_name=account_name
+    )
+    folder_id = response_data.get("id")
+    if not folder_id:
+        raise RuntimeError("Google Drive criou a resposta, mas nao retornou o ID da pasta.")
+    return {
+        "status": "ok",
+        "mensagem": "Acesso real a Google Drive API confirmado. Uma pasta de teste foi criada na conta autorizada.",
+        "conta": account_name,
+        "pasta_teste": folder_name,
+        "folder_id": folder_id,
+    }
 
 def http_json_request(
     url,
@@ -1226,6 +1342,22 @@ def google_drive_check_route():
         app.logger.exception("Falha na rota /google-drive/check")
         return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
 
+@app.get("/google-drive/art-folder")
+def google_drive_art_folder_route():
+    """Lista os metadados dos arquivos da pasta de artes configurada."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    try:
+        account_name = normalize_google_account_name(request.args.get("account", "Drive5"))
+        return jsonify(google_drive_list_art_folder(account_name))
+    except ValueError as error:
+        return jsonify({"status": "erro", "mensagem": str(error)}), 400
+    except Exception:
+        app.logger.exception("Falha na rota /google-drive/art-folder")
+        return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
+
+
 @app.post("/google-drive/test")
 def google_drive_test_route():
     auth_error = require_publish_secret()
@@ -1557,7 +1689,7 @@ def google_login():
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "response_type": "code",
-        "scope": "https://www.googleapis.com/auth/drive.file",
+        "scope": "https://www.googleapis.com/auth/drive.readonly",
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -2053,123 +2185,6 @@ def scheduler_queue():
         return safe_error_response("Falha ao adicionar a publicacao na fila. Consulte os logs do servidor.")
 
 
-
-@app.post("/scheduler/queue/batch")
-def scheduler_queue_batch():
-    """
-    Adiciona várias publicações à fila em uma única requisição.
-    Não publica imediatamente: cada item fica apenas agendado.
-    JSON: {"items": [{"post_number": 41, "title": "...", "content": "...",
-      "scheduled_for": "2026-11-08T09:00:00-03:00"}]}
-    """
-    auth_error = require_publish_secret()
-    if auth_error:
-        return auth_error
-    if not request.is_json:
-        return jsonify({"status": "erro", "mensagem": "A requisicao deve utilizar JSON."}), 400
-
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
-        return jsonify({"status": "erro", "mensagem": "Envie um objeto JSON com uma lista 'items'."}), 400
-
-    items = data["items"]
-    if not items:
-        return jsonify({"status": "erro", "mensagem": "A lista items nao pode estar vazia."}), 400
-    if len(items) > 100:
-        return jsonify({"status": "erro", "mensagem": "Limite de 100 itens por requisicao."}), 400
-
-    normalized, seen_numbers = [], set()
-    for index, item in enumerate(items, start=1):
-        if not isinstance(item, dict):
-            return jsonify({"status": "erro", "item": index, "mensagem": "Cada item deve ser um objeto."}), 400
-        content, title = item.get("content"), item.get("title")
-        post_number, scheduled_for = item.get("post_number"), item.get("scheduled_for")
-        if not isinstance(content, str) or len(content.strip()) < 10:
-            return jsonify({"status": "erro", "item": index, "mensagem": "content deve conter ao menos 10 caracteres."}), 400
-        if title is not None and not isinstance(title, str):
-            return jsonify({"status": "erro", "item": index, "mensagem": "title deve ser texto ou nulo."}), 400
-        if post_number is not None:
-            if isinstance(post_number, bool):
-                return jsonify({"status": "erro", "item": index, "mensagem": "post_number deve ser um inteiro positivo."}), 400
-            try:
-                post_number = int(post_number)
-            except (TypeError, ValueError):
-                return jsonify({"status": "erro", "item": index, "mensagem": "post_number deve ser um inteiro positivo."}), 400
-            if post_number < 1:
-                return jsonify({"status": "erro", "item": index, "mensagem": "post_number deve ser um inteiro positivo."}), 400
-            if post_number in seen_numbers:
-                return jsonify({"status": "erro", "item": index, "mensagem": "Há post_number repetido dentro do lote.", "post_number": post_number}), 409
-            seen_numbers.add(post_number)
-        try:
-            scheduled_datetime = parse_scheduled_for(scheduled_for)
-        except ValueError as error:
-            return jsonify({"status": "erro", "item": index, "mensagem": str(error)}), 400
-        normalized.append({
-            "post_number": post_number,
-            "title": title.strip() if isinstance(title, str) and title.strip() else None,
-            "content": content.strip(),
-            "scheduled_for": scheduled_datetime,
-        })
-
-    try:
-        ensure_scheduler_tables()
-        inserted = []
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # Confere conflitos antes de inserir qualquer item do lote.
-                for item in normalized:
-                    number = item["post_number"]
-                    if number is None:
-                        continue
-                    cur.execute("SELECT id FROM editorial_posts WHERE post_number = %s LIMIT 1;", (number,))
-                    published = cur.fetchone()
-                    if published:
-                        return jsonify({
-                            "status": "erro",
-                            "mensagem": "Esse post_number ja possui uma publicacao registrada.",
-                            "post_number": number,
-                            "editorial_post_id": published[0],
-                        }), 409
-                    cur.execute("""
-                        SELECT id FROM linkedin_publish_queue
-                        WHERE post_number = %s AND status IN ('agendado', 'publicando', 'processando', 'publicado')
-                        LIMIT 1;
-                    """, (number,))
-                    queued = cur.fetchone()
-                    if queued:
-                        return jsonify({
-                            "status": "erro",
-                            "mensagem": "Esse post_number ja existe na fila ou possui publicacao em andamento/concluida.",
-                            "post_number": number,
-                            "queue_id": queued[0],
-                        }), 409
-                for item in normalized:
-                    cur.execute("""
-                        INSERT INTO linkedin_publish_queue (
-                            post_number, title, content, scheduled_for,
-                            status, attempts, created_at, updated_at
-                        )
-                        VALUES (%s, %s, %s, %s, 'agendado', 0, NOW(), NOW())
-                        RETURNING id;
-                    """, (item["post_number"], item["title"], item["content"], item["scheduled_for"]))
-                    inserted.append({
-                        "queue_id": cur.fetchone()[0],
-                        "post_number": item["post_number"],
-                        "title": item["title"],
-                        "scheduled_for": item["scheduled_for"].isoformat(),
-                        "status": "agendado",
-                    })
-        return jsonify({
-            "status": "ok",
-            "mensagem": "Lote adicionado à fila. Nenhuma publicação foi enviada imediatamente.",
-            "quantidade": len(inserted),
-            "itens": inserted,
-        }), 201
-    except Exception:
-        app.logger.exception("Falha ao adicionar lote à fila de publicacao")
-        return safe_error_response("Falha ao adicionar o lote à fila. Consulte os logs do servidor.")
-
-
 @app.get("/scheduler/status")
 def scheduler_status():
     """
@@ -2534,16 +2549,351 @@ def analytics_record():
 
 @app.post("/analytics/collect")
 def analytics_collect():
-    """Endpoint legado permanentemente desativado: metricas sao manuais."""
-    return jsonify(
-        {
-            "status": "desativado",
-            "mensagem": (
-                "A coleta automatica de metricas esta permanentemente desativada. "
-                "Envie os relatorios do LinkedIn manualmente para analise."
-            ),
-        }
-    ), 410
+    """
+    Coleta automatica opcional. Fica desativada enquanto as metricas
+    forem tratadas por relatorios enviados manualmente.
+    """
+
+    if not LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED:
+        return jsonify(
+            {
+                "status": "desativado",
+                "mensagem": (
+                    "A coleta automatica esta desativada. Envie os relatorios "
+                    "do LinkedIn manualmente para analise."
+                ),
+            }
+        ), 410
+
+    auth_error = require_publish_secret()
+
+    if auth_error:
+        return auth_error
+
+    run_id = None
+    posts_found = 0
+    posts_updated = 0
+    metrics_saved = 0
+
+    try:
+        ensure_analytics_tables()
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO linkedin_metrics_collection_runs (
+                        status
+                    )
+                    VALUES ('started')
+                    RETURNING id;
+                    """
+                )
+
+                run_id = cur.fetchone()[0]
+
+            conn.commit()
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (linkedin_post_id)
+                        id,
+                        linkedin_post_id
+                    FROM editorial_posts
+                    WHERE linkedin_post_id IS NOT NULL
+                      AND TRIM(linkedin_post_id) <> ''
+                    ORDER BY linkedin_post_id, id DESC;
+                    """
+                )
+
+                posts = cur.fetchall()
+
+        posts_found = len(posts)
+
+        for editorial_post_id, linkedin_post_id in posts:
+
+            try:
+                metrics, _raw_payload = linkedin_post_analytics(
+                    linkedin_post_id
+                )
+
+                impressions = metrics.get("IMPRESSION")
+                members_reached = metrics.get(
+                    "MEMBERS_REACHED"
+                )
+                reactions = metrics.get("REACTION")
+                comments = metrics.get("COMMENT")
+                reposts = metrics.get("RESHARE")
+                post_saves = metrics.get("POST_SAVE")
+                post_sends = metrics.get("POST_SEND")
+                link_clicks = metrics.get("LINK_CLICKS")
+
+                premium_cta_clicks = metrics.get(
+                    "PREMIUM_CTA_CLICKS"
+                )
+
+                followers_gained = metrics.get(
+                    "FOLLOWER_GAINED_FROM_CONTENT"
+                )
+
+                profile_views = metrics.get(
+                    "PROFILE_VIEW_FROM_CONTENT"
+                )
+
+                engagement_total = calculate_engagement_total(
+                    metrics
+                )
+
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO linkedin_post_metrics (
+                                editorial_post_id,
+                                linkedin_post_id,
+                                measured_at,
+                                impressions,
+                                members_reached,
+                                reactions,
+                                comments,
+                                reposts,
+                                post_saves,
+                                post_sends,
+                                link_clicks,
+                                premium_cta_clicks,
+                                followers_gained_from_content,
+                                profile_views_from_content,
+                                engagement_total,
+                                source
+                            )
+                            VALUES (
+                                %s,
+                                %s,
+                                NOW(),
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                %s,
+                                'linkedin_api'
+                            );
+                            """,
+                            (
+                                editorial_post_id,
+                                linkedin_post_id,
+                                impressions,
+                                members_reached,
+                                reactions,
+                                comments,
+                                reposts,
+                                post_saves,
+                                post_sends,
+                                link_clicks,
+                                premium_cta_clicks,
+                                followers_gained,
+                                profile_views,
+                                engagement_total,
+                            ),
+                        )
+
+                    conn.commit()
+
+                posts_updated += 1
+                metrics_saved += 1
+
+            except LinkedInAnalyticsError as error:
+
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE linkedin_metrics_collection_runs
+                            SET
+                                finished_at = NOW(),
+                                status = %s,
+                                posts_found = %s,
+                                posts_updated = %s,
+                                metrics_saved = %s,
+                                error_message = %s
+                            WHERE id = %s;
+                            """,
+                            (
+                                (
+                                    "permission_required"
+                                    if error.status_code == 403
+                                    else "error"
+                                ),
+                                posts_found,
+                                posts_updated,
+                                metrics_saved,
+                                json.dumps(error.payload),
+                                run_id,
+                            ),
+                        )
+
+                    conn.commit()
+
+                if error.status_code == 403:
+                    return jsonify(
+                        {
+                            "status": "permission_required",
+                            "mensagem": (
+                                "O LinkedIn recusou a consulta de "
+                                "analytics. A aplicacao ainda precisa "
+                                "de acesso oficial a "
+                                "r_member_postAnalytics / "
+                                "Community Management API."
+                            ),
+                            "http_linkedin": error.status_code,
+                            "run_id": run_id,
+                            "posts_found": posts_found,
+                            "posts_updated": posts_updated,
+                        }
+                    ), 403
+
+                return jsonify(
+                    {
+                        "status": "erro",
+                        "mensagem": (
+                            "Falha ao consultar analytics "
+                            "do LinkedIn."
+                        ),
+                        "http_linkedin": error.status_code,
+                        "detalhe": error.payload,
+                        "run_id": run_id,
+                        "posts_found": posts_found,
+                        "posts_updated": posts_updated,
+                    }
+                ), 502
+
+            except Exception as error:
+
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE linkedin_metrics_collection_runs
+                            SET
+                                finished_at = NOW(),
+                                status = 'error',
+                                posts_found = %s,
+                                posts_updated = %s,
+                                metrics_saved = %s,
+                                error_message = %s
+                            WHERE id = %s;
+                            """,
+                            (
+                                posts_found,
+                                posts_updated,
+                                metrics_saved,
+                                str(error),
+                                run_id,
+                            ),
+                        )
+
+                    conn.commit()
+
+                app.logger.exception("Falha na coleta de analytics do LinkedIn para run_id=%s", run_id)
+                return jsonify(
+                    {
+                        "status": "erro",
+                        "mensagem": "Falha na coleta de analytics. Consulte os logs do servidor.",
+                        "run_id": run_id,
+                        "posts_found": posts_found,
+                        "posts_updated": posts_updated,
+                    }
+                ), 500
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE linkedin_metrics_collection_runs
+                    SET
+                        finished_at = NOW(),
+                        status = 'completed',
+                        posts_found = %s,
+                        posts_updated = %s,
+                        metrics_saved = %s,
+                        error_message = NULL
+                    WHERE id = %s;
+                    """,
+                    (
+                        posts_found,
+                        posts_updated,
+                        metrics_saved,
+                        run_id,
+                    ),
+                )
+
+            conn.commit()
+
+        return jsonify(
+            {
+                "status": "completed",
+                "mensagem": (
+                    "Coleta de metricas do LinkedIn concluida."
+                ),
+                "run_id": run_id,
+                "posts_found": posts_found,
+                "posts_updated": posts_updated,
+                "metrics_saved": metrics_saved,
+            }
+        )
+
+    except Exception as error:
+
+        if run_id is not None:
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE linkedin_metrics_collection_runs
+                            SET
+                                finished_at = NOW(),
+                                status = 'error',
+                                posts_found = %s,
+                                posts_updated = %s,
+                                metrics_saved = %s,
+                                error_message = %s
+                            WHERE id = %s;
+                            """,
+                            (
+                                posts_found,
+                                posts_updated,
+                                metrics_saved,
+                                str(error),
+                                run_id,
+                            ),
+                        )
+
+                    conn.commit()
+
+            except Exception:
+                pass
+
+        app.logger.exception("Falha geral na coleta de analytics do LinkedIn para run_id=%s", run_id)
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": "Falha na coleta de analytics. Consulte os logs do servidor.",
+                "run_id": run_id,
+                "posts_found": posts_found,
+                "posts_updated": posts_updated,
+                "metrics_saved": metrics_saved,
+            }
+        ), 500
+
 
 if __name__ == "__main__":
     app.run(
