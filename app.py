@@ -1,6 +1,9 @@
 import os
 import json
 import secrets
+import hashlib
+import io
+import zipfile
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -22,7 +25,8 @@ app.config.update(
         os.environ.get("FLASK_ENV", "").lower() == "production"
         or os.environ.get("RENDER", "").lower() == "true"
     ),
-    MAX_CONTENT_LENGTH=1 * 1024 * 1024,
+    # Limite para upload de ZIP; limites por imagem e conteúdo extraído são validados na rota.
+    MAX_CONTENT_LENGTH=80 * 1024 * 1024,
 )
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -1307,6 +1311,274 @@ def google_drive_art_folder_route():
         return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
 
 
+def google_drive_list_existing_art_files(account_name="Drive5"):
+    """Lista metadados dos arquivos existentes na pasta de artes, sem baixá-los."""
+    account_name = normalize_google_account_name(account_name)
+    folder_id = GOOGLE_DRIVE_ART_FOLDER_ID
+    if not folder_id:
+        raise RuntimeError("GOOGLE_DRIVE_ART_FOLDER_ID nao configurado.")
+
+    files = []
+    page_token = None
+    for _ in range(10):
+        params = {
+            "q": f"'{folder_id}' in parents and trashed = false",
+            "pageSize": "100",
+            "orderBy": "name",
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+            "fields": "nextPageToken,files(id,name,mimeType,size,md5Checksum,appProperties)",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        response_data, _ = google_drive_api_request(
+            "GET",
+            f"{GOOGLE_DRIVE_FILES_URL}?{urllib.parse.urlencode(params)}",
+            account_name=account_name,
+        )
+        files.extend(
+            item for item in response_data.get("files", [])
+            if isinstance(item, dict)
+        )
+        page_token = response_data.get("nextPageToken")
+        if not page_token:
+            break
+    return files
+
+
+def google_drive_upload_art_bytes(name, content, mime_type, sha256_hex, account_name="Drive5"):
+    """Envia uma imagem ao Drive e registra seu SHA-256 em appProperties."""
+    account_name = normalize_google_account_name(account_name)
+    if not GOOGLE_DRIVE_ART_FOLDER_ID:
+        raise RuntimeError("GOOGLE_DRIVE_ART_FOLDER_ID nao configurado.")
+    token = google_drive_access_token(account_name)
+    boundary = "murici_drive_upload_" + secrets.token_hex(16)
+    metadata = {
+        "name": name,
+        "mimeType": mime_type,
+        "parents": [GOOGLE_DRIVE_ART_FOLDER_ID],
+        "appProperties": {"sha256": sha256_hex},
+    }
+    query = urllib.parse.urlencode({
+        "uploadType": "multipart",
+        "supportsAllDrives": "true",
+        "fields": "id,name,mimeType,size,md5Checksum,webViewLink,parents,appProperties",
+    })
+    body = (
+        f"--{boundary}\r\n"
+        "Content-Type: application/json; charset=UTF-8\r\n\r\n"
+        + json.dumps(metadata, ensure_ascii=False)
+        + f"\r\n--{boundary}\r\n"
+        + f"Content-Type: {mime_type}\r\n\r\n"
+    ).encode("utf-8") + content + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+    req = urllib.request.Request(
+        f"https://www.googleapis.com/upload/drive/v3/files?{query}",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": f"multipart/related; boundary={boundary}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        app.logger.error(
+            "Google Drive upload falhou: HTTP %s; arquivo=%s; detalhe=%s",
+            error.code, name, detail[:1000],
+        )
+        raise RuntimeError(f"Google Drive recusou o envio (HTTP {error.code}).") from None
+    if not payload.get("id"):
+        raise RuntimeError("Google Drive nao confirmou o arquivo enviado.")
+    return payload
+
+
+@app.post("/google-drive/upload-art-zip")
+def google_drive_upload_art_zip_route():
+    """Recebe um ZIP e envia imagens para a pasta configurada, sem sobrescrever."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+
+    try:
+        account_name = normalize_google_account_name(
+            request.args.get("account", "Drive5")
+        )
+        if account_name != "Drive5":
+            return jsonify({
+                "status": "erro",
+                "mensagem": "Este endpoint aceita exclusivamente a conta Drive5.",
+            }), 400
+        if not GOOGLE_DRIVE_ART_FOLDER_ID:
+            raise RuntimeError("GOOGLE_DRIVE_ART_FOLDER_ID nao configurado.")
+
+        uploaded_file = request.files.get("archive") or request.files.get("file")
+        if not uploaded_file or not uploaded_file.filename:
+            return jsonify({
+                "status": "erro",
+                "mensagem": "Envie um arquivo ZIP no campo multipart 'archive'.",
+            }), 400
+        if not uploaded_file.filename.lower().endswith(".zip"):
+            return jsonify({"status": "erro", "mensagem": "O arquivo deve ser ZIP."}), 400
+
+        archive_bytes = uploaded_file.read()
+        if not archive_bytes:
+            return jsonify({"status": "erro", "mensagem": "O ZIP está vazio."}), 400
+        if len(archive_bytes) > 80 * 1024 * 1024:
+            return jsonify({"status": "erro", "mensagem": "ZIP excede o limite de 80 MiB."}), 413
+
+        allowed_types = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+            ".gif": "image/gif",
+        }
+        candidates = []
+        total_uncompressed = 0
+        seen_hashes = set()
+        seen_names = set()
+        try:
+            with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+                entries = [entry for entry in archive.infolist() if not entry.is_dir()]
+                if len(entries) > 500:
+                    return jsonify({
+                        "status": "erro",
+                        "mensagem": "O ZIP contém mais de 500 entradas; nenhum arquivo foi enviado.",
+                    }), 400
+                for entry in entries:
+                    raw_name = entry.filename.replace("\\", "/")
+                    basename = raw_name.rsplit("/", 1)[-1]
+                    if not basename or basename in {".", ".."} or "__MACOSX" in raw_name.split("/"):
+                        continue
+                    extension = "." + basename.rsplit(".", 1)[-1].lower() if "." in basename else ""
+                    mime_type = allowed_types.get(extension)
+                    if not mime_type:
+                        continue
+                    if entry.flag_bits & 0x1:
+                        return jsonify({
+                            "status": "erro",
+                            "mensagem": "ZIP criptografado não é aceito; nenhum arquivo foi enviado.",
+                        }), 400
+                    if entry.file_size <= 0 or entry.file_size > 20 * 1024 * 1024:
+                        return jsonify({
+                            "status": "erro",
+                            "mensagem": f"Imagem fora do limite permitido: {basename}.",
+                        }), 400
+                    total_uncompressed += entry.file_size
+                    if total_uncompressed > 300 * 1024 * 1024:
+                        return jsonify({
+                            "status": "erro",
+                            "mensagem": "Conteúdo descompactado excede 300 MiB; nenhum arquivo foi enviado.",
+                        }), 400
+                    content = archive.read(entry)
+                    digest = hashlib.sha256(content).hexdigest()
+                    if digest in seen_hashes:
+                        continue
+                    seen_hashes.add(digest)
+                    if basename in seen_names:
+                        # Evita nomes ambíguos quando o ZIP contém pastas diferentes.
+                        candidates.append({
+                            "name": basename,
+                            "content": content,
+                            "mime_type": mime_type,
+                            "sha256": digest,
+                            "size": len(content),
+                            "zip_name_conflict": True,
+                        })
+                        continue
+                    seen_names.add(basename)
+                    candidates.append({
+                        "name": basename,
+                        "content": content,
+                        "mime_type": mime_type,
+                        "sha256": digest,
+                        "size": len(content),
+                        "zip_name_conflict": False,
+                    })
+        except (zipfile.BadZipFile, RuntimeError) as error:
+            app.logger.info("ZIP de artes inválido: %s", str(error)[:300])
+            return jsonify({"status": "erro", "mensagem": "ZIP inválido ou corrompido."}), 400
+
+        if not candidates:
+            return jsonify({
+                "status": "erro",
+                "mensagem": "Nenhuma imagem PNG, JPG, JPEG, WEBP ou GIF foi encontrada.",
+            }), 400
+
+        existing = google_drive_list_existing_art_files("Drive5")
+        by_hash = {
+            item.get("appProperties", {}).get("sha256"): item
+            for item in existing
+            if isinstance(item.get("appProperties"), dict)
+            and item.get("appProperties", {}).get("sha256")
+        }
+        by_name = {}
+        for item in existing:
+            by_name.setdefault(item.get("name"), []).append(item)
+
+        result = {
+            "status": "ok",
+            "conta": "Drive5",
+            "pasta_id": GOOGLE_DRIVE_ART_FOLDER_ID,
+            "recebidas_no_zip": len(candidates),
+            "enviadas": [],
+            "ignoradas_duplicadas": [],
+            "ignoradas_conflito_nome": [],
+            "erros": [],
+            "nota": "Arquivos existentes nunca são sobrescritos; conflitos de nome exigem revisão.",
+        }
+        for item in candidates:
+            if item["sha256"] in by_hash:
+                result["ignoradas_duplicadas"].append({
+                    "nome": item["name"],
+                    "motivo": "SHA-256 já registrado no Drive5",
+                })
+                continue
+            if item["zip_name_conflict"] or item["name"] in by_name:
+                result["ignoradas_conflito_nome"].append({
+                    "nome": item["name"],
+                    "motivo": "Nome repetido no ZIP ou já existente no Drive; não foi sobrescrito",
+                })
+                continue
+            try:
+                uploaded = google_drive_upload_art_bytes(
+                    item["name"], item["content"], item["mime_type"],
+                    item["sha256"], "Drive5",
+                )
+                result["enviadas"].append({
+                    "nome": uploaded.get("name", item["name"]),
+                    "id": uploaded.get("id"),
+                    "tamanho": uploaded.get("size", item["size"]),
+                    "sha256": item["sha256"],
+                    "link": uploaded.get("webViewLink"),
+                })
+                by_hash[item["sha256"]] = uploaded
+                by_name.setdefault(item["name"], []).append(uploaded)
+            except Exception as error:
+                app.logger.exception("Falha ao enviar arte para Drive5: %s", item["name"])
+                result["erros"].append({
+                    "nome": item["name"],
+                    "mensagem": str(error)[:250],
+                })
+
+        if result["erros"]:
+            result["status"] = "parcial" if result["enviadas"] else "erro"
+            return jsonify(result), 207 if result["enviadas"] else 502
+        return jsonify(result), 200
+    except ValueError as error:
+        return jsonify({"status": "erro", "mensagem": str(error)}), 400
+    except Exception:
+        app.logger.exception("Falha na rota /google-drive/upload-art-zip")
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Falha interna no envio. Consulte os logs do servidor.",
+        }), 500
+
+
 @app.post("/google-drive/test")
 def google_drive_test_route():
     auth_error = require_publish_secret()
@@ -1638,7 +1910,7 @@ def google_login():
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "response_type": "code",
-        "scope": "https://www.googleapis.com/auth/drive.readonly",
+        "scope": "https://www.googleapis.com/auth/drive",
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
