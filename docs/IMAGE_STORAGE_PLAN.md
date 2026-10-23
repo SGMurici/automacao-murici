@@ -58,7 +58,8 @@ Foi preparada uma primeira implementação isolada em `app.py`:
 - Validação de MIME type, extensão e assinatura binária para JPG/PNG/WEBP.
 - Nome de arquivo com post e versão, SHA-256, upload multipart, verificação dos metadados retornados e manifesto PostgreSQL `editorial_image_assets`.
 - Versão já registrada é recusada antes do upload para reduzir arquivos órfãos. Uma falha de banco após upload ainda exige reconciliação; o Drive não deve ser tratado como verificado sem registro consistente.
-- A resposta de upload nunca deve ser considerada confirmação de recuperação integral do conteúdo: a implementação inicial confirma metadados e tamanho, mas a validação ponta a ponta por download e SHA-256 remoto continua pendente.
+- Após o upload, o código tenta baixar o arquivo novamente e compara tamanho e SHA-256 antes de registrar o manifesto como armazenado.
+- A rota autenticada `GET /google-drive/image-assets/reconcile` compara o manifesto com os arquivos visíveis na pasta e lista IDs ausentes e arquivos editoriais sem registro. A varredura respeita o limite de 10 páginas de 100 arquivos da listagem, portanto pode ser parcial em pastas maiores.
 
 ### Antes de habilitar em ambiente real
 
