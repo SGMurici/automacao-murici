@@ -39,3 +39,9 @@ O aplicativo já tem funções para obter/renovar o token do Google Drive e list
 ## Bloqueios que exigem intervenção do usuário
 
 A validação real depende de confirmar que a conta Google já autorizada tem permissão de escrita na pasta de artes e de aprovar um teste de upload de arquivo sintético. Não é necessário compartilhar tokens ou segredos na conversa.
+
+## Bloqueio técnico confirmado no OAuth atual
+
+A rota de autorização Google no código solicita explicitamente o escopo `https://www.googleapis.com/auth/drive.readonly`. Esse escopo permite leitura, não upload de novas imagens. Portanto, mesmo que a listagem funcione, o fluxo de persistência não poderá gravar arquivos com a autorização atual. O código também contém uma rota de teste que tenta criar uma pasta; ela não deve ser tratada como prova de que a permissão de escrita está concedida.
+
+Para permitir uploads será necessário alterar o escopo solicitado para um escopo de escrita apropriado e reautorizar a conta Google. Isso amplia as permissões concedidas à aplicação e, por isso, **não será feito sem autorização explícita do usuário**. Até lá, o desenvolvimento pode avançar com implementação isolada e testes simulados, mas o armazenamento real continuará bloqueado.
