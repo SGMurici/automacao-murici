@@ -45,3 +45,27 @@ A validação real depende de confirmar que a conta Google já autorizada tem pe
 A rota de autorização Google no código solicita explicitamente o escopo `https://www.googleapis.com/auth/drive.readonly`. Esse escopo permite leitura, não upload de novas imagens. Portanto, mesmo que a listagem funcione, o fluxo de persistência não poderá gravar arquivos com a autorização atual. O código também contém uma rota de teste que tenta criar uma pasta; ela não deve ser tratada como prova de que a permissão de escrita está concedida.
 
 Para permitir uploads será necessário alterar o escopo solicitado para um escopo de escrita apropriado e reautorizar a conta Google. Isso amplia as permissões concedidas à aplicação e, por isso, **não será feito sem autorização explícita do usuário**. Até lá, o desenvolvimento pode avançar com implementação isolada e testes simulados, mas o armazenamento real continuará bloqueado.
+
+
+## Implementação preparada na branch de desenvolvimento
+
+Foi preparada uma primeira implementação isolada em `app.py`:
+
+- Endpoint `POST /google-drive/image-assets`, protegido por `X-Publish-Secret` e **bloqueado por padrão**.
+- `GOOGLE_DRIVE_WRITE_ENABLED=false) por padrão; não há upload enquanto a variável não for explicitamente habilitada.
+- `GOOGLE_DRIVE_SCOPE` configurável, mantendo `drive.readonly` como padrão atual.
+- Limite de requisição de 16 MiB e limite de imagem de 15 MiB.
+- Validação de MIME type, extensão e assinatura binária para JPG/PNG/WEBP.
+- Nome de arquivo com post e versão, SHA-256, upload multipart, verificação dos metadados retornados e manifesto PostgreSQL `editorial_image_assets`.
+- Versão já registrada é recusada antes do upload para reduzir arquivos órfãos. Uma falha de banco após upload ainda exige reconciliação; o Drive não deve ser tratado como verificado sem registro consistente.
+- A resposta de upload nunca deve ser considerada confirmação de recuperação integral do conteúdo: a implementação inicial confirma metadados e tamanho, mas a validação ponta a ponta por download e SHA-256 remoto continua pendente.
+
+### Antes de habilitar em ambiente real
+
+1. Definir, com consentimento do usuário, o escopo OAuth apropriado para gravar na pasta configurada.
+2. Reautorizar a conta Google e confirmar que o novo token realmente permite escrita.
+3. Habilitar `GOOGLE_DRIVE_WRITE_ENABLED=true` somente no ambiente de teste autorizado.
+4. Testar com arquivo sintético, recuperar o arquivo e comparar SHA-256, conferir o manifesto e testar reconciliação.
+5. Só então avaliar ativação para imagens editoriais reais.
+
+**Não altere o escopo nem habilite a escrita em produção ainda.** O fluxo atual continua em modo somente leitura por padrão.
