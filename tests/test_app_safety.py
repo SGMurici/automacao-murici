@@ -19,7 +19,8 @@ class AppSourceSafetyTests(unittest.TestCase):
 
     def test_app_has_request_size_limit(self):
         self.assertIn("MAX_CONTENT_LENGTH", self.source)
-        self.assertIn("1 * 1024 * 1024", self.source)
+        self.assertIn("16 * 1024 * 1024", self.source)
+        self.assertIn("MAX_EDITORIAL_IMAGE_BYTES = 15 * 1024 * 1024", self.source)
 
     def test_sensitive_configuration_uses_environment_variables(self):
         for variable in (
@@ -36,6 +37,27 @@ class AppSourceSafetyTests(unittest.TestCase):
     def test_automatic_linkedin_analytics_is_disabled_by_default(self):
         self.assertIn("LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED", self.source)
         self.assertIn('"false"', self.source)
+
+
+    def test_image_upload_is_disabled_by_default(self):
+        self.assertIn('"GOOGLE_DRIVE_WRITE_ENABLED", "false"', self.source)
+        self.assertIn('return jsonify({\n            "status": "blocked"', self.source)
+
+    def test_image_storage_validates_type_size_and_hash(self):
+        for marker in (
+            "ALLOWED_EDITORIAL_IMAGE_TYPES",
+            "MAX_EDITORIAL_IMAGE_BYTES",
+            "hashlib.sha256(image_bytes).hexdigest()",
+            "editorial_image_assets",
+            "ON CONFLICT (post_number, version) DO NOTHING",
+            "editorial_image_version_exists",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.source)
+
+    def test_google_drive_scope_remains_readonly_by_default(self):
+        self.assertIn('"https://www.googleapis.com/auth/drive.readonly"', self.source)
+        self.assertIn('"scope": GOOGLE_DRIVE_SCOPE', self.source)
 
     def test_source_parses_as_python(self):
         self.assertIsInstance(self.tree, ast.Module)
