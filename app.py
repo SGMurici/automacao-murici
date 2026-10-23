@@ -1253,8 +1253,8 @@ def readiness():
         "required_count": len(required_settings),
         "missing_settings": missing,
         "features": {
-            "linkedin_publishing": bool(LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET),
-            "google_drive": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
+            "linkedin_oauth_configured": bool(LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET),
+            "google_oauth_configured": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
             "automatic_linkedin_analytics": LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED,
         },
         "secrets_exposed": False,
