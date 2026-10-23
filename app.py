@@ -815,6 +815,19 @@ def google_drive_upload_image(file_name, mime_type, image_bytes, post_number, ve
     }
 
 
+def editorial_image_version_exists(post_number, version):
+    """Evita criar um arquivo no Drive quando a versão já consta no manifesto."""
+    ensure_editorial_image_assets_table()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, sha256 FROM editorial_image_assets WHERE post_number = %s AND version = %s",
+                (post_number, version),
+            )
+            row = cur.fetchone()
+    return row
+
+
 def register_editorial_image_asset(post_number, version, uploaded, generator=None, prompt=None):
     """Registra somente um upload já confirmado; repetições não sobrescrevem versões."""
     ensure_editorial_image_assets_table()
@@ -1537,6 +1550,14 @@ def google_drive_image_asset_upload_route():
         version = int(request.form.get("version", "1"))
         if not 1 <= post_number <= 10000 or not 1 <= version <= 10000:
             raise ValueError("Número do post ou versão fora do intervalo permitido.")
+        existing = editorial_image_version_exists(post_number, version)
+        if existing:
+            return jsonify({
+                "status": "conflict",
+                "mensagem": "Essa versão já existe no manifesto; nenhuma nova imagem foi enviada.",
+                "asset_id": existing[0],
+                "sha256": existing[1],
+            }), 409
         file = request.files.get("image")
         if file is None:
             raise ValueError("Envie o arquivo no campo multipart 'image'.")
