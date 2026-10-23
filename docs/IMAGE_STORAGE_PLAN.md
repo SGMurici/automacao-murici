@@ -70,3 +70,10 @@ Foi preparada uma primeira implementação isolada em `app.py`:
 5. Só então avaliar ativação para imagens editoriais reais.
 
 **Não altere o escopo nem habilite a escrita em produção ainda.** O fluxo atual continua em modo somente leitura por padrão.
+
+
+## Estado da autorização existente (histórico do projeto)
+
+Em 6 de outubro de 2026, o fluxo OAuth do projeto registrou autorização da conta lógica **Drive5**: o callback retornou sucesso, recebeu access token e refresh token, e o token foi armazenado criptografado no PostgreSQL. Isso significa que a ligação entre a aplicação Automação Murici e a conta Google já foi iniciada e não deve ser refeita sem necessidade.
+
+Isso não equivale a uma conexão nativa do Google Drive com o ChatGPT. O acesso existente é feito pelo código da aplicação e pelo token salvo no banco. O código atual solicita `drive.readonly`, portanto a autorização conhecida é insuficiente para upload. A etapa futura é ampliar o escopo após aprovação, reautorizar e validar a escrita — não repetir a configuração inteira do zero.
