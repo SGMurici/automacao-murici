@@ -1221,6 +1221,47 @@ def health():
     )
 
 
+@app.get("/readiness")
+def readiness():
+    """
+    Resume a prontidao da configuracao sem revelar valores de segredos.
+    A rota exige a chave operacional e nao acessa nem modifica o banco.
+    """
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+
+    required_settings = {
+        "FLASK_SECRET_KEY": app.secret_key,
+        "DATABASE_URL": DATABASE_URL,
+        "LINKEDIN_CLIENT_ID": LINKEDIN_CLIENT_ID,
+        "LINKEDIN_CLIENT_SECRET": LINKEDIN_CLIENT_SECRET,
+        "GOOGLE_CLIENT_ID": GOOGLE_CLIENT_ID,
+        "GOOGLE_CLIENT_SECRET": GOOGLE_CLIENT_SECRET,
+        "TOKEN_ENCRYPTION_KEY": TOKEN_ENCRYPTION_KEY,
+        "PUBLISH_SECRET": PUBLISH_SECRET,
+    }
+    configured = sorted(
+        name for name, value in required_settings.items()
+        if isinstance(value, str) and value.strip()
+    )
+    missing = sorted(set(required_settings) - set(configured))
+
+    return jsonify({
+        "status": "ready" if not missing else "configuration_incomplete",
+        "configured_count": len(configured),
+        "required_count": len(required_settings),
+        "missing_settings": missing,
+        "features": {
+            "linkedin_publishing": bool(LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET),
+            "google_drive": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
+            "automatic_linkedin_analytics": LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED,
+        },
+        "secrets_exposed": False,
+        "database_checked": False,
+    }), (200 if not missing else 503)
+
+
 @app.get("/db-test")
 def db_test():
     auth_error = require_publish_secret()
