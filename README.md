@@ -23,3 +23,8 @@ Interpretação da resposta:
 - Não ativar publicação automática, coleta automática de métricas, deploy ou migrações sem validação e autorização específicas.
 - A coleta automática de analytics permanece desativada por padrão.
 - Nunca registrar tokens OAuth, segredos de cliente ou a chave operacional em logs, URLs ou respostas HTTP.
+
+
+## Armazenamento de imagens editoriais (em desenvolvimento)
+
+A primeira implementação do endpoint `POST /google-drive/image-assets` está isolada na branch `ai-code-executor-bootstrap`. O endpoint exige `X-Publish-Secret`, aceita somente JPG/PNG/WEBP e limita imagens a 15 MiB. A gravação fica bloqueada por padrão por `GOOGLE_DRIVE_WRITE_ENABLED=false`; o escopo Google continua `drive.readonly` por padrão. Não habilite a escrita nem faça deploy antes da revisão, reautorização OAuth e teste de recuperação descritos em [docs/IMAGE_STORAGE_PLAN.md](docs/IMAGE_STORAGE_PLAN.md).
