@@ -620,6 +620,7 @@ def google_drive_list_art_folder(account_name="Drive5"):
         "pasta_id": folder_id,
         "quantidade": len(files),
         "limite_paginas": 10,
+        "truncated": bool(page_token),
         "arquivos": files,
     }
 
@@ -921,7 +922,7 @@ def reconcile_editorial_image_assets():
         "drive_files_scanned": len(drive_files),
         "missing_drive_files": missing_files,
         "unregistered_editorial_files": unregistered_files,
-        "truncated_scan_possible": len(drive_files) >= 1000,
+        "truncated_scan_possible": bool(drive_result.get("truncated", False)),
     }
 
 
