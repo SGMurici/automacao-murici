@@ -52,6 +52,8 @@ class AppSourceSafetyTests(unittest.TestCase):
             "ON CONFLICT (post_number, version) DO NOTHING",
             "editorial_image_version_exists",
             "reconcile_editorial_image_assets",
+            '"truncated": bool(page_token)',
+            '"truncated_scan_possible": bool(drive_result.get("truncated", False))',
             "hashlib.sha256(recovered_bytes).hexdigest() != digest",
         ):
             with self.subTest(marker=marker):
