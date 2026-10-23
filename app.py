@@ -806,6 +806,23 @@ def google_drive_upload_image(file_name, mime_type, image_bytes, post_number, ve
         or folder_id not in response_data.get("parents", [])
     ):
         raise RuntimeError("A verificação dos metadados do upload falhou.")
+    # Verifica o conteúdo recuperado, não apenas o tamanho/metadados.
+    download_url = (
+        f"{GOOGLE_DRIVE_FILES_URL}/{urllib.parse.quote(file_id, safe='')}?"
+        + urllib.parse.urlencode({"alt": "media"})
+    )
+    download_request = urllib.request.Request(
+        download_url,
+        headers={"Authorization": f"Bearer {access_token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(download_request, timeout=60) as download_response:
+            recovered_bytes = download_response.read(MAX_EDITORIAL_IMAGE_BYTES + 1)
+    except (urllib.error.HTTPError, urllib.error.URLError):
+        raise RuntimeError("O arquivo foi enviado, mas não pôde ser recuperado para verificação.") from None
+    if len(recovered_bytes) != len(image_bytes) or hashlib.sha256(recovered_bytes).hexdigest() != digest:
+        raise RuntimeError("O hash do arquivo recuperado não corresponde ao original.")
     return {
         "drive_file_id": file_id,
         "file_name": stored_name,
@@ -856,6 +873,56 @@ def register_editorial_image_asset(post_number, version, uploaded, generator=Non
                 )
         conn.commit()
     return row[0]
+
+
+
+
+def reconcile_editorial_image_assets():
+    """Compara o manifesto PostgreSQL com os nomes/IDs visíveis na pasta do Drive."""
+    drive_result = google_drive_list_art_folder()
+    drive_files = drive_result.get("arquivos", [])
+    drive_by_id = {item.get("id"): item for item in drive_files if item.get("id")}
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT post_number, version, drive_file_id, file_name, sha256, status
+                FROM editorial_image_assets
+                ORDER BY post_number, version
+                """
+            )
+            rows = cur.fetchall()
+    manifest_ids = {row[2] for row in rows}
+    missing_files = [
+        {
+            "post_number": row[0],
+            "version": row[1],
+            "drive_file_id": row[2],
+            "file_name": row[3],
+            "status": row[5],
+        }
+        for row in rows if row[2] not in drive_by_id
+    ]
+    unregistered_files = [
+        {
+            "drive_file_id": item.get("id"),
+            "file_name": item.get("name"),
+            "mime_type": item.get("mimeType"),
+            "byte_size": item.get("size"),
+        }
+        for item in drive_files
+        if item.get("id") not in manifest_ids
+        and re.match(r"^post-\d+-v\d+-", str(item.get("name", "")))
+    ]
+    return {
+        "status": "ok",
+        "mode": "read_only",
+        "manifest_entries": len(rows),
+        "drive_files_scanned": len(drive_files),
+        "missing_drive_files": missing_files,
+        "unregistered_editorial_files": unregistered_files,
+        "truncated_scan_possible": len(drive_files) >= 1000,
+    }
 
 
 def http_json_request(
@@ -1591,6 +1658,20 @@ def google_drive_image_asset_upload_route():
         return jsonify({"status": "erro", "mensagem": str(error)}), status
     except Exception:
         app.logger.exception("Falha no armazenamento de imagem editorial")
+        return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
+
+
+
+@app.get("/google-drive/image-assets/reconcile")
+def google_drive_image_asset_reconcile_route():
+    """Reconciliação somente leitura entre a pasta do Drive e o manifesto."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    try:
+        return jsonify(reconcile_editorial_image_assets())
+    except Exception:
+        app.logger.exception("Falha na reconciliação das imagens editoriais")
         return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
 
 
