@@ -162,3 +162,28 @@ A Sheets API distingue escopos de leitura e escrita. O escopo `https://www.googl
 - O escopo atual do Drive é `drive.readonly`; ele não autoriza upload e não deve ser tratado como permissão de escrita no Sheets.
 - Nenhuma API, escopo OAuth, token, planilha real ou configuração de produção deve ser alterada sem aprovação explícita e um teste controlado.
 - Próxima ação técnica segura: inspecionar a implementação OAuth atual e os arquivos do tracker para planejar o módulo Sheets isolado, mantendo o fluxo existente intacto.
+
+
+## Decisão de prioridade consolidada (atualização do usuário)
+
+O usuário esclareceu que o arquivo de planejamento editorial permanece apenas no armazenamento local do telefone; ainda não foi enviado ao Google Drive nem convertido para Google Planilhas. A menção ao Sheets foi orientação para a arquitetura futura, não um pedido para priorizar a migração da planilha neste momento.
+
+### Prioridade principal
+
+**Estabelecer primeiro um armazém seguro, durável, recuperável e compartilhável com o GPT por meio de integração autorizada.** A planilha online é uma camada de operação que deve aproveitar essa arquitetura, não substituir nem desviar o trabalho central.
+
+### Execução integrada, sem ampliar o risco
+
+1. Manter a persistência de arquivos (Drive + manifesto e verificação de integridade) como caminho crítico.
+2. Projetar IDs, metadados, permissões, logs e recuperação de forma reutilizável por imagens, documentos e registros editoriais.
+3. Preparar a integração Google Planilhas em paralelo apenas quando isso não bloquear nem atrasar o armazenamento seguro.
+4. Quando chegar a hora, migrar o arquivo que hoje está no telefone para um único Google Sheets canônico, validar todos os registros e só então usá-lo como tracker online.
+5. Diferenciar claramente três coisas: (a) arquivos persistidos no Drive, (b) metadados operacionais no banco/planilha, e (c) acesso direto do ChatGPT/GPT. A primeira e a segunda não implicam automaticamente a terceira; o caminho de acesso do GPT deve ser implementado e testado por uma integração autorizada.
+
+### Estado confirmado e limites
+
+- O arquivo Excel do planejamento editorial ainda está apenas no telefone, conforme informado pelo usuário.
+- Não há planilha Google canônica selecionada nem migração feita.
+- O código de armazenamento no Drive já tem implementação inicial isolada, mas a autorização Google conhecida solicita `drive.readonly`; escrita real segue bloqueada até aprovação e reautorização.
+- Não houve upload do arquivo local, alteração de dados reais, alteração de escopos OAuth ou deploy nesta etapa.
+- Próximo trabalho técnico: revisar e testar em ambiente isolado a implementação de persistência existente, identificar falhas de recuperação/idempotência e desenhar a integração compartilhada para GPT; depois pedir apenas as intervenções realmente indispensáveis do usuário.
