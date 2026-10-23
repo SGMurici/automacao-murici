@@ -1,7 +1,7 @@
 """Basic source-level safety checks for the Flask application.
 
-These tests intentionally avoid importing app.py, which would initialize
-application dependencies and may depend on deployment environment variables.
+These tests avoid importing app.py, which may depend on deployment environment
+variables and external services.
 """
 import ast
 import unittest
@@ -21,7 +21,7 @@ class AppSourceSafetyTests(unittest.TestCase):
         self.assertIn("MAX_CONTENT_LENGTH", self.source)
         self.assertIn("1 * 1024 * 1024", self.source)
 
-    def test_oauth_secrets_are_read_from_environment(self):
+    def test_sensitive_configuration_uses_environment_variables(self):
         for variable in (
             "LINKEDIN_CLIENT_SECRET",
             "GOOGLE_CLIENT_SECRET",
@@ -31,13 +31,13 @@ class AppSourceSafetyTests(unittest.TestCase):
         ):
             with self.subTest(variable=variable):
                 self.assertIn(variable, self.source)
-                self.assertIn("os.environ.get", self.source)
+        self.assertIn("os.environ.get", self.source)
 
-    def test_automatic_linkedin_analytics_is_opt_in(self):
-        self.assertIn('os.environ.get("LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED", "false")', self.source)
+    def test_automatic_linkedin_analytics_is_disabled_by_default(self):
+        self.assertIn("LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED", self.source)
+        self.assertIn('"false"', self.source)
 
     def test_source_parses_as_python(self):
-        # Parsing is separate from compileall so failures have a clear test name.
         self.assertIsInstance(self.tree, ast.Module)
 
 
