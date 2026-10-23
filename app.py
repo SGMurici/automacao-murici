@@ -1,6 +1,8 @@
 import os
 import json
 import secrets
+import hashlib
+import re
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -22,7 +24,7 @@ app.config.update(
         os.environ.get("FLASK_ENV", "").lower() == "production"
         or os.environ.get("RENDER", "").lower() == "true"
     ),
-    MAX_CONTENT_LENGTH=1 * 1024 * 1024,
+    MAX_CONTENT_LENGTH=16 * 1024 * 1024,
 )
 
 @app.after_request
@@ -92,6 +94,20 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 GOOGLE_DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files"
 GOOGLE_DRIVE_ART_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_ART_FOLDER_ID", "").strip()
+# Mantem o acesso de leitura como padrao ate o usuario aprovar a ampliacao OAuth.
+GOOGLE_DRIVE_SCOPE = os.environ.get(
+    "GOOGLE_DRIVE_SCOPE", "https://www.googleapis.com/auth/drive.readonly"
+).strip()
+GOOGLE_DRIVE_WRITE_ENABLED = (
+    os.environ.get("GOOGLE_DRIVE_WRITE_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+MAX_EDITORIAL_IMAGE_BYTES = 15 * 1024 * 1024
+ALLOWED_EDITORIAL_IMAGE_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
 
 
 
@@ -667,6 +683,167 @@ def google_drive_test(account_name="Drive5"):
         "pasta_teste": folder_name,
         "folder_id": folder_id,
     }
+
+
+def ensure_editorial_image_assets_table():
+    """Cria o manifesto persistente; nao executa upload nem altera arquivos do Drive."""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS editorial_image_assets (
+                    id BIGSERIAL PRIMARY KEY,
+                    post_number INTEGER NOT NULL CHECK (post_number BETWEEN 1 AND 10000),
+                    version INTEGER NOT NULL CHECK (version >= 1),
+                    drive_file_id TEXT NOT NULL UNIQUE,
+                    file_name TEXT NOT NULL,
+                    mime_type VARCHAR(50) NOT NULL,
+                    byte_size BIGINT NOT NULL CHECK (byte_size > 0),
+                    sha256 CHAR(64) NOT NULL,
+                    generator VARCHAR(100),
+                    prompt TEXT,
+                    status VARCHAR(30) NOT NULL DEFAULT 'stored'
+                        CHECK (status IN ('stored', 'verification_failed', 'missing')),
+                    verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (post_number, version)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_editorial_image_assets_post
+                ON editorial_image_assets(post_number, version);
+                """
+            )
+        conn.commit()
+
+
+def validate_editorial_image(file_name, mime_type, image_bytes):
+    """Valida formato, nome e tamanho antes de qualquer chamada externa."""
+    if not isinstance(image_bytes, bytes) or not image_bytes:
+        raise ValueError("O arquivo de imagem está vazio.")
+    if len(image_bytes) > MAX_EDITORIAL_IMAGE_BYTES:
+        raise ValueError("A imagem excede o limite de 15 MB.")
+    if mime_type not in ALLOWED_EDITORIAL_IMAGE_TYPES:
+        raise ValueError("Formato não permitido. Use JPG, PNG ou WEBP.")
+    clean_name = os.path.basename(str(file_name or "")).strip()
+    clean_name = re.sub(r"[^A-Za-z0-9._-]+", "-", clean_name).strip(".-_")
+    if not clean_name:
+        raise ValueError("Nome de arquivo inválido.")
+    expected_ext = ALLOWED_EDITORIAL_IMAGE_TYPES[mime_type]
+    if not clean_name.lower().endswith(expected_ext):
+        clean_name = f"{clean_name}{expected_ext}"
+    # Conferencia simples de assinatura binaria para evitar confiar apenas no MIME enviado.
+    signatures = {
+        "image/jpeg": image_bytes.startswith(b"\xff\xd8\xff"),
+        "image/png": image_bytes.startswith(b"\x89PNG\r\n\x1a\n"),
+        "image/webp": len(image_bytes) >= 12 and image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP",
+    }
+    if not signatures[mime_type]:
+        raise ValueError("O conteúdo do arquivo não corresponde ao formato declarado.")
+    return clean_name, hashlib.sha256(image_bytes).hexdigest()
+
+
+def google_drive_upload_image(file_name, mime_type, image_bytes, post_number, version, account_name="Drive5"):
+    """Envia uma imagem via multipart; bloqueado por padrão até a escrita ser autorizada."""
+    if not GOOGLE_DRIVE_WRITE_ENABLED:
+        raise PermissionError(
+            "Upload bloqueado: GOOGLE_DRIVE_WRITE_ENABLED está desativado. "
+            "A escrita só deve ser habilitada após aprovação e reautorização OAuth."
+        )
+    account_name = normalize_google_account_name(account_name)
+    folder_id = GOOGLE_DRIVE_ART_FOLDER_ID
+    if not folder_id:
+        raise RuntimeError("GOOGLE_DRIVE_ART_FOLDER_ID não configurado.")
+    clean_name, digest = validate_editorial_image(file_name, mime_type, image_bytes)
+    stored_name = f"post-{post_number:03d}-v{version}-{clean_name}"
+    boundary = "----AutomacaoMurici" + secrets.token_hex(16)
+    metadata = {
+        "name": stored_name,
+        "mimeType": mime_type,
+        "parents": [folder_id],
+        "description": f"Automacao Murici; post={post_number}; versao={version}; sha256={digest}",
+    }
+    body = (
+        f"--{boundary}\r\n"
+        "Content-Type: application/json; charset=UTF-8\r\n\r\n"
+        + json.dumps(metadata, ensure_ascii=False)
+        + f"\r\n--{boundary}\r\n"
+        f"Content-Type: {mime_type}\r\n\r\n"
+    ).encode("utf-8") + image_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
+    access_token = google_drive_access_token(account_name)
+    query = urllib.parse.urlencode({"uploadType": "multipart", "fields": "id,name,mimeType,size,parents"})
+    req = urllib.request.Request(
+        f"{GOOGLE_DRIVE_FILES_URL}?{query}",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": f"multipart/related; boundary={boundary}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            response_data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        # Não retornar o corpo do Google ao cliente nem registrar tokens.
+        if error.code in (401, 403):
+            raise PermissionError(
+                "Google Drive negou a gravação. Verifique o escopo OAuth e a autorização da conta."
+            ) from None
+        raise RuntimeError(f"Falha no upload ao Google Drive (HTTP {error.code}).") from None
+    except urllib.error.URLError:
+        raise RuntimeError("Falha de comunicação durante o upload ao Google Drive.") from None
+    file_id = response_data.get("id") if isinstance(response_data, dict) else None
+    if not file_id:
+        raise RuntimeError("Google Drive não confirmou o ID do arquivo enviado.")
+    # Confirma os metadados retornados pela API antes de registrar como armazenado.
+    if (
+        response_data.get("name") != stored_name
+        or response_data.get("mimeType") != mime_type
+        or str(response_data.get("size", "")) != str(len(image_bytes))
+        or folder_id not in response_data.get("parents", [])
+    ):
+        raise RuntimeError("A verificação dos metadados do upload falhou.")
+    return {
+        "drive_file_id": file_id,
+        "file_name": stored_name,
+        "mime_type": mime_type,
+        "byte_size": len(image_bytes),
+        "sha256": digest,
+    }
+
+
+def register_editorial_image_asset(post_number, version, uploaded, generator=None, prompt=None):
+    """Registra somente um upload já confirmado; repetições não sobrescrevem versões."""
+    ensure_editorial_image_assets_table()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO editorial_image_assets
+                    (post_number, version, drive_file_id, file_name, mime_type,
+                     byte_size, sha256, generator, prompt, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'stored')
+                ON CONFLICT (post_number, version) DO NOTHING
+                RETURNING id
+                """,
+                (
+                    post_number, version, uploaded["drive_file_id"],
+                    uploaded["file_name"], uploaded["mime_type"],
+                    uploaded["byte_size"], uploaded["sha256"],
+                    generator, prompt,
+                ),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(
+                    "Essa versão do post já está registrada. Consulte o manifesto antes de tentar novamente."
+                )
+        conn.commit()
+    return row[0]
+
 
 def http_json_request(
     url,
@@ -1343,6 +1520,59 @@ def google_drive_check_route():
         app.logger.exception("Falha na rota /google-drive/check")
         return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
 
+
+@app.post("/google-drive/image-assets")
+def google_drive_image_asset_upload_route():
+    """Upload autenticado e desativado por padrão; exige segredo operacional."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    if not GOOGLE_DRIVE_WRITE_ENABLED:
+        return jsonify({
+            "status": "blocked",
+            "mensagem": "Upload desativado. É necessária autorização explícita para habilitar escrita no Google Drive.",
+        }), 423
+    try:
+        post_number = int(request.form.get("post_number", ""))
+        version = int(request.form.get("version", "1"))
+        if not 1 <= post_number <= 10000 or not 1 <= version <= 10000:
+            raise ValueError("Número do post ou versão fora do intervalo permitido.")
+        file = request.files.get("image")
+        if file is None:
+            raise ValueError("Envie o arquivo no campo multipart 'image'.")
+        image_bytes = file.read(MAX_EDITORIAL_IMAGE_BYTES + 1)
+        clean_name, _ = validate_editorial_image(
+            file.filename, file.mimetype, image_bytes
+        )
+        uploaded = google_drive_upload_image(
+            clean_name, file.mimetype, image_bytes, post_number, version
+        )
+        asset_id = register_editorial_image_asset(
+            post_number,
+            version,
+            uploaded,
+            generator=request.form.get("generator", "")[:100] or None,
+            prompt=request.form.get("prompt", "")[:10000] or None,
+        )
+        return jsonify({
+            "status": "stored",
+            "asset_id": asset_id,
+            "post_number": post_number,
+            "version": version,
+            "file_name": uploaded["file_name"],
+            "byte_size": uploaded["byte_size"],
+            "sha256": uploaded["sha256"],
+            "drive_file_id": uploaded["drive_file_id"],
+            "verified": True,
+        }), 201
+    except (ValueError, PermissionError) as error:
+        status = 403 if isinstance(error, PermissionError) else 400
+        return jsonify({"status": "erro", "mensagem": str(error)}), status
+    except Exception:
+        app.logger.exception("Falha no armazenamento de imagem editorial")
+        return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
+
+
 @app.get("/google-drive/art-folder")
 def google_drive_art_folder_route():
     """Lista os metadados dos arquivos da pasta de artes configurada."""
@@ -1690,7 +1920,7 @@ def google_login():
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "response_type": "code",
-        "scope": "https://www.googleapis.com/auth/drive.readonly",
+        "scope": GOOGLE_DRIVE_SCOPE,
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
