@@ -109,3 +109,56 @@ O usuário autorizou prosseguir com a exploração técnica de acesso ao Gmail d
 - O conector nativo Gmail do ChatGPT apareceu como indisponível/desabilitado pela administração neste ambiente; a integração própria da Automação Murici é a alternativa a investigar.
 - Não alterar OAuth em produção, segredos, banco real, deploy ou caixas postais reais sem uma etapa explícita de autorização e teste.
 - Antes de uma autorização real, pedir ao usuário que selecione quais contas conectar e confirme o conjunto de permissões. Não solicitar senhas ou códigos de autenticação por chat.
+
+
+## Nova frente aprovada: Google Planilhas como fonte operacional única
+
+O usuário destacou que conectar a Automação Murici ao Google Planilhas permitirá manter uma planilha online única, evitando dezenas ou centenas de cópias e atualizações dispersas em conversas. Esta frente deve ser integrada ao planejamento do projeto.
+
+### Objetivo
+
+Adotar uma planilha Google central para o planejamento editorial do LinkedIn e, progressivamente, para os registros operacionais da automação. O Google Planilhas será a interface editável e a fonte operacional compartilhada para os dados tabulares; o Drive continuará armazenando os arquivos de imagem, e o PostgreSQL continuará responsável pelos dados transacionais/técnicos da aplicação quando necessário.
+
+### Arquitetura proposta
+
+1. **Planilha canônica:** uma única planilha Google identificada por ID configurado no servidor. Não criar cópias a cada atualização.
+2. **Abas organizadas:** planejamento editorial; textos dos posts; status e agenda; métricas; ativos/imagens (com links do Drive); histórico de alterações e pendências.
+3. **Identificador estável:** cada post deve ter um ID permanente (por exemplo, `post-041`) independente da posição da linha. Não localizar registros apenas por número de linha, pois o usuário pode ordenar ou inserir linhas.
+4. **Leitura antes da escrita:** localizar o registro pelo ID, validar o estado atual e atualizar somente as colunas autorizadas. Evitar reescrever a planilha inteira a cada operação.
+5. **Escritas em lote e confirmação:** usar a Google Sheets API para agrupar alterações relacionadas; confirmar a resposta da API e, para operações críticas, reler o intervalo alterado antes de reportar sucesso.
+6. **Histórico:** registrar operação, ID do post, campos alterados, timestamp e origem. Não guardar tokens nem conteúdo pessoal desnecessário nos logs.
+7. **Concorrência e recuperação:** definir como tratar edições manuais simultâneas; preservar campos não envolvidos, detectar conflitos e permitir reprocessamento idempotente.
+8. **Links de imagens:** guardar IDs/URLs do Drive e status de verificação, sem incorporar binários na planilha.
+9. **Acesso e permissões:** escolher uma conta Google de serviço/usuário adequada e conceder apenas o acesso necessário à planilha-alvo. Não presumir que o OAuth atual de leitura do Drive já permita editar planilhas.
+10. **Backup e exportação:** documentar exportação periódica e recuperação, mantendo uma cópia de segurança versionada sem transformar cópias em fontes concorrentes.
+
+### OAuth e permissões
+
+A Sheets API distingue escopos de leitura e escrita. O escopo `https://www.googleapis.com/auth/spreadsheets` permite ler, editar, criar e excluir planilhas; `https://www.googleapis.com/auth/spreadsheets.readonly` é somente leitura. O escopo `https://www.googleapis.com/auth/drive.file` pode ser uma alternativa de menor abrangência para arquivos específicos usados com o aplicativo, dependendo de como a planilha será selecionada/criada. A escolha final deve considerar o fluxo real e o menor privilégio, sem ampliar permissões existentes automaticamente.
+
+### Fases sugeridas
+
+- **Sheets A — inventário:** verificar o código OAuth atual, APIs habilitadas, contas Google já autorizadas, esquema do tracker editorial e localização do arquivo operacional mais recente.
+- **Sheets B — desenho do esquema:** definir colunas, abas, IDs estáveis, estados permitidos, campos de métricas e regras de atualização sem alterar os dados atuais.
+- **Sheets C — cliente isolado:** implementar funções de leitura e validação da planilha por ID, com testes simulados e configuração desativada por padrão.
+- **Sheets D — teste de leitura:** após escolha da planilha e autorização apropriada, ler cabeçalhos e algumas linhas, sem escrever.
+- **Sheets E — escrita controlada:** após aprovação explícita, atualizar um registro de teste ou campo de teste, reler para confirmar e testar conflito/repetição.
+- **Sheets F — migração:** só depois de validar o fluxo, migrar o tracker editorial atual para uma planilha Google canônica e conferir os registros antes de declarar a migração concluída.
+- **Sheets G — operação integrada:** usar a planilha central para as atualizações editoriais futuras e manter Drive/PostgreSQL nos papéis descritos acima.
+
+### Critérios de aceite
+
+- Uma única planilha canônica identificada por ID; nenhuma cópia nova a cada turno.
+- Cada atualização encontra o registro por ID estável e modifica apenas os campos necessários.
+- Resposta de sucesso só após confirmação da API e verificação adequada.
+- Testes cobrem ID inexistente, linha reordenada, repetição da mesma operação, erro de API e edição concorrente.
+- Exportação/recuperação documentada.
+- O tracker original só é substituído após validação e autorização.
+
+### Bloqueios e estado atual
+
+- A integração Google Planilhas ainda não foi implementada nem autorizada nesta etapa.
+- Não foi escolhida nem verificada a planilha Google canônica; não presumir que o arquivo Excel local já tenha sido convertido.
+- O escopo atual do Drive é `drive.readonly`; ele não autoriza upload e não deve ser tratado como permissão de escrita no Sheets.
+- Nenhuma API, escopo OAuth, token, planilha real ou configuração de produção deve ser alterada sem aprovação explícita e um teste controlado.
+- Próxima ação técnica segura: inspecionar a implementação OAuth atual e os arquivos do tracker para planejar o módulo Sheets isolado, mantendo o fluxo existente intacto.
