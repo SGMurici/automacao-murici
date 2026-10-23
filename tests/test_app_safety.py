@@ -51,6 +51,8 @@ class AppSourceSafetyTests(unittest.TestCase):
             "editorial_image_assets",
             "ON CONFLICT (post_number, version) DO NOTHING",
             "editorial_image_version_exists",
+            "reconcile_editorial_image_assets",
+            "hashlib.sha256(recovered_bytes).hexdigest() != digest",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.source)
