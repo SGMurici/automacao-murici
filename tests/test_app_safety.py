@@ -68,7 +68,7 @@ class AppSourceSafetyTests(unittest.TestCase):
         ):
             with self.subTest(scope=scope):
                 self.assertIn(scope, self.source)
-        self.assertIn('"scope": GOOGLE_DRIVE_SCOPE', self.source)
+        self.assertIn('"scope": GOOGLE_WORKSPACE_SCOPES', self.source)
 
     def test_three_google_accounts_are_allowlisted(self):
         for account in ("Drive5", "Drive1", "SGMurici/pessoal"):
