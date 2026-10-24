@@ -38,9 +38,9 @@ class AppSourceSafetyTests(unittest.TestCase):
         self.assertIn("LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED", self.source)
         self.assertIn('"false"', self.source)
 
-
-    def test_image_upload_is_disabled_by_default(self):
+    def test_google_write_operations_are_disabled_by_default(self):
         self.assertIn('"GOOGLE_DRIVE_WRITE_ENABLED", "false"', self.source)
+        self.assertIn('"GOOGLE_SHEETS_WRITE_ENABLED", "false"', self.source)
         self.assertIn('return jsonify({\n            "status": "blocked"', self.source)
 
     def test_image_storage_validates_type_size_and_hash(self):
@@ -59,9 +59,27 @@ class AppSourceSafetyTests(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.source)
 
-    def test_google_drive_scope_remains_readonly_by_default(self):
-        self.assertIn('"https://www.googleapis.com/auth/drive.readonly"', self.source)
+    def test_google_workspace_scopes_are_explicit(self):
+        for scope in (
+            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.send",
+        ):
+            with self.subTest(scope=scope):
+                self.assertIn(scope, self.source)
         self.assertIn('"scope": GOOGLE_DRIVE_SCOPE', self.source)
+
+    def test_three_google_accounts_are_allowlisted(self):
+        for account in ("Drive5", "Drive1", "SGMurici/pessoal"):
+            with self.subTest(account=account):
+                self.assertIn(account, self.source)
+        self.assertIn("def normalize_google_account_name", self.source)
+
+    def test_gmail_reader_is_read_only_and_account_scoped(self):
+        self.assertIn('@app.get("/gmail/messages")', self.source)
+        self.assertIn('normalize_google_account_name(request.args.get("account", "Drive5"))', self.source)
+        self.assertIn('"mode": "read_only_metadata"', self.source)
 
     def test_source_parses_as_python(self):
         self.assertIsInstance(self.tree, ast.Module)
