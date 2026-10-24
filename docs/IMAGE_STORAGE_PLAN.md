@@ -251,3 +251,12 @@ O usuário pediu que a automação também:
 ### Próximo bloqueio humano
 
 Quando os testes locais/simulados e a revisão de código estiverem concluídos, será necessário que o usuário habilite Drive API, Gmail API e Sheets API no mesmo projeto Google Cloud, revise a tela de consentimento e execute uma autorização OAuth para cada uma das três contas, uma de cada vez. Não pedir credenciais, tokens ou códigos de autenticação no chat. Não implantar antes de validar o fluxo combinado e as permissões efetivamente concedidas.
+
+
+### Correção de responsabilidades confirmada pelo usuário — 2026-10-23
+
+- **Aulas:** os materiais de aula estão originalmente em **Drive1/profissional**. O usuário acabou de compartilhar esses materiais com **Drive5/automação**. A implementação deve verificar primeiro se Drive5 consegue listar e ler os arquivos compartilhados, sem mover, duplicar, renomear ou alterar os originais. Drive1 permanece a origem dos materiais.
+- **Candidaturas:** acompanhar mensagens de processos seletivos nas caixas **SGMurici/pessoal** e **Drive1/profissional**. **Drive5/automação** não é uma caixa de candidatura, salvo instrução posterior explícita. A identidade da conta deve ser registrada em cada resultado e qualquer resposta deve ser enviada pela mesma caixa que recebeu a mensagem.
+- **Gemini:** o usuário informou que integrou o Gemini ao Google e recebeu dele a confirmação de que o cliente OAuth web “Automacao Murici - Web” existe. Isso confirma apenas que o usuário consegue ver o cliente OAuth e que o Gemini está disponível no seu ambiente; não concede ao ChatGPT acesso direto ao Gemini, às credenciais Google ou aos arquivos. O ChatGPT não pode enviar tarefas ao Gemini por conta própria através desta conversa sem uma ferramenta/conector explícito. Podemos fornecer instruções para o usuário colar no Gemini ou integrar a Gemini API ao backend, mediante configuração própria e testes.
+- **Credencial OAuth:** o usuário confirmou que abriu o projeto Google Cloud e localizou o cliente “Automacao Murici - Web”. O ID completo não é necessário no chat; não solicitar segredo OAuth, token ou código de autenticação.
+- **Próxima validação:** depois da autorização, testar leitura de uma aula de exemplo compartilhada, verificar que o arquivo original não foi alterado, validar o resumo/transcrição e somente depois implementar processamento em lote. Para Gmail, iniciar com leitura/classificação em modo simulado, sem envio, até que a classificação e a deduplicação sejam testadas.
