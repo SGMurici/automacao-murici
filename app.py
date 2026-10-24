@@ -99,7 +99,7 @@ GOOGLE_DRIVE_ART_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_ART_FOLDER_ID", "").st
 # e também com Google Sheets; Gmail começa em somente leitura.
 GOOGLE_WORKSPACE_SCOPES = os.environ.get(
     "GOOGLE_WORKSPACE_SCOPES",
-    "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send",
 ).strip()
 # Alias temporário para funções existentes de diagnóstico.
 GOOGLE_DRIVE_SCOPE = GOOGLE_WORKSPACE_SCOPES
