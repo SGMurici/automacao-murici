@@ -99,7 +99,7 @@ GOOGLE_DRIVE_ART_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_ART_FOLDER_ID", "").st
 # e também com Google Sheets; Gmail começa em somente leitura.
 GOOGLE_WORKSPACE_SCOPES = os.environ.get(
     "GOOGLE_WORKSPACE_SCOPES",
-    "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send",
 ).strip()
 # Alias temporário para funções existentes de diagnóstico.
 GOOGLE_DRIVE_SCOPE = GOOGLE_WORKSPACE_SCOPES
@@ -414,16 +414,22 @@ def linkedin_member_id_from_database():
 
 
 def normalize_google_account_name(account_name):
-    """Restringe as operacoes do projeto exclusivamente a conta Google Drive5."""
+    """Aceita apenas as três contas Google autorizadas para este projeto."""
     if account_name is None or not str(account_name).strip():
         return "Drive5"
     normalized = str(account_name).strip()
-    if normalized != "Drive5":
+    aliases = {
+        "drive5": "Drive5",
+        "drive1": "Drive1",
+        "sgmurici/pessoal": "SGMurici/pessoal",
+        "sgmurici-pessoal": "SGMurici/pessoal",
+    }
+    result = aliases.get(normalized.lower())
+    if not result:
         raise ValueError(
-            "Esta automacao esta configurada para usar exclusivamente "
-            "a conta Drive5."
+            "Conta Google não permitida. Use Drive5, Drive1 ou SGMurici/pessoal."
         )
-    return "Drive5"
+    return result
 
 
 def google_tokens_from_database(account_name="Drive5"):
@@ -3255,9 +3261,10 @@ def analytics_collect():
 
 # --- Google Workspace integrado: Drive, Gmail e Sheets em um único OAuth ---
 
-def google_workspace_api_request(url, method="GET", payload=None):
-    """Executa chamadas Google autenticadas com o token da conta Drive5."""
-    token = google_drive_access_token("Drive5")
+def google_workspace_api_request(url, method="GET", payload=None, account_name="Drive5"):
+    """Executa chamadas Google autenticadas com o token da conta selecionada."""
+    account_name = normalize_google_account_name(account_name)
+    token = google_drive_access_token(account_name)
     headers = {"Authorization": f"Bearer {token}"}
     data = None
     if payload is not None:
@@ -3321,6 +3328,10 @@ def gmail_messages_route():
     auth_error = require_publish_secret()
     if auth_error:
         return auth_error
+    try:
+        account_name = normalize_google_account_name(request.args.get("account", "Drive5"))
+    except ValueError as error:
+        return jsonify({"status": "erro", "mensagem": str(error)}), 400
     query = (request.args.get("q") or "newer_than:30d").strip()
     try:
         max_results = min(max(int(request.args.get("maxResults", "10")), 1), 25)
@@ -3330,14 +3341,14 @@ def gmail_messages_route():
         list_url = "https://gmail.googleapis.com/gmail/v1/users/me/messages?" + urllib.parse.urlencode({
             "q": query, "maxResults": max_results
         })
-        _, listing, _ = google_workspace_api_request(list_url)
+        _, listing, _ = google_workspace_api_request(list_url, account_name=account_name)
         messages = []
         for item in listing.get("messages", []):
             message_url = "https://gmail.googleapis.com/gmail/v1/users/me/messages/" + urllib.parse.quote(item["id"], safe="") + "?" + urllib.parse.urlencode({
                 "format": "metadata",
                 "metadataHeaders": ["From", "To", "Subject", "Date"]
             }, doseq=True)
-            _, detail, _ = google_workspace_api_request(message_url)
+            _, detail, _ = google_workspace_api_request(message_url, account_name=account_name)
             headers = {
                 h.get("name", "").lower(): h.get("value", "")
                 for h in detail.get("payload", {}).get("headers", [])
@@ -3352,7 +3363,7 @@ def gmail_messages_route():
                 "date": headers.get("date"),
                 "snippet": detail.get("snippet", "")
             })
-        return jsonify({"status": "ok", "mode": "read_only_metadata", "count": len(messages), "messages": messages})
+        return jsonify({"status": "ok", "account": account_name, "mode": "read_only_metadata", "count": len(messages), "messages": messages})
     except Exception:
         app.logger.exception("Falha na leitura de metadados do Gmail")
         return jsonify({"status": "erro", "mensagem": "Falha ao consultar Gmail. Confira OAuth, escopo e Gmail API no Google Cloud."}), 502
