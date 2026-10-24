@@ -1,6 +1,8 @@
 import os
 import json
 import secrets
+import hashlib
+import re
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -22,8 +24,19 @@ app.config.update(
         os.environ.get("FLASK_ENV", "").lower() == "production"
         or os.environ.get("RENDER", "").lower() == "true"
     ),
-    MAX_CONTENT_LENGTH=1 * 1024 * 1024,
+    MAX_CONTENT_LENGTH=16 * 1024 * 1024,
 )
+
+@app.after_request
+def add_security_headers(response):
+    """Aplica cabecalhos defensivos a todas as respostas HTTP."""
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -81,6 +94,32 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 GOOGLE_DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files"
 GOOGLE_DRIVE_ART_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_ART_FOLDER_ID", "").strip()
+# Um único fluxo OAuth para Drive + Gmail + Sheets.
+# drive.file é o escopo de menor abrangência compatível com arquivos específicos do Drive
+# e também com Google Sheets; Gmail começa em somente leitura.
+GOOGLE_WORKSPACE_SCOPES = os.environ.get(
+    "GOOGLE_WORKSPACE_SCOPES",
+    "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send",
+).strip()
+# Alias temporário para funções existentes de diagnóstico.
+GOOGLE_DRIVE_SCOPE = GOOGLE_WORKSPACE_SCOPES
+GOOGLE_SHEETS_SPREADSHEET_ID = os.environ.get(
+    "GOOGLE_SHEETS_SPREADSHEET_ID", ""
+).strip()
+GOOGLE_SHEETS_WRITE_ENABLED = (
+    os.environ.get("GOOGLE_SHEETS_WRITE_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+GOOGLE_DRIVE_WRITE_ENABLED = (
+    os.environ.get("GOOGLE_DRIVE_WRITE_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+MAX_EDITORIAL_IMAGE_BYTES = 15 * 1024 * 1024
+ALLOWED_EDITORIAL_IMAGE_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
 
 
 
@@ -375,16 +414,22 @@ def linkedin_member_id_from_database():
 
 
 def normalize_google_account_name(account_name):
-    """Restringe as operacoes do projeto exclusivamente a conta Google Drive5."""
+    """Aceita apenas as três contas Google autorizadas para este projeto."""
     if account_name is None or not str(account_name).strip():
         return "Drive5"
     normalized = str(account_name).strip()
-    if normalized != "Drive5":
+    aliases = {
+        "drive5": "Drive5",
+        "drive1": "Drive1",
+        "sgmurici/pessoal": "SGMurici/pessoal",
+        "sgmurici-pessoal": "SGMurici/pessoal",
+    }
+    result = aliases.get(normalized.lower())
+    if not result:
         raise ValueError(
-            "Esta automacao esta configurada para usar exclusivamente "
-            "a conta Drive5."
+            "Conta Google não permitida. Use Drive5, Drive1 ou SGMurici/pessoal."
         )
-    return "Drive5"
+    return result
 
 
 def google_tokens_from_database(account_name="Drive5"):
@@ -593,6 +638,7 @@ def google_drive_list_art_folder(account_name="Drive5"):
         "pasta_id": folder_id,
         "quantidade": len(files),
         "limite_paginas": 10,
+        "truncated": bool(page_token),
         "arquivos": files,
     }
 
@@ -656,6 +702,247 @@ def google_drive_test(account_name="Drive5"):
         "pasta_teste": folder_name,
         "folder_id": folder_id,
     }
+
+
+def ensure_editorial_image_assets_table():
+    """Cria o manifesto persistente; nao executa upload nem altera arquivos do Drive."""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS editorial_image_assets (
+                    id BIGSERIAL PRIMARY KEY,
+                    post_number INTEGER NOT NULL CHECK (post_number BETWEEN 1 AND 10000),
+                    version INTEGER NOT NULL CHECK (version >= 1),
+                    drive_file_id TEXT NOT NULL UNIQUE,
+                    file_name TEXT NOT NULL,
+                    mime_type VARCHAR(50) NOT NULL,
+                    byte_size BIGINT NOT NULL CHECK (byte_size > 0),
+                    sha256 CHAR(64) NOT NULL,
+                    generator VARCHAR(100),
+                    prompt TEXT,
+                    status VARCHAR(30) NOT NULL DEFAULT 'stored'
+                        CHECK (status IN ('stored', 'verification_failed', 'missing')),
+                    verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (post_number, version)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_editorial_image_assets_post
+                ON editorial_image_assets(post_number, version);
+                """
+            )
+        conn.commit()
+
+
+def validate_editorial_image(file_name, mime_type, image_bytes):
+    """Valida formato, nome e tamanho antes de qualquer chamada externa."""
+    if not isinstance(image_bytes, bytes) or not image_bytes:
+        raise ValueError("O arquivo de imagem está vazio.")
+    if len(image_bytes) > MAX_EDITORIAL_IMAGE_BYTES:
+        raise ValueError("A imagem excede o limite de 15 MB.")
+    if mime_type not in ALLOWED_EDITORIAL_IMAGE_TYPES:
+        raise ValueError("Formato não permitido. Use JPG, PNG ou WEBP.")
+    clean_name = os.path.basename(str(file_name or "")).strip()
+    clean_name = re.sub(r"[^A-Za-z0-9._-]+", "-", clean_name).strip(".-_")
+    if not clean_name:
+        raise ValueError("Nome de arquivo inválido.")
+    expected_ext = ALLOWED_EDITORIAL_IMAGE_TYPES[mime_type]
+    if not clean_name.lower().endswith(expected_ext):
+        clean_name = f"{clean_name}{expected_ext}"
+    # Conferencia simples de assinatura binaria para evitar confiar apenas no MIME enviado.
+    signatures = {
+        "image/jpeg": image_bytes.startswith(b"\xff\xd8\xff"),
+        "image/png": image_bytes.startswith(b"\x89PNG\r\n\x1a\n"),
+        "image/webp": len(image_bytes) >= 12 and image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP",
+    }
+    if not signatures[mime_type]:
+        raise ValueError("O conteúdo do arquivo não corresponde ao formato declarado.")
+    return clean_name, hashlib.sha256(image_bytes).hexdigest()
+
+
+def google_drive_upload_image(file_name, mime_type, image_bytes, post_number, version, account_name="Drive5"):
+    """Envia uma imagem via multipart; bloqueado por padrão até a escrita ser autorizada."""
+    if not GOOGLE_DRIVE_WRITE_ENABLED:
+        raise PermissionError(
+            "Upload bloqueado: GOOGLE_DRIVE_WRITE_ENABLED está desativado. "
+            "A escrita só deve ser habilitada após aprovação e reautorização OAuth."
+        )
+    account_name = normalize_google_account_name(account_name)
+    folder_id = GOOGLE_DRIVE_ART_FOLDER_ID
+    if not folder_id:
+        raise RuntimeError("GOOGLE_DRIVE_ART_FOLDER_ID não configurado.")
+    clean_name, digest = validate_editorial_image(file_name, mime_type, image_bytes)
+    stored_name = f"post-{post_number:03d}-v{version}-{clean_name}"
+    boundary = "----AutomacaoMurici" + secrets.token_hex(16)
+    metadata = {
+        "name": stored_name,
+        "mimeType": mime_type,
+        "parents": [folder_id],
+        "description": f"Automacao Murici; post={post_number}; versao={version}; sha256={digest}",
+    }
+    body = (
+        f"--{boundary}\r\n"
+        "Content-Type: application/json; charset=UTF-8\r\n\r\n"
+        + json.dumps(metadata, ensure_ascii=False)
+        + f"\r\n--{boundary}\r\n"
+        f"Content-Type: {mime_type}\r\n\r\n"
+    ).encode("utf-8") + image_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
+    access_token = google_drive_access_token(account_name)
+    query = urllib.parse.urlencode({"uploadType": "multipart", "fields": "id,name,mimeType,size,parents"})
+    req = urllib.request.Request(
+        f"{GOOGLE_DRIVE_FILES_URL}?{query}",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": f"multipart/related; boundary={boundary}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            response_data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        # Não retornar o corpo do Google ao cliente nem registrar tokens.
+        if error.code in (401, 403):
+            raise PermissionError(
+                "Google Drive negou a gravação. Verifique o escopo OAuth e a autorização da conta."
+            ) from None
+        raise RuntimeError(f"Falha no upload ao Google Drive (HTTP {error.code}).") from None
+    except urllib.error.URLError:
+        raise RuntimeError("Falha de comunicação durante o upload ao Google Drive.") from None
+    file_id = response_data.get("id") if isinstance(response_data, dict) else None
+    if not file_id:
+        raise RuntimeError("Google Drive não confirmou o ID do arquivo enviado.")
+    # Confirma os metadados retornados pela API antes de registrar como armazenado.
+    if (
+        response_data.get("name") != stored_name
+        or response_data.get("mimeType") != mime_type
+        or str(response_data.get("size", "")) != str(len(image_bytes))
+        or folder_id not in response_data.get("parents", [])
+    ):
+        raise RuntimeError("A verificação dos metadados do upload falhou.")
+    # Verifica o conteúdo recuperado, não apenas o tamanho/metadados.
+    download_url = (
+        f"{GOOGLE_DRIVE_FILES_URL}/{urllib.parse.quote(file_id, safe='')}?"
+        + urllib.parse.urlencode({"alt": "media"})
+    )
+    download_request = urllib.request.Request(
+        download_url,
+        headers={"Authorization": f"Bearer {access_token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(download_request, timeout=60) as download_response:
+            recovered_bytes = download_response.read(MAX_EDITORIAL_IMAGE_BYTES + 1)
+    except (urllib.error.HTTPError, urllib.error.URLError):
+        raise RuntimeError("O arquivo foi enviado, mas não pôde ser recuperado para verificação.") from None
+    if len(recovered_bytes) != len(image_bytes) or hashlib.sha256(recovered_bytes).hexdigest() != digest:
+        raise RuntimeError("O hash do arquivo recuperado não corresponde ao original.")
+    return {
+        "drive_file_id": file_id,
+        "file_name": stored_name,
+        "mime_type": mime_type,
+        "byte_size": len(image_bytes),
+        "sha256": digest,
+    }
+
+
+def editorial_image_version_exists(post_number, version):
+    """Evita criar um arquivo no Drive quando a versão já consta no manifesto."""
+    ensure_editorial_image_assets_table()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, sha256 FROM editorial_image_assets WHERE post_number = %s AND version = %s",
+                (post_number, version),
+            )
+            row = cur.fetchone()
+    return row
+
+
+def register_editorial_image_asset(post_number, version, uploaded, generator=None, prompt=None):
+    """Registra somente um upload já confirmado; repetições não sobrescrevem versões."""
+    ensure_editorial_image_assets_table()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO editorial_image_assets
+                    (post_number, version, drive_file_id, file_name, mime_type,
+                     byte_size, sha256, generator, prompt, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'stored')
+                ON CONFLICT (post_number, version) DO NOTHING
+                RETURNING id
+                """,
+                (
+                    post_number, version, uploaded["drive_file_id"],
+                    uploaded["file_name"], uploaded["mime_type"],
+                    uploaded["byte_size"], uploaded["sha256"],
+                    generator, prompt,
+                ),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(
+                    "Essa versão do post já está registrada. Consulte o manifesto antes de tentar novamente."
+                )
+        conn.commit()
+    return row[0]
+
+
+
+
+def reconcile_editorial_image_assets():
+    """Compara o manifesto PostgreSQL com os nomes/IDs visíveis na pasta do Drive."""
+    drive_result = google_drive_list_art_folder()
+    drive_files = drive_result.get("arquivos", [])
+    drive_by_id = {item.get("id"): item for item in drive_files if item.get("id")}
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT post_number, version, drive_file_id, file_name, sha256, status
+                FROM editorial_image_assets
+                ORDER BY post_number, version
+                """
+            )
+            rows = cur.fetchall()
+    manifest_ids = {row[2] for row in rows}
+    missing_files = [
+        {
+            "post_number": row[0],
+            "version": row[1],
+            "drive_file_id": row[2],
+            "file_name": row[3],
+            "status": row[5],
+        }
+        for row in rows if row[2] not in drive_by_id
+    ]
+    unregistered_files = [
+        {
+            "drive_file_id": item.get("id"),
+            "file_name": item.get("name"),
+            "mime_type": item.get("mimeType"),
+            "byte_size": item.get("size"),
+        }
+        for item in drive_files
+        if item.get("id") not in manifest_ids
+        and re.match(r"^post-\d+-v\d+-", str(item.get("name", "")))
+    ]
+    return {
+        "status": "ok",
+        "mode": "read_only",
+        "manifest_entries": len(rows),
+        "drive_files_scanned": len(drive_files),
+        "missing_drive_files": missing_files,
+        "unregistered_editorial_files": unregistered_files,
+        "truncated_scan_possible": bool(drive_result.get("truncated", False)),
+    }
+
 
 def http_json_request(
     url,
@@ -1210,6 +1497,47 @@ def health():
     )
 
 
+@app.get("/readiness")
+def readiness():
+    """
+    Resume a prontidao da configuracao sem revelar valores de segredos.
+    A rota exige a chave operacional e nao acessa nem modifica o banco.
+    """
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+
+    required_settings = {
+        "FLASK_SECRET_KEY": app.secret_key,
+        "DATABASE_URL": DATABASE_URL,
+        "LINKEDIN_CLIENT_ID": LINKEDIN_CLIENT_ID,
+        "LINKEDIN_CLIENT_SECRET": LINKEDIN_CLIENT_SECRET,
+        "GOOGLE_CLIENT_ID": GOOGLE_CLIENT_ID,
+        "GOOGLE_CLIENT_SECRET": GOOGLE_CLIENT_SECRET,
+        "TOKEN_ENCRYPTION_KEY": TOKEN_ENCRYPTION_KEY,
+        "PUBLISH_SECRET": PUBLISH_SECRET,
+    }
+    configured = sorted(
+        name for name, value in required_settings.items()
+        if isinstance(value, str) and value.strip()
+    )
+    missing = sorted(set(required_settings) - set(configured))
+
+    return jsonify({
+        "status": "ready" if not missing else "configuration_incomplete",
+        "configured_count": len(configured),
+        "required_count": len(required_settings),
+        "missing_settings": missing,
+        "features": {
+            "linkedin_oauth_configured": bool(LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET),
+            "google_oauth_configured": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
+            "automatic_linkedin_analytics": LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED,
+        },
+        "secrets_exposed": False,
+        "database_checked": False,
+    }), (200 if not missing else 503)
+
+
 @app.get("/db-test")
 def db_test():
     auth_error = require_publish_secret()
@@ -1290,6 +1618,81 @@ def google_drive_check_route():
     except Exception:
         app.logger.exception("Falha na rota /google-drive/check")
         return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
+
+
+@app.post("/google-drive/image-assets")
+def google_drive_image_asset_upload_route():
+    """Upload autenticado e desativado por padrão; exige segredo operacional."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    if not GOOGLE_DRIVE_WRITE_ENABLED:
+        return jsonify({
+            "status": "blocked",
+            "mensagem": "Upload desativado. É necessária autorização explícita para habilitar escrita no Google Drive.",
+        }), 423
+    try:
+        post_number = int(request.form.get("post_number", ""))
+        version = int(request.form.get("version", "1"))
+        if not 1 <= post_number <= 10000 or not 1 <= version <= 10000:
+            raise ValueError("Número do post ou versão fora do intervalo permitido.")
+        existing = editorial_image_version_exists(post_number, version)
+        if existing:
+            return jsonify({
+                "status": "conflict",
+                "mensagem": "Essa versão já existe no manifesto; nenhuma nova imagem foi enviada.",
+                "asset_id": existing[0],
+                "sha256": existing[1],
+            }), 409
+        file = request.files.get("image")
+        if file is None:
+            raise ValueError("Envie o arquivo no campo multipart 'image'.")
+        image_bytes = file.read(MAX_EDITORIAL_IMAGE_BYTES + 1)
+        clean_name, _ = validate_editorial_image(
+            file.filename, file.mimetype, image_bytes
+        )
+        uploaded = google_drive_upload_image(
+            clean_name, file.mimetype, image_bytes, post_number, version
+        )
+        asset_id = register_editorial_image_asset(
+            post_number,
+            version,
+            uploaded,
+            generator=request.form.get("generator", "")[:100] or None,
+            prompt=request.form.get("prompt", "")[:10000] or None,
+        )
+        return jsonify({
+            "status": "stored",
+            "asset_id": asset_id,
+            "post_number": post_number,
+            "version": version,
+            "file_name": uploaded["file_name"],
+            "byte_size": uploaded["byte_size"],
+            "sha256": uploaded["sha256"],
+            "drive_file_id": uploaded["drive_file_id"],
+            "verified": True,
+        }), 201
+    except (ValueError, PermissionError) as error:
+        status = 403 if isinstance(error, PermissionError) else 400
+        return jsonify({"status": "erro", "mensagem": str(error)}), status
+    except Exception:
+        app.logger.exception("Falha no armazenamento de imagem editorial")
+        return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
+
+
+
+@app.get("/google-drive/image-assets/reconcile")
+def google_drive_image_asset_reconcile_route():
+    """Reconciliação somente leitura entre a pasta do Drive e o manifesto."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    try:
+        return jsonify(reconcile_editorial_image_assets())
+    except Exception:
+        app.logger.exception("Falha na reconciliação das imagens editoriais")
+        return jsonify({"status": "erro", "mensagem": "Falha interna. Consulte os logs do servidor."}), 500
+
 
 @app.get("/google-drive/art-folder")
 def google_drive_art_folder_route():
@@ -1638,7 +2041,8 @@ def google_login():
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "response_type": "code",
-        "scope": "https://www.googleapis.com/auth/drive.readonly",
+        "scope": GOOGLE_WORKSPACE_SCOPES,
+        "include_granted_scopes": "true",
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -1759,6 +2163,8 @@ def google_callback():
             }
         ), 400
 
+    granted_scopes = token_data.get("scope") or GOOGLE_WORKSPACE_SCOPES
+
     encrypted_access_token = encrypt_value(access_token)
 
     encrypted_refresh_token = (
@@ -1770,6 +2176,9 @@ def google_callback():
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
+                "ALTER TABLE google_accounts ADD COLUMN IF NOT EXISTS granted_scopes TEXT;"
+            )
+            cur.execute(
                 """
                 INSERT INTO google_accounts (
                     account_name,
@@ -1777,7 +2186,8 @@ def google_callback():
                     access_token,
                     refresh_token,
                     token_expires_at,
-                    updated_at
+                    updated_at,
+                    granted_scopes
                 )
                 VALUES (
                     %s,
@@ -1785,7 +2195,8 @@ def google_callback():
                     %s,
                     %s,
                     NOW() + (%s * INTERVAL '1 second'),
-                    NOW()
+                    NOW(),
+                    %s
                 )
                 ON CONFLICT (account_name)
                 DO UPDATE SET
@@ -1795,7 +2206,8 @@ def google_callback():
                         google_accounts.refresh_token
                     ),
                     token_expires_at = EXCLUDED.token_expires_at,
-                    updated_at = NOW();
+                    updated_at = NOW(),
+                    granted_scopes = EXCLUDED.granted_scopes;
                 """,
                 (
                     account_name,
@@ -1803,6 +2215,7 @@ def google_callback():
                     encrypted_access_token,
                     encrypted_refresh_token,
                     expires_in or 0,
+                    granted_scopes,
                 ),
             )
 
@@ -2842,6 +3255,185 @@ def analytics_collect():
                 "metrics_saved": metrics_saved,
             }
         ), 500
+
+
+
+
+# --- Google Workspace integrado: Drive, Gmail e Sheets em um único OAuth ---
+
+def google_workspace_api_request(url, method="GET", payload=None, account_name="Drive5"):
+    """Executa chamadas Google autenticadas com o token da conta selecionada."""
+    account_name = normalize_google_account_name(account_name)
+    token = google_drive_access_token(account_name)
+    headers = {"Authorization": f"Bearer {token}"}
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            raw = response.read().decode("utf-8")
+            return response.status, (json.loads(raw) if raw else {}), response.headers
+    except urllib.error.HTTPError as error:
+        raw = error.read().decode("utf-8")
+        try:
+            detail = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            detail = {"message": "Resposta de erro não JSON"}
+        # Não devolver tokens, cabeçalhos de autorização nem detalhes internos ao cliente.
+        raise RuntimeError(
+            f"Google Workspace API retornou HTTP {error.code}: "
+            f"{detail.get('error', {}).get('message', 'requisição recusada') if isinstance(detail, dict) else 'requisição recusada'}"
+        )
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"Falha de comunicação com Google Workspace: {error.reason}")
+
+
+@app.get("/google-workspace/status")
+def google_workspace_status_route():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "ALTER TABLE google_accounts ADD COLUMN IF NOT EXISTS granted_scopes TEXT;"
+                )
+                cur.execute(
+                    "SELECT granted_scopes, token_expires_at, updated_at FROM google_accounts WHERE account_name = %s LIMIT 1",
+                    ("Drive5",),
+                )
+                row = cur.fetchone()
+        return jsonify({
+            "status": "ok" if row else "not_authorized",
+            "account": "Drive5",
+            "configured_scopes": GOOGLE_WORKSPACE_SCOPES.split(),
+            "granted_scopes": row[0].split() if row and row[0] else [],
+            "token_expires_at": row[1].isoformat() if row and row[1] else None,
+            "updated_at": row[2].isoformat() if row and row[2] else None,
+            "sheets_spreadsheet_configured": bool(GOOGLE_SHEETS_SPREADSHEET_ID),
+            "sheets_write_enabled": GOOGLE_SHEETS_WRITE_ENABLED,
+            "gmail_mode": "read_only",
+            "note": "A presença de escopos configurados não substitui a verificação do consentimento concedido nem a ativação das APIs no Google Cloud."
+        })
+    except Exception:
+        app.logger.exception("Falha em /google-workspace/status")
+        return jsonify({"status": "erro", "mensagem": "Falha interna ao consultar o estado Google Workspace."}), 500
+
+
+@app.get("/gmail/messages")
+def gmail_messages_route():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    try:
+        account_name = normalize_google_account_name(request.args.get("account", "Drive5"))
+    except ValueError as error:
+        return jsonify({"status": "erro", "mensagem": str(error)}), 400
+    query = (request.args.get("q") or "newer_than:30d").strip()
+    try:
+        max_results = min(max(int(request.args.get("maxResults", "10")), 1), 25)
+    except ValueError:
+        return jsonify({"status": "erro", "mensagem": "maxResults deve ser um número entre 1 e 25."}), 400
+    try:
+        list_url = "https://gmail.googleapis.com/gmail/v1/users/me/messages?" + urllib.parse.urlencode({
+            "q": query, "maxResults": max_results
+        })
+        _, listing, _ = google_workspace_api_request(list_url, account_name=account_name)
+        messages = []
+        for item in listing.get("messages", []):
+            message_url = "https://gmail.googleapis.com/gmail/v1/users/me/messages/" + urllib.parse.quote(item["id"], safe="") + "?" + urllib.parse.urlencode({
+                "format": "metadata",
+                "metadataHeaders": ["From", "To", "Subject", "Date"]
+            }, doseq=True)
+            _, detail, _ = google_workspace_api_request(message_url, account_name=account_name)
+            headers = {
+                h.get("name", "").lower(): h.get("value", "")
+                for h in detail.get("payload", {}).get("headers", [])
+            }
+            messages.append({
+                "id": detail.get("id"),
+                "threadId": detail.get("threadId"),
+                "internalDate": detail.get("internalDate"),
+                "from": headers.get("from"),
+                "to": headers.get("to"),
+                "subject": headers.get("subject"),
+                "date": headers.get("date"),
+                "snippet": detail.get("snippet", "")
+            })
+        return jsonify({"status": "ok", "account": account_name, "mode": "read_only_metadata", "count": len(messages), "messages": messages})
+    except Exception:
+        app.logger.exception("Falha na leitura de metadados do Gmail")
+        return jsonify({"status": "erro", "mensagem": "Falha ao consultar Gmail. Confira OAuth, escopo e Gmail API no Google Cloud."}), 502
+
+
+@app.get("/google-sheets/metadata")
+def google_sheets_metadata_route():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    if not GOOGLE_SHEETS_SPREADSHEET_ID:
+        return jsonify({"status": "not_configured", "mensagem": "Configure GOOGLE_SHEETS_SPREADSHEET_ID após escolher a planilha canônica."}), 409
+    try:
+        url = "https://sheets.googleapis.com/v4/spreadsheets/" + urllib.parse.quote(GOOGLE_SHEETS_SPREADSHEET_ID, safe="") + "?" + urllib.parse.urlencode({"fields": "spreadsheetId,spreadsheetUrl,properties(title),sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))"})
+        _, data, _ = google_workspace_api_request(url)
+        return jsonify({"status": "ok", "spreadsheet": data})
+    except Exception:
+        app.logger.exception("Falha ao consultar metadados Google Sheets")
+        return jsonify({"status": "erro", "mensagem": "Falha ao consultar Google Sheets. Confira ID, OAuth e API habilitada."}), 502
+
+
+@app.get("/google-sheets/values")
+def google_sheets_values_route():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    if not GOOGLE_SHEETS_SPREADSHEET_ID:
+        return jsonify({"status": "not_configured", "mensagem": "Configure GOOGLE_SHEETS_SPREADSHEET_ID após escolher a planilha canônica."}), 409
+    range_name = (request.args.get("range") or "").strip()
+    if not range_name or len(range_name) > 300:
+        return jsonify({"status": "erro", "mensagem": "Informe um intervalo A1 válido no parâmetro range."}), 400
+    try:
+        url = "https://sheets.googleapis.com/v4/spreadsheets/" + urllib.parse.quote(GOOGLE_SHEETS_SPREADSHEET_ID, safe="") + "/values/" + urllib.parse.quote(range_name, safe="") + "?" + urllib.parse.urlencode({"valueRenderOption": "FORMATTED_VALUE"})
+        _, data, _ = google_workspace_api_request(url)
+        return jsonify({"status": "ok", "range": data.get("range"), "values": data.get("values", [])})
+    except Exception:
+        app.logger.exception("Falha ao ler intervalo Google Sheets")
+        return jsonify({"status": "erro", "mensagem": "Falha ao ler intervalo. Confira nome da aba, intervalo, OAuth e API habilitada."}), 502
+
+
+@app.put("/google-sheets/values")
+def google_sheets_update_values_route():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    if not GOOGLE_SHEETS_WRITE_ENABLED:
+        return jsonify({"status": "disabled", "mensagem": "Escrita no Google Sheets permanece desativada até teste e autorização explícita."}), 423
+    if not GOOGLE_SHEETS_SPREADSHEET_ID:
+        return jsonify({"status": "not_configured", "mensagem": "Configure GOOGLE_SHEETS_SPREADSHEET_ID após escolher a planilha canônica."}), 409
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"status": "erro", "mensagem": "Envie um objeto JSON com range e values."}), 400
+    range_name = body.get("range")
+    values = body.get("values")
+    if not isinstance(range_name, str) or not range_name.strip() or len(range_name) > 300:
+        return jsonify({"status": "erro", "mensagem": "range é obrigatório e deve ser um intervalo A1 válido."}), 400
+    if not isinstance(values, list) or not values or len(values) > 200:
+        return jsonify({"status": "erro", "mensagem": "values deve conter entre 1 e 200 linhas."}), 400
+    if any(not isinstance(row, list) or len(row) > 50 for row in values):
+        return jsonify({"status": "erro", "mensagem": "Cada linha deve ser uma lista com no máximo 50 células."}), 400
+    if sum(len(row) for row in values) > 5000:
+        return jsonify({"status": "erro", "mensagem": "Limite de 5.000 células por operação excedido."}), 400
+    try:
+        encoded_range = urllib.parse.quote(range_name.strip(), safe="")
+        url = "https://sheets.googleapis.com/v4/spreadsheets/" + urllib.parse.quote(GOOGLE_SHEETS_SPREADSHEET_ID, safe="") + "/values/" + encoded_range + ":update?" + urllib.parse.urlencode({"valueInputOption": "RAW"})
+        _, data, _ = google_workspace_api_request(url, method="PUT", payload={"range": range_name.strip(), "majorDimension": "ROWS", "values": values})
+        return jsonify({"status": "ok", "updatedRange": data.get("updatedRange"), "updatedRows": data.get("updatedRows"), "updatedColumns": data.get("updatedColumns"), "updatedCells": data.get("updatedCells")})
+    except Exception:
+        app.logger.exception("Falha ao atualizar intervalo Google Sheets")
+        return jsonify({"status": "erro", "mensagem": "Falha na escrita. Confira escopo concedido, flag de escrita, planilha e API habilitada."}), 502
 
 
 if __name__ == "__main__":
