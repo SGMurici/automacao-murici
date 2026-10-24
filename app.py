@@ -3292,6 +3292,9 @@ def google_workspace_status_route():
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
+                    "ALTER TABLE google_accounts ADD COLUMN IF NOT EXISTS granted_scopes TEXT;"
+                )
+                cur.execute(
                     "SELECT granted_scopes, token_expires_at, updated_at FROM google_accounts WHERE account_name = %s LIMIT 1",
                     ("Drive5",),
                 )
