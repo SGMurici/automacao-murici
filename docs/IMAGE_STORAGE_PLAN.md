@@ -187,3 +187,35 @@ O usuário esclareceu que o arquivo de planejamento editorial permanece apenas n
 - O código de armazenamento no Drive já tem implementação inicial isolada, mas a autorização Google conhecida solicita `drive.readonly`; escrita real segue bloqueada até aprovação e reautorização.
 - Não houve upload do arquivo local, alteração de dados reais, alteração de escopos OAuth ou deploy nesta etapa.
 - Próximo trabalho técnico: revisar e testar em ambiente isolado a implementação de persistência existente, identificar falhas de recuperação/idempotência e desenhar a integração compartilhada para GPT; depois pedir apenas as intervenções realmente indispensáveis do usuário.
+
+
+## Implementação inicial integrada: Drive + Gmail + Google Planilhas
+
+Em 23 de outubro de 2026, foi adicionada à branch de desenvolvimento uma primeira camada de código para compartilhar o fluxo OAuth do Google Workspace entre os três serviços, sem deploy.
+
+### Alterações de código
+
+- `GOOGLE_WORKSPACE_SCOPES` define um único conjunto de escopos OAuth para o fluxo Google.
+- Configuração padrão atual: `drive.file` e `gmail.readonly`. O escopo `drive.file` também é aceito pela Google Sheets API para arquivos específicos usados com o aplicativo; não foi solicitado acesso irrestrito a todas as planilhas.
+- O endpoint existente `/google/login` passa a solicitar o conjunto combinado e inclui `include_granted_scopes=true`.
+- O callback registra os escopos concedidos em `google_accounts.granted_scopes`, com migração de coluna defensiva.
+- `GET /google-workspace/status`: informa escopos configurados/concedidos e estado de configuração; protegido por `X-Publish-Secret`.
+- `GET /gmail/messages?q=...&maxResults=...`: pesquisa e retorna metadados/snippets de até 25 mensagens; somente leitura; protegido por `X-Publish-Secret`.
+- `GET /google-sheets/metadata`: lê metadados da planilha configurada em `GOOGLE_SHEETS_SPREADSHEET_ID`.
+- `GET /google-sheets/values?range=...`: lê intervalos A1.
+- `PUT /google-sheets/values`: implementado, mas desativado por padrão; requer `GOOGLE_SHEETS_WRITE_ENABLED=true`, ID configurado, OAuth válido e autorização para executar teste controlado.
+- As rotas de integração exigem `X-Publish-Secret`; os tokens continuam sendo obtidos do banco por meio das funções de renovação existentes.
+- Não foi implementado envio/alteração/exclusão de e-mails; Gmail permanece read-only nesta fase.
+
+### Configuração Google necessária em um único projeto
+
+No mesmo projeto Google Cloud e usando o cliente OAuth web existente, habilitar as APIs Google Drive, Gmail e Google Sheets, revisar a tela de consentimento OAuth e declarar os escopos necessários. O fluxo de autorização do aplicativo fará uma única solicitação combinada; o Google pode apresentar consentimento granular e o usuário pode conceder apenas parte dos escopos. O código deve considerar esse caso e cada endpoint só funcionará quando seu escopo tiver sido concedido.
+
+### Limites antes de ativar
+
+- O código foi gravado apenas na branch `ai-code-executor-bootstrap`; não foi executado em produção, não foi feito deploy e nenhum token/escopo foi alterado na conta Google.
+- É necessário executar testes automatizados/simulados e revisar os endpoints antes de propor deploy.
+- A configuração `drive.file` limita acesso a arquivos específicos autorizados pelo aplicativo. A pasta de artes antiga pode não ser acessível por esse escopo se não tiver sido criada/selecionada para o aplicativo; nesse caso, deve-se criar/selecionar uma pasta própria da automação ou deliberar separadamente sobre um escopo Drive mais amplo. Não ampliar silenciosamente para `drive`/ `drive.readonly`.
+- A integração Sheets exige definir `GOOGLE_SHEETS_SPREADSHEET_ID` depois que o usuário escolher ou criar a planilha canônica. O arquivo Excel ainda está no telefone e não foi migrado.
+- Antes de reautorizar, confirmar as APIs habilitadas, escopos efetivamente concedidos e comportamento do token atual. Antes de qualquer escrita real, o usuário deve aprovar o teste e a variável de escrita deve permanecer desligada até então.
+- Não solicitar senhas, tokens ou códigos de autenticação na conversa.
