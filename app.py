@@ -94,10 +94,22 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 GOOGLE_DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files"
 GOOGLE_DRIVE_ART_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_ART_FOLDER_ID", "").strip()
-# Mantem o acesso de leitura como padrao ate o usuario aprovar a ampliacao OAuth.
-GOOGLE_DRIVE_SCOPE = os.environ.get(
-    "GOOGLE_DRIVE_SCOPE", "https://www.googleapis.com/auth/drive.readonly"
+# Um único fluxo OAuth para Drive + Gmail + Sheets.
+# drive.file é o escopo de menor abrangência compatível com arquivos específicos do Drive
+# e também com Google Sheets; Gmail começa em somente leitura.
+GOOGLE_WORKSPACE_SCOPES = os.environ.get(
+    "GOOGLE_WORKSPACE_SCOPES",
+    "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/gmail.readonly",
 ).strip()
+# Alias temporário para funções existentes de diagnóstico.
+GOOGLE_DRIVE_SCOPE = GOOGLE_WORKSPACE_SCOPES
+GOOGLE_SHEETS_SPREADSHEET_ID = os.environ.get(
+    "GOOGLE_SHEETS_SPREADSHEET_ID", ""
+).strip()
+GOOGLE_SHEETS_WRITE_ENABLED = (
+    os.environ.get("GOOGLE_SHEETS_WRITE_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 GOOGLE_DRIVE_WRITE_ENABLED = (
     os.environ.get("GOOGLE_DRIVE_WRITE_ENABLED", "false").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -2023,7 +2035,8 @@ def google_login():
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "response_type": "code",
-        "scope": GOOGLE_DRIVE_SCOPE,
+        "scope": GOOGLE_WORKSPACE_SCOPES,
+        "include_granted_scopes": "true",
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -2144,6 +2157,8 @@ def google_callback():
             }
         ), 400
 
+    granted_scopes = token_data.get("scope") or GOOGLE_WORKSPACE_SCOPES
+
     encrypted_access_token = encrypt_value(access_token)
 
     encrypted_refresh_token = (
@@ -2155,6 +2170,9 @@ def google_callback():
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
+                "ALTER TABLE google_accounts ADD COLUMN IF NOT EXISTS granted_scopes TEXT;"
+            )
+            cur.execute(
                 """
                 INSERT INTO google_accounts (
                     account_name,
@@ -2162,7 +2180,8 @@ def google_callback():
                     access_token,
                     refresh_token,
                     token_expires_at,
-                    updated_at
+                    updated_at,
+                    granted_scopes
                 )
                 VALUES (
                     %s,
@@ -2170,7 +2189,8 @@ def google_callback():
                     %s,
                     %s,
                     NOW() + (%s * INTERVAL '1 second'),
-                    NOW()
+                    NOW(),
+                    %s
                 )
                 ON CONFLICT (account_name)
                 DO UPDATE SET
@@ -2180,7 +2200,8 @@ def google_callback():
                         google_accounts.refresh_token
                     ),
                     token_expires_at = EXCLUDED.token_expires_at,
-                    updated_at = NOW();
+                    updated_at = NOW(),
+                    granted_scopes = EXCLUDED.granted_scopes;
                 """,
                 (
                     account_name,
@@ -2188,6 +2209,7 @@ def google_callback():
                     encrypted_access_token,
                     encrypted_refresh_token,
                     expires_in or 0,
+                    granted_scopes,
                 ),
             )
 
@@ -3227,6 +3249,177 @@ def analytics_collect():
                 "metrics_saved": metrics_saved,
             }
         ), 500
+
+
+
+
+# --- Google Workspace integrado: Drive, Gmail e Sheets em um único OAuth ---
+
+def google_workspace_api_request(url, method="GET", payload=None):
+    """Executa chamadas Google autenticadas com o token da conta Drive5."""
+    token = google_drive_access_token("Drive5")
+    headers = {"Authorization": f"Bearer {token}"}
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            raw = response.read().decode("utf-8")
+            return response.status, (json.loads(raw) if raw else {}), response.headers
+    except urllib.error.HTTPError as error:
+        raw = error.read().decode("utf-8")
+        try:
+            detail = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            detail = {"message": "Resposta de erro não JSON"}
+        # Não devolver tokens, cabeçalhos de autorização nem detalhes internos ao cliente.
+        raise RuntimeError(
+            f"Google Workspace API retornou HTTP {error.code}: "
+            f"{detail.get('error', {}).get('message', 'requisição recusada') if isinstance(detail, dict) else 'requisição recusada'}"
+        )
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"Falha de comunicação com Google Workspace: {error.reason}")
+
+
+@app.get("/google-workspace/status")
+def google_workspace_status_route():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT granted_scopes, token_expires_at, updated_at FROM google_accounts WHERE account_name = %s LIMIT 1",
+                    ("Drive5",),
+                )
+                row = cur.fetchone()
+        return jsonify({
+            "status": "ok" if row else "not_authorized",
+            "account": "Drive5",
+            "configured_scopes": GOOGLE_WORKSPACE_SCOPES.split(),
+            "granted_scopes": row[0].split() if row and row[0] else [],
+            "token_expires_at": row[1].isoformat() if row and row[1] else None,
+            "updated_at": row[2].isoformat() if row and row[2] else None,
+            "sheets_spreadsheet_configured": bool(GOOGLE_SHEETS_SPREADSHEET_ID),
+            "sheets_write_enabled": GOOGLE_SHEETS_WRITE_ENABLED,
+            "gmail_mode": "read_only",
+            "note": "A presença de escopos configurados não substitui a verificação do consentimento concedido nem a ativação das APIs no Google Cloud."
+        })
+    except Exception:
+        app.logger.exception("Falha em /google-workspace/status")
+        return jsonify({"status": "erro", "mensagem": "Falha interna ao consultar o estado Google Workspace."}), 500
+
+
+@app.get("/gmail/messages")
+def gmail_messages_route():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    query = (request.args.get("q") or "newer_than:30d").strip()
+    try:
+        max_results = min(max(int(request.args.get("maxResults", "10")), 1), 25)
+    except ValueError:
+        return jsonify({"status": "erro", "mensagem": "maxResults deve ser um número entre 1 e 25."}), 400
+    try:
+        list_url = "https://gmail.googleapis.com/gmail/v1/users/me/messages?" + urllib.parse.urlencode({
+            "q": query, "maxResults": max_results
+        })
+        _, listing, _ = google_workspace_api_request(list_url)
+        messages = []
+        for item in listing.get("messages", []):
+            message_url = "https://gmail.googleapis.com/gmail/v1/users/me/messages/" + urllib.parse.quote(item["id"], safe="") + "?" + urllib.parse.urlencode({
+                "format": "metadata",
+                "metadataHeaders": ["From", "To", "Subject", "Date"]
+            }, doseq=True)
+            _, detail, _ = google_workspace_api_request(message_url)
+            headers = {
+                h.get("name", "").lower(): h.get("value", "")
+                for h in detail.get("payload", {}).get("headers", [])
+            }
+            messages.append({
+                "id": detail.get("id"),
+                "threadId": detail.get("threadId"),
+                "internalDate": detail.get("internalDate"),
+                "from": headers.get("from"),
+                "to": headers.get("to"),
+                "subject": headers.get("subject"),
+                "date": headers.get("date"),
+                "snippet": detail.get("snippet", "")
+            })
+        return jsonify({"status": "ok", "mode": "read_only_metadata", "count": len(messages), "messages": messages})
+    except Exception:
+        app.logger.exception("Falha na leitura de metadados do Gmail")
+        return jsonify({"status": "erro", "mensagem": "Falha ao consultar Gmail. Confira OAuth, escopo e Gmail API no Google Cloud."}), 502
+
+
+@app.get("/google-sheets/metadata")
+def google_sheets_metadata_route():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    if not GOOGLE_SHEETS_SPREADSHEET_ID:
+        return jsonify({"status": "not_configured", "mensagem": "Configure GOOGLE_SHEETS_SPREADSHEET_ID após escolher a planilha canônica."}), 409
+    try:
+        url = "https://sheets.googleapis.com/v4/spreadsheets/" + urllib.parse.quote(GOOGLE_SHEETS_SPREADSHEET_ID, safe="") + "?" + urllib.parse.urlencode({"fields": "spreadsheetId,spreadsheetUrl,properties(title),sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))"})
+        _, data, _ = google_workspace_api_request(url)
+        return jsonify({"status": "ok", "spreadsheet": data})
+    except Exception:
+        app.logger.exception("Falha ao consultar metadados Google Sheets")
+        return jsonify({"status": "erro", "mensagem": "Falha ao consultar Google Sheets. Confira ID, OAuth e API habilitada."}), 502
+
+
+@app.get("/google-sheets/values")
+def google_sheets_values_route():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    if not GOOGLE_SHEETS_SPREADSHEET_ID:
+        return jsonify({"status": "not_configured", "mensagem": "Configure GOOGLE_SHEETS_SPREADSHEET_ID após escolher a planilha canônica."}), 409
+    range_name = (request.args.get("range") or "").strip()
+    if not range_name or len(range_name) > 300:
+        return jsonify({"status": "erro", "mensagem": "Informe um intervalo A1 válido no parâmetro range."}), 400
+    try:
+        url = "https://sheets.googleapis.com/v4/spreadsheets/" + urllib.parse.quote(GOOGLE_SHEETS_SPREADSHEET_ID, safe="") + "/values/" + urllib.parse.quote(range_name, safe="") + "?" + urllib.parse.urlencode({"valueRenderOption": "FORMATTED_VALUE"})
+        _, data, _ = google_workspace_api_request(url)
+        return jsonify({"status": "ok", "range": data.get("range"), "values": data.get("values", [])})
+    except Exception:
+        app.logger.exception("Falha ao ler intervalo Google Sheets")
+        return jsonify({"status": "erro", "mensagem": "Falha ao ler intervalo. Confira nome da aba, intervalo, OAuth e API habilitada."}), 502
+
+
+@app.put("/google-sheets/values")
+def google_sheets_update_values_route():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    if not GOOGLE_SHEETS_WRITE_ENABLED:
+        return jsonify({"status": "disabled", "mensagem": "Escrita no Google Sheets permanece desativada até teste e autorização explícita."}), 423
+    if not GOOGLE_SHEETS_SPREADSHEET_ID:
+        return jsonify({"status": "not_configured", "mensagem": "Configure GOOGLE_SHEETS_SPREADSHEET_ID após escolher a planilha canônica."}), 409
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"status": "erro", "mensagem": "Envie um objeto JSON com range e values."}), 400
+    range_name = body.get("range")
+    values = body.get("values")
+    if not isinstance(range_name, str) or not range_name.strip() or len(range_name) > 300:
+        return jsonify({"status": "erro", "mensagem": "range é obrigatório e deve ser um intervalo A1 válido."}), 400
+    if not isinstance(values, list) or not values or len(values) > 200:
+        return jsonify({"status": "erro", "mensagem": "values deve conter entre 1 e 200 linhas."}), 400
+    if any(not isinstance(row, list) or len(row) > 50 for row in values):
+        return jsonify({"status": "erro", "mensagem": "Cada linha deve ser uma lista com no máximo 50 células."}), 400
+    if sum(len(row) for row in values) > 5000:
+        return jsonify({"status": "erro", "mensagem": "Limite de 5.000 células por operação excedido."}), 400
+    try:
+        encoded_range = urllib.parse.quote(range_name.strip(), safe="")
+        url = "https://sheets.googleapis.com/v4/spreadsheets/" + urllib.parse.quote(GOOGLE_SHEETS_SPREADSHEET_ID, safe="") + "/values/" + encoded_range + ":update?" + urllib.parse.urlencode({"valueInputOption": "RAW"})
+        _, data, _ = google_workspace_api_request(url, method="PUT", payload={"range": range_name.strip(), "majorDimension": "ROWS", "values": values})
+        return jsonify({"status": "ok", "updatedRange": data.get("updatedRange"), "updatedRows": data.get("updatedRows"), "updatedColumns": data.get("updatedColumns"), "updatedCells": data.get("updatedCells")})
+    except Exception:
+        app.logger.exception("Falha ao atualizar intervalo Google Sheets")
+        return jsonify({"status": "erro", "mensagem": "Falha na escrita. Confira escopo concedido, flag de escrita, planilha e API habilitada."}), 502
 
 
 if __name__ == "__main__":
