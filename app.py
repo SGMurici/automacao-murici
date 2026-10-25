@@ -518,7 +518,7 @@ def google_drive_api_request(method, url, data=None, account_name="Drive5"):
     status_code, response_data, response_headers = http_json_request(
         url, method=method, headers=headers, data=data
     )
-    if status_code not in (200, 201):
+    if status_code not in (200, 201, 202, 204):
         raise RuntimeError(
             "Google Drive recusou a requisicao. "
             f"HTTP {status_code}: {json.dumps(response_data)}"
@@ -541,7 +541,7 @@ def google_drive_readonly_check(account_name="Drive5"):
     files = response_data.get("files", [])
     return {
         "status": "ok",
-        "mensagem": "Acesso somente leitura à Google Drive API confirmado para a conta autorizada.",
+        "mensagem": "Acesso à Google Drive API confirmado para a conta autorizada; este teste não altera arquivos.",
         "conta": account_name,
         "arquivos_acessiveis": len(files),
         "teste": "somente_leitura",
@@ -639,27 +639,10 @@ def google_drive_route_account(preferred_account=None):
 
 
 def google_drive_test(account_name="Drive5"):
-    """Cria uma pasta de teste na conta Google Drive autorizada."""
+    """Teste seguro de conectividade; não cria nem altera itens no Drive."""
     account_name = normalize_google_account_name(account_name)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    folder_name = f"Automacao Murici - Teste {account_name} - {timestamp}"
-    payload = {
-        "name": folder_name,
-        "mimeType": "application/vnd.google-apps.folder",
-    }
-    response_data, _ = google_drive_api_request(
-        "POST", GOOGLE_DRIVE_FILES_URL, data=payload, account_name=account_name
-    )
-    folder_id = response_data.get("id")
-    if not folder_id:
-        raise RuntimeError("Google Drive criou a resposta, mas nao retornou o ID da pasta.")
-    return {
-        "status": "ok",
-        "mensagem": "Acesso real a Google Drive API confirmado. Uma pasta de teste foi criada na conta autorizada.",
-        "conta": account_name,
-        "pasta_teste": folder_name,
-        "folder_id": folder_id,
-    }
+    return google_drive_readonly_check(account_name)
+
 
 def http_json_request(
     url,
@@ -759,7 +742,7 @@ def publish_linkedin_text(commentary):
         data=payload,
     )
 
-    if status_code not in (200, 201):
+    if status_code not in (200, 201, 202, 204):
         raise RuntimeError(
             f"LinkedIn recusou a publicacao. "
             f"HTTP {status_code}: {json.dumps(response_data)}"
@@ -1014,8 +997,7 @@ def scheduler_publish_one():
     lock_acquired = False
 
     try:
-        with lock_conn.cursor() as cur:
-            cur.execute(
+        with lock_conn.cursor() as cur:            cur.execute(
                 "SELECT pg_try_advisory_lock(%s);",
                 (SCHEDULER_LOCK_KEY,),
             )
@@ -1444,6 +1426,18 @@ def google_drive_upload_art_zip_route():
         try:
             with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
                 entries = [entry for entry in archive.infolist() if not entry.is_dir()]
+                # Detecta nomes repetidos antes de processar os arquivos para
+                # que nenhum dos lados de um conflito seja enviado por engano.
+                from collections import Counter
+                basename_counts = Counter(
+                    entry.filename.replace("\\", "/").rsplit("/", 1)[-1]
+                    for entry in entries
+                    if entry.filename.replace("\\", "/").rsplit("/", 1)[-1]
+                    and "__MACOSX" not in entry.filename.replace("\\", "/").split("/")
+                )
+                conflicting_basenames = {
+                    name for name, count in basename_counts.items() if count > 1
+                }
                 if len(entries) > 500:
                     return jsonify({
                         "status": "erro",
@@ -1480,15 +1474,6 @@ def google_drive_upload_art_zip_route():
                         continue
                     seen_hashes.add(digest)
                     if basename in seen_names:
-                        # Evita nomes ambíguos quando o ZIP contém pastas diferentes.
-                        candidates.append({
-                            "name": basename,
-                            "content": content,
-                            "mime_type": mime_type,
-                            "sha256": digest,
-                            "size": len(content),
-                            "zip_name_conflict": True,
-                        })
                         continue
                     seen_names.add(basename)
                     candidates.append({
@@ -1497,7 +1482,7 @@ def google_drive_upload_art_zip_route():
                         "mime_type": mime_type,
                         "sha256": digest,
                         "size": len(content),
-                        "zip_name_conflict": False,
+                        "zip_name_conflict": basename in conflicting_basenames,
                     })
         except (zipfile.BadZipFile, RuntimeError) as error:
             app.logger.info("ZIP de artes inválido: %s", str(error)[:300])
@@ -1577,6 +1562,252 @@ def google_drive_upload_art_zip_route():
             "status": "erro",
             "mensagem": "Falha interna no envio. Consulte os logs do servidor.",
         }), 500
+
+
+def google_drive_get_file_metadata(file_id, account_name="Drive5"):
+    """Busca metadados de um item pelo ID, sem baixar seu conteúdo."""
+    if not file_id or "/" in file_id:
+        raise ValueError("ID de arquivo/pasta inválido.")
+    params = {"fields": "id,name,mimeType,parents,trashed,md5Checksum,size,modifiedTime,webViewLink"}
+    url = f"{GOOGLE_DRIVE_FILES_URL}/{urllib.parse.quote(file_id, safe='')}?{urllib.parse.urlencode(params)}"
+    result, _ = google_drive_api_request("GET", url, account_name=account_name)
+    return result
+
+
+def google_drive_list_files(parent_id=None, account_name="Drive5", page_size=100, return_meta=False):
+    """Lista metadados; opcionalmente informa se o limite de páginas foi atingido."""
+    account_name = normalize_google_account_name(account_name)
+    page_size = max(1, min(int(page_size), 100))
+    items, page_token = [], None
+    for _ in range(20):
+        params = {
+            "pageSize": str(page_size),
+            "orderBy": "name",
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+            "fields": "nextPageToken,files(id,name,mimeType,parents,trashed,md5Checksum,size,modifiedTime,webViewLink)",
+            "q": "trashed = false" + (f" and '{parent_id}' in parents" if parent_id else ""),
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        payload, _ = google_drive_api_request(
+            "GET", f"{GOOGLE_DRIVE_FILES_URL}?{urllib.parse.urlencode(params)}", account_name=account_name
+        )
+        items.extend(x for x in payload.get("files", []) if isinstance(x, dict))
+        page_token = payload.get("nextPageToken")
+        if not page_token:
+            break
+    result = {"arquivos": items, "truncated": bool(page_token), "next_page_token": page_token}
+    return result if return_meta else items
+
+
+def google_drive_create_folder(name, parent_id=None, account_name="Drive5"):
+    name = str(name or "").strip()
+    if not name or len(name) > 200 or name in {".", ".."}:
+        raise ValueError("Informe um nome de pasta válido (1 a 200 caracteres).")
+    metadata = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
+    if parent_id:
+        parent = google_drive_get_file_metadata(parent_id, account_name)
+        if parent.get("mimeType") != "application/vnd.google-apps.folder" or parent.get("trashed"):
+            raise ValueError("A pasta de destino não existe ou não está disponível.")
+        metadata["parents"] = [parent_id]
+    payload, _ = google_drive_api_request("POST", GOOGLE_DRIVE_FILES_URL, data=metadata, account_name=account_name)
+    return payload
+
+
+def google_drive_rename_file(file_id, new_name, account_name="Drive5"):
+    new_name = str(new_name or "").strip()
+    if not new_name or len(new_name) > 200 or new_name in {".", ".."}:
+        raise ValueError("Informe um nome válido (1 a 200 caracteres).")
+    google_drive_get_file_metadata(file_id, account_name)
+    url = f"{GOOGLE_DRIVE_FILES_URL}/{urllib.parse.quote(file_id, safe='')}?fields=id,name,mimeType,parents,webViewLink"
+    payload, _ = google_drive_api_request("PATCH", url, data={"name": new_name}, account_name=account_name)
+    return payload
+
+
+def google_drive_move_file(file_id, destination_folder_id, account_name="Drive5"):
+    source = google_drive_get_file_metadata(file_id, account_name)
+    destination = google_drive_get_file_metadata(destination_folder_id, account_name)
+    if source.get("trashed"):
+        raise ValueError("O item de origem está na lixeira.")
+    if destination.get("mimeType") != "application/vnd.google-apps.folder" or destination.get("trashed"):
+        raise ValueError("A pasta de destino não é válida.")
+    if source.get("mimeType") == "application/vnd.google-apps.folder":
+        source_id = source.get("id")
+        current_id = destination.get("id")
+        visited = set()
+        # Percorre os ancestrais do destino para impedir ciclos de pastas.
+        while current_id:
+            if current_id == source_id:
+                raise ValueError("Uma pasta não pode ser movida para dentro de si mesma ou de uma pasta descendente.")
+            if current_id in visited:
+                raise ValueError("A hierarquia de pastas retornada pelo Drive contém um ciclo; operação cancelada.")
+            visited.add(current_id)
+            current = google_drive_get_file_metadata(current_id, account_name)
+            parents = current.get("parents", [])
+            current_id = parents[0] if parents else None
+    old_parents = source.get("parents", [])
+    params = {"addParents": destination_folder_id, "fields": "id,name,mimeType,parents,webViewLink"}
+    if old_parents:
+        params["removeParents"] = ",".join(old_parents)
+    url = f"{GOOGLE_DRIVE_FILES_URL}/{urllib.parse.quote(file_id, safe='')}?{urllib.parse.urlencode(params)}"
+    payload, _ = google_drive_api_request("PATCH", url, data={}, account_name=account_name)
+    return payload
+
+
+def google_drive_trash_file(file_id, confirmation, account_name="Drive5"):
+    """Move para a lixeira; exige confirmação literal e não exclui permanentemente."""
+    if confirmation != f"TRASH FILE {file_id}":
+        raise ValueError("Confirmação inválida. Envie exatamente: TRASH FILE <ID>.")
+    metadata = google_drive_get_file_metadata(file_id, account_name)
+    if metadata.get("trashed"):
+        return {"status": "ok", "mensagem": "O item já está na lixeira.", "id": file_id}
+    url = f"{GOOGLE_DRIVE_FILES_URL}/{urllib.parse.quote(file_id, safe='')}?fields=id,name,trashed"
+    payload, _ = google_drive_api_request("PATCH", url, data={"trashed": True}, account_name=account_name)
+    return {"status": "ok", "mensagem": "Item movido para a lixeira; não houve exclusão permanente.", **payload}
+
+
+def google_drive_find_duplicates(parent_id=None, account_name="Drive5"):
+    """Detecta duplicatas prováveis por checksum MD5; não altera nem exclui itens."""
+    listing = google_drive_list_files(parent_id, account_name, return_meta=True)
+    items = listing["arquivos"]
+    groups = {}
+    for item in items:
+        if item.get("mimeType") == "application/vnd.google-apps.folder":
+            continue
+        checksum = item.get("md5Checksum")
+        size = item.get("size")
+        if checksum and size is not None:
+            groups.setdefault((checksum, str(size)), []).append({
+                "id": item.get("id"), "name": item.get("name"),
+                "size": size, "modifiedTime": item.get("modifiedTime"),
+                "webViewLink": item.get("webViewLink"),
+            })
+    duplicates = [group for group in groups.values() if len(group) > 1]
+    return {"status": "parcial" if listing["truncated"] else "ok", "modo": "somente_leitura", "itens_analisados": len(items),
+            "truncated": listing["truncated"], "next_page_token": listing["next_page_token"],
+            "grupos_duplicados": len(duplicates), "duplicatas": duplicates,
+            "nota": "Nenhum item foi alterado. Revise cada grupo antes de enviar um ID à rota de lixeira." if not listing["truncated"] else "Atingido o limite de 20 páginas; resultados incompletos. Refine a pasta ou implemente paginação antes de concluir a auditoria."}
+
+
+@app.get("/google-drive/files")
+def google_drive_files_route():
+    auth_error = require_publish_secret()
+    if auth_error: return auth_error
+    try:
+        parent_id = request.args.get("folder_id") or None
+        listing = google_drive_list_files(parent_id, "Drive5", return_meta=True)
+        return jsonify({"status": "parcial" if listing["truncated"] else "ok", "conta": "Drive5", "quantidade": len(listing["arquivos"]), "truncated": listing["truncated"], "next_page_token": listing["next_page_token"], "arquivos": listing["arquivos"]})
+    except Exception:
+        app.logger.exception("Falha ao listar itens do Google Drive")
+        return jsonify({"status": "erro", "mensagem": "Falha ao listar itens. Consulte os logs."}), 500
+
+
+@app.post("/google-drive/folders")
+def google_drive_create_folder_route():
+    auth_error = require_publish_secret()
+    if auth_error: return auth_error
+    try:
+        body = request.get_json(silent=True) or {}
+        payload = google_drive_create_folder(body.get("name"), body.get("parent_id"), "Drive5")
+        return jsonify({"status": "ok", "pasta": payload}), 201
+    except ValueError as error:
+        return jsonify({"status": "erro", "mensagem": str(error)}), 400
+    except Exception:
+        app.logger.exception("Falha ao criar pasta no Google Drive")
+        return jsonify({"status": "erro", "mensagem": "Falha ao criar pasta. Consulte os logs."}), 500
+
+
+@app.patch("/google-drive/files/<file_id>")
+def google_drive_update_file_route(file_id):
+    auth_error = require_publish_secret()
+    if auth_error: return auth_error
+    try:
+        body = request.get_json(silent=True) or {}
+        has_name, has_parent = "name" in body, "parent_id" in body
+        if has_name == has_parent:
+            return jsonify({"status": "erro", "mensagem": "Informe somente 'name' para renomear ou 'parent_id' para mover."}), 400
+        payload = google_drive_rename_file(file_id, body.get("name"), "Drive5") if has_name else google_drive_move_file(file_id, body.get("parent_id"), "Drive5")
+        return jsonify({"status": "ok", "arquivo": payload})
+    except ValueError as error:
+        return jsonify({"status": "erro", "mensagem": str(error)}), 400
+    except Exception:
+        app.logger.exception("Falha ao atualizar item no Google Drive")
+        return jsonify({"status": "erro", "mensagem": "Falha ao atualizar item. Consulte os logs."}), 500
+
+
+@app.post("/google-drive/upload")
+def google_drive_upload_file_route():
+    """Upload genérico de um arquivo para uma pasta do Drive; máximo de 20 MiB."""
+    auth_error = require_publish_secret()
+    if auth_error: return auth_error
+    try:
+        uploaded = request.files.get("file")
+        if not uploaded or not uploaded.filename:
+            return jsonify({"status": "erro", "mensagem": "Envie o arquivo no campo multipart 'file'."}), 400
+        filename = uploaded.filename.replace("\\", "/").rsplit("/", 1)[-1].strip()
+        if not filename or filename in {".", ".."} or len(filename) > 200:
+            return jsonify({"status": "erro", "mensagem": "Nome de arquivo inválido."}), 400
+        content = uploaded.read(20 * 1024 * 1024 + 1)
+        if not content:
+            return jsonify({"status": "erro", "mensagem": "O arquivo está vazio."}), 400
+        if len(content) > 20 * 1024 * 1024:
+            return jsonify({"status": "erro", "mensagem": "O arquivo excede o limite de 20 MiB."}), 413
+        parent_id = (request.form.get("folder_id") or "").strip()
+        if parent_id:
+            parent = google_drive_get_file_metadata(parent_id, "Drive5")
+            if parent.get("mimeType") != "application/vnd.google-apps.folder" or parent.get("trashed"):
+                return jsonify({"status": "erro", "mensagem": "Pasta de destino inválida."}), 400
+        mime_type = uploaded.mimetype or "application/octet-stream"
+        boundary = "murici_upload_" + secrets.token_hex(16)
+        metadata = {"name": filename}
+        if parent_id: metadata["parents"] = [parent_id]
+        body = (f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"
+                + json.dumps(metadata, ensure_ascii=False)
+                + f"\r\n--{boundary}\r\nContent-Type: {mime_type}\r\n\r\n").encode("utf-8") + content + f"\r\n--{boundary}--\r\n".encode("utf-8")
+        query = urllib.parse.urlencode({"uploadType": "multipart", "supportsAllDrives": "true", "fields": "id,name,mimeType,size,md5Checksum,webViewLink,parents"})
+        req = urllib.request.Request(
+            f"https://www.googleapis.com/upload/drive/v3/files?{query}", data=body,
+            headers={"Authorization": f"Bearer {google_drive_access_token('Drive5')}",
+                     "Content-Type": f"multipart/related; boundary={boundary}"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            app.logger.error("Google Drive upload genérico falhou: HTTP %s", error.code)
+            return jsonify({"status": "erro", "mensagem": f"Google Drive recusou o upload (HTTP {error.code})."}), 502
+        if not payload.get("id"):
+            return jsonify({"status": "erro", "mensagem": "O Drive não confirmou o arquivo enviado."}), 502
+        return jsonify({"status": "ok", "arquivo": payload}), 201
+    except Exception:
+        app.logger.exception("Falha no upload genérico do Google Drive")
+        return jsonify({"status": "erro", "mensagem": "Falha no upload. Consulte os logs."}), 500
+
+
+@app.get("/google-drive/duplicates")
+def google_drive_duplicates_route():
+    auth_error = require_publish_secret()
+    if auth_error: return auth_error
+    try:
+        return jsonify(google_drive_find_duplicates(request.args.get("folder_id") or None, "Drive5"))
+    except Exception:
+        app.logger.exception("Falha ao identificar duplicatas no Google Drive")
+        return jsonify({"status": "erro", "mensagem": "Falha ao identificar duplicatas. Consulte os logs."}), 500
+
+
+@app.post("/google-drive/files/<file_id>/trash")
+def google_drive_trash_file_route(file_id):
+    auth_error = require_publish_secret()
+    if auth_error: return auth_error
+    try:
+        body = request.get_json(silent=True) or {}
+        result = google_drive_trash_file(file_id, body.get("confirmation"), "Drive5")
+        return jsonify(result)
+    except ValueError as error:
+        return jsonify({"status": "erro", "mensagem": str(error)}), 400
+    except Exception:
+        app.logger.exception("Falha ao mover item para lixeira do Google Drive")
+        return jsonify({"status": "erro", "mensagem": "Falha ao mover item para lixeira. Consulte os logs."}), 500
 
 
 @app.post("/google-drive/test")
@@ -1765,8 +1996,7 @@ def linkedin_callback():
         method="POST",
     )
 
-    try:
-        with urllib.request.urlopen(
+    try:        with urllib.request.urlopen(
             token_request,
             timeout=30
         ) as response:
@@ -2406,6 +2636,76 @@ def scheduler_queue():
         return safe_error_response("Falha ao adicionar a publicacao na fila. Consulte os logs do servidor.")
 
 
+@app.get("/scheduler/diagnostics")
+def scheduler_diagnostics():
+    """Consulta somente leitura de itens que podem exigir reconciliacao manual."""
+
+    auth_error = require_publish_secret()
+
+    if auth_error:
+        return auth_error
+
+    try:
+        # Esta rota e estritamente diagnostica: nao cria tabelas, indices,
+        # nem executa migracoes implicitas. Se a fila nao existir, falha
+        # de forma controlada e o operador deve verificar a instalacao.
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        id,
+                        post_number,
+                        status,
+                        attempts,
+                        scheduled_for,
+                        locked_at,
+                        updated_at,
+                        GREATEST(
+                            0,
+                            EXTRACT(EPOCH FROM (NOW() - COALESCE(locked_at, updated_at)))
+                        )::BIGINT AS age_seconds
+                    FROM linkedin_publish_queue
+                    WHERE status = 'processando'
+                    ORDER BY COALESCE(locked_at, updated_at) ASC, id ASC
+                    LIMIT 100;
+                    """
+                )
+                rows = cur.fetchall()
+
+        items = []
+        for row in rows:
+            (queue_id, post_number, status, attempts, scheduled_for,
+             locked_at, updated_at, age_seconds) = row
+            items.append({
+                "queue_id": queue_id,
+                "post_number": post_number,
+                "status": status,
+                "attempts": attempts,
+                "scheduled_for": scheduled_for.isoformat() if scheduled_for else None,
+                "locked_at": locked_at.isoformat() if locked_at else None,
+                "updated_at": updated_at.isoformat() if updated_at else None,
+                "age_seconds": int(age_seconds or 0),
+                "requer_reconciliacao_manual": True,
+            })
+
+        return jsonify({
+            "status": "ok",
+            "somente_leitura": True,
+            "quantidade": len(items),
+            "limite": 100,
+            "itens_processando": items,
+            "aviso": (
+                "Nao redefina nem repita automaticamente itens processando. "
+                "Confirme primeiro se cada publicacao existe no LinkedIn."
+            ),
+        })
+
+    except Exception:
+        app.logger.exception("Falha no diagnostico da fila do scheduler")
+        return safe_error_response("Falha ao consultar diagnosticos da fila. Consulte os logs do servidor.")
+
+
 @app.get("/scheduler/status")
 def scheduler_status():
     """
@@ -2695,8 +2995,7 @@ def analytics_record():
                         impressions,
                         members_reached,
                         reactions,
-                        comments,
-                        reposts,
+                        comments,                        reposts,
                         post_saves,
                         post_sends,
                         link_clicks,
