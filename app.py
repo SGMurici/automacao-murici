@@ -997,7 +997,8 @@ def scheduler_publish_one():
     lock_acquired = False
 
     try:
-        with lock_conn.cursor() as cur:            cur.execute(
+        with lock_conn.cursor() as cur:
+            cur.execute(
                 "SELECT pg_try_advisory_lock(%s);",
                 (SCHEDULER_LOCK_KEY,),
             )
@@ -2995,7 +2996,8 @@ def analytics_record():
                         impressions,
                         members_reached,
                         reactions,
-                        comments,                        reposts,
+                        comments,
+                        reposts,
                         post_saves,
                         post_sends,
                         link_clicks,
