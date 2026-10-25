@@ -920,7 +920,7 @@ def require_publish_secret():
                     "mensagem": "PUBLISH_SECRET nao configurado.",
                 }
             ),
-            500,
+            503,
         )
 
     provided_secret = request.headers.get("X-Publish-Secret")
