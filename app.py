@@ -48,9 +48,19 @@ LINKEDIN_REDIRECT_URI = (
     "https://automacao-murici.onrender.com/linkedin/callback"
 )
 
-GOOGLE_REDIRECT_URI = (
-    "https://automacao-murici.onrender.com/google/callback"
+# No ramo de testes, o retorno OAuth usa o dominio de testes por padrao.
+# A URI deve tambem estar cadastrada no cliente OAuth do Google Cloud.
+GOOGLE_REDIRECT_URI = os.environ.get(
+    "GOOGLE_REDIRECT_URI",
+    "https://automacao-murici-testes-controlados.onrender.com/google/callback",
 )
+
+GOOGLE_OAUTH_SCOPE = os.environ.get(
+    "GOOGLE_OAUTH_SCOPE",
+    "https://www.googleapis.com/auth/drive "
+    "https://www.googleapis.com/auth/spreadsheets "
+    "https://www.googleapis.com/auth/gmail.readonly",
+).strip()
 
 
 LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
@@ -2142,7 +2152,7 @@ def google_login():
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "response_type": "code",
-        "scope": "https://www.googleapis.com/auth/drive",
+        "scope": GOOGLE_OAUTH_SCOPE,
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
