@@ -1997,7 +1997,8 @@ def linkedin_callback():
         method="POST",
     )
 
-    try:        with urllib.request.urlopen(
+    try:
+        with urllib.request.urlopen(
             token_request,
             timeout=30
         ) as response:
