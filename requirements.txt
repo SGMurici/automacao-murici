@@ -1,4 +1,4 @@
-Flask
-gunicorn
-psycopg[binary]
-cryptography
+Flask>=3.0,<4.0
+psycopg[binary]>=3.2,<4.0
+cryptography>=42.0
+gunicorn>=22.0,<24.0
