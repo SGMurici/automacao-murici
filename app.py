@@ -3428,6 +3428,220 @@ def analytics_collect():
         ), 500
 
 
+# Google Workspace: endpoints administrativos protegidos por PUBLISH_SECRET.
+# Sheets fica em leitura por padrao; escrita exige habilitacao explicita no Render.
+GOOGLE_SHEETS_SPREADSHEET_ID = os.environ.get("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip()
+GOOGLE_SHEETS_WRITE_ENABLED = (
+    os.environ.get("GOOGLE_SHEETS_WRITE_ENABLED", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+GOOGLE_SHEETS_API_BASE = "https://sheets.googleapis.com/v4/spreadsheets"
+GOOGLE_GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
+
+
+def google_workspace_api_request(url, method="GET", payload=None):
+    """Chamada autenticada do Workspace usando a conta Google Drive5 autorizada."""
+    access_token = google_drive_access_token("Drive5")
+    headers = {"Authorization": f"Bearer {access_token}"}
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    status_code, response_data, _ = http_json_request(
+        url, method=method, headers=headers, data=payload
+    )
+    if status_code not in (200, 201, 202, 204):
+        # Nao incluir tokens nem dados sensiveis na resposta externa.
+        raise RuntimeError(
+            f"Google Workspace recusou a requisicao (HTTP {status_code})."
+        )
+    return response_data
+
+
+@app.get("/google-workspace/status")
+def google_workspace_status():
+    """Mostra configuracao sem consultar nem modificar dados Google."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    return jsonify({
+        "status": "ok",
+        "conta_configurada": "Drive5",
+        "sheets_spreadsheet_id_configurado": bool(GOOGLE_SHEETS_SPREADSHEET_ID),
+        "sheets_escrita_habilitada": GOOGLE_SHEETS_WRITE_ENABLED,
+        "gmail_modo": "somente_leitura",
+        "apis_consultadas": False,
+    })
+
+
+@app.get("/google-workspace/sheets/metadata")
+def google_workspace_sheets_metadata():
+    """Le metadados da planilha configurada; nao altera valores."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    if not GOOGLE_SHEETS_SPREADSHEET_ID:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "GOOGLE_SHEETS_SPREADSHEET_ID ainda nao configurado no Render."
+        }), 503
+    try:
+        sid = urllib.parse.quote(GOOGLE_SHEETS_SPREADSHEET_ID, safe="")
+        fields = urllib.parse.quote("spreadsheetId,properties(title),sheets(properties(sheetId,title,index,gridProperties(rowCount,columnCount)))", safe="")
+        data = google_workspace_api_request(
+            f"{GOOGLE_SHEETS_API_BASE}/{sid}?fields={fields}"
+        )
+        return jsonify({
+            "status": "ok",
+            "spreadsheetId": data.get("spreadsheetId"),
+            "properties": data.get("properties", {}),
+            "sheets": [
+                {
+                    "properties": {
+                        "sheetId": s.get("properties", {}).get("sheetId"),
+                        "title": s.get("properties", {}).get("title"),
+                        "index": s.get("properties", {}).get("index"),
+                        "gridProperties": s.get("properties", {}).get("gridProperties", {}),
+                    }
+                }
+                for s in data.get("sheets", [])
+            ],
+            "alterou_dados": False,
+        })
+    except Exception:
+        app.logger.exception("Falha ao ler metadados da planilha Google")
+        return safe_error_response("Nao foi possivel ler a planilha. Verifique autorizacao, API e ID configurado.", 502)
+
+
+@app.get("/google-workspace/sheets/values")
+def google_workspace_sheets_values():
+    """Le um intervalo explicito da planilha; restringe intervalo e volume."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    if not GOOGLE_SHEETS_SPREADSHEET_ID:
+        return jsonify({"status": "erro", "mensagem": "Planilha ainda nao configurada."}), 503
+    value_range = request.args.get("range", "").strip()
+    if not value_range or len(value_range) > 200 or "!" not in value_range:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Informe range no formato Aba!A1:Z100; o intervalo deve indicar uma aba e limitar o volume."
+        }), 400
+    if any(ch in value_range for ch in "\r\n"):
+        return jsonify({"status": "erro", "mensagem": "Intervalo invalido."}), 400
+    try:
+        sid = urllib.parse.quote(GOOGLE_SHEETS_SPREADSHEET_ID, safe="")
+        encoded_range = urllib.parse.quote(value_range, safe="")
+        data = google_workspace_api_request(
+            f"{GOOGLE_SHEETS_API_BASE}/{sid}/values/{encoded_range}"
+        )
+        rows = data.get("values", [])
+        if len(rows) > 500:
+            return jsonify({"status": "erro", "mensagem": "O intervalo retornou mais de 500 linhas; reduza o intervalo."}), 413
+        return jsonify({
+            "status": "ok",
+            "range": data.get("range", value_range),
+            "majorDimension": data.get("majorDimension", "ROWS"),
+            "values": rows,
+            "row_count": len(rows),
+            "alterou_dados": False,
+        })
+    except Exception:
+        app.logger.exception("Falha ao ler intervalo da planilha Google")
+        return safe_error_response("Nao foi possivel ler o intervalo. Verifique autorizacao, API e nome da aba.", 502)
+
+
+@app.put("/google-workspace/sheets/values")
+def google_workspace_sheets_update_values():
+    """Escrita opt-in; desabilitada por padrao e nunca usada em importacao automatica."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    if not GOOGLE_SHEETS_WRITE_ENABLED:
+        return jsonify({
+            "status": "desativado",
+            "mensagem": "A escrita na planilha esta desabilitada. Habilite GOOGLE_SHEETS_WRITE_ENABLED somente depois de validar a planilha e o intervalo."
+        }), 423
+    if not GOOGLE_SHEETS_SPREADSHEET_ID:
+        return jsonify({"status": "erro", "mensagem": "Planilha ainda nao configurada."}), 503
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"status": "erro", "mensagem": "Envie JSON com range e values."}), 400
+    value_range = payload.get("range")
+    values = payload.get("values")
+    if (
+        not isinstance(value_range, str) or "!" not in value_range
+        or len(value_range) > 200 or "\n" in value_range or "\r" in value_range
+        or not isinstance(values, list) or not values or len(values) > 100
+        or any(not isinstance(row, list) or len(row) > 52 for row in values)
+    ):
+        return jsonify({"status": "erro", "mensagem": "Intervalo ou matriz de valores invalida; limite de 100 linhas e 52 colunas."}), 400
+    try:
+        sid = urllib.parse.quote(GOOGLE_SHEETS_SPREADSHEET_ID, safe="")
+        encoded_range = urllib.parse.quote(value_range, safe="")
+        data = google_workspace_api_request(
+            f"{GOOGLE_SHEETS_API_BASE}/{sid}/values/{encoded_range}?valueInputOption=RAW",
+            method="PUT",
+            payload={"range": value_range, "majorDimension": "ROWS", "values": values},
+        )
+        return jsonify({
+            "status": "ok",
+            "updatedRange": data.get("updatedRange"),
+            "updatedRows": data.get("updatedRows"),
+            "updatedColumns": data.get("updatedColumns"),
+            "updatedCells": data.get("updatedCells"),
+        })
+    except Exception:
+        app.logger.exception("Falha ao atualizar intervalo da planilha Google")
+        return safe_error_response("A atualizacao falhou; confira o intervalo e as permissoes da planilha.", 502)
+
+
+@app.get("/google-workspace/gmail/messages")
+def google_workspace_gmail_messages():
+    """Pesquisa mensagens Gmail sem modificar, arquivar ou enviar mensagens."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    query = request.args.get("q", "newer_than:90d").strip()
+    if not query or len(query) > 300:
+        return jsonify({"status": "erro", "mensagem": "Consulta Gmail invalida (1 a 300 caracteres)."}), 400
+    try:
+        params = urllib.parse.urlencode({"q": query, "maxResults": 25})
+        data = google_workspace_api_request(f"{GOOGLE_GMAIL_API_BASE}/messages?{params}")
+        messages = data.get("messages", [])
+        results = []
+        for message in messages[:25]:
+            mid = message.get("id")
+            if not mid:
+                continue
+            encoded_id = urllib.parse.quote(mid, safe="")
+            detail = google_workspace_api_request(
+                f"{GOOGLE_GMAIL_API_BASE}/messages/{encoded_id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date"
+            )
+            headers = {}
+            for header in detail.get("payload", {}).get("headers", []):
+                if isinstance(header, dict) and header.get("name"):
+                    headers[header["name"].lower()] = header.get("value", "")
+            results.append({
+                "id": mid,
+                "threadId": detail.get("threadId"),
+                "date": headers.get("date"),
+                "from": headers.get("from"),
+                "subject": headers.get("subject"),
+                "snippet": detail.get("snippet", ""),
+                "labels": detail.get("labelIds", []),
+            })
+        return jsonify({
+            "status": "ok",
+            "query": query,
+            "count": len(results),
+            "messages": results,
+            "mode": "somente_leitura",
+            "alterou_mensagens": False,
+        })
+    except Exception:
+        app.logger.exception("Falha ao pesquisar mensagens Gmail")
+        return safe_error_response("Nao foi possivel consultar o Gmail. Verifique o escopo, API e autorizacao.", 502)
+
+
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
