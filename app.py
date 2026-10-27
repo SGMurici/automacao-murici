@@ -3644,6 +3644,43 @@ def google_workspace_gmail_messages():
 
 
 
+# Diagnóstico temporário e somente leitura; remover após validar as integrações.
+@app.get("/__temporary_workspace_probe")
+def temporary_workspace_probe():
+    probe_key = os.environ.get("WORKSPACE_PROBE_KEY", "")
+    supplied_key = request.args.get("key", "")
+    if not probe_key or not secrets.compare_digest(probe_key, supplied_key):
+        return jsonify({"status": "not_found"}), 404
+
+    result = {"status": "ok", "somente_leitura": True, "conta": "Drive5"}
+    if GOOGLE_SHEETS_SPREADSHEET_ID:
+        try:
+            sid = urllib.parse.quote(GOOGLE_SHEETS_SPREADSHEET_ID, safe="")
+            fields = urllib.parse.quote("spreadsheetId,properties(title),sheets(properties(title,index))", safe="")
+            sheet_data = google_workspace_api_request(f"{GOOGLE_SHEETS_API_BASE}/{sid}?fields={fields}")
+            result["sheets"] = {
+                "status": "ok",
+                "title": sheet_data.get("properties", {}).get("title"),
+                "tabs": [s.get("properties", {}).get("title") for s in sheet_data.get("sheets", [])],
+            }
+        except Exception as error:
+            result["sheets"] = {"status": "error", "error_type": type(error).__name__}
+    else:
+        result["sheets"] = {"status": "not_configured"}
+
+    try:
+        params = urllib.parse.urlencode({"q": "newer_than:90d", "maxResults": 1})
+        gmail_data = google_workspace_api_request(f"{GOOGLE_GMAIL_API_BASE}/messages?{params}")
+        result["gmail"] = {
+            "status": "ok",
+            "recent_message_sample_count": len(gmail_data.get("messages", [])),
+            "mode": "metadata_list_only",
+        }
+    except Exception as error:
+        result["gmail"] = {"status": "error", "error_type": type(error).__name__}
+    return jsonify(result)
+
+
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
