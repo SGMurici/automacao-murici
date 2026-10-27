@@ -1427,7 +1427,9 @@ def google_drive_upload_art_zip_route():
         if not uploaded_file.filename.lower().endswith(".zip"):
             return jsonify({"status": "erro", "mensagem": "O arquivo deve ser ZIP."}), 400
 
-        archive_bytes = uploaded_file.read()
+        # Lê no máximo 1 byte além do limite para não alocar memória sem limite
+        # antes de validar o tamanho do ZIP enviado.
+        archive_bytes = uploaded_file.read(80 * 1024 * 1024 + 1)
         if not archive_bytes:
             return jsonify({"status": "erro", "mensagem": "O ZIP está vazio."}), 400
         if len(archive_bytes) > 80 * 1024 * 1024:
