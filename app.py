@@ -1313,7 +1313,11 @@ def google_drive_list_existing_art_files(account_name="Drive5"):
 
     files = []
     page_token = None
-    for _ in range(10):
+    # Pagina até o fim para que a deduplicação considere todos os arquivos.
+    # O limite evita uma varredura ilimitada; se for atingido, falha fechado
+    # em vez de continuar o upload com uma lista incompleta de arquivos.
+    max_pages = 100
+    for page_number in range(max_pages):
         params = {
             "q": f"'{folder_id}' in parents and trashed = false",
             "pageSize": "100",
@@ -1335,7 +1339,13 @@ def google_drive_list_existing_art_files(account_name="Drive5"):
         )
         page_token = response_data.get("nextPageToken")
         if not page_token:
-            break
+            return files
+
+    if page_token:
+        raise RuntimeError(
+            "A pasta de artes excedeu o limite de paginas da verificacao de duplicatas; "
+            "upload interrompido para evitar duplicacao."
+        )
     return files
 
 
