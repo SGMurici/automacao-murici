@@ -3664,7 +3664,7 @@ def temporary_workspace_probe():
                 "tabs": [s.get("properties", {}).get("title") for s in sheet_data.get("sheets", [])],
             }
         except Exception as error:
-            result["sheets"] = {"status": "error", "error_type": type(error).__name__}
+            result["sheets"] = {"status": "error", "error_type": type(error).__name__, "detail": str(error)[:240]}
     else:
         result["sheets"] = {"status": "not_configured"}
 
@@ -3677,7 +3677,7 @@ def temporary_workspace_probe():
             "mode": "metadata_list_only",
         }
     except Exception as error:
-        result["gmail"] = {"status": "error", "error_type": type(error).__name__}
+        result["gmail"] = {"status": "error", "error_type": type(error).__name__, "detail": str(error)[:240]}
     return jsonify(result)
 
 
