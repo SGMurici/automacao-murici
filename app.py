@@ -3449,20 +3449,10 @@ def google_workspace_api_request(url, method="GET", payload=None):
         url, method=method, headers=headers, data=payload
     )
     if status_code not in (200, 201, 202, 204):
-        # Diagnostico restrito: nunca registrar token, corpo de email ou dados da planilha.
-        error_obj = response_data.get("error", {}) if isinstance(response_data, dict) else {}
-        if not isinstance(error_obj, dict):
-            error_obj = {}
-        error_reasons = []
-        raw_errors = error_obj.get("errors", [])
-        if isinstance(raw_errors, list):
-            for item in raw_errors[:3]:
-                if isinstance(item, dict) and item.get("reason"):
-                    error_reasons.append(str(item.get("reason"))[:80])
-        google_status = str(error_obj.get("status", ""))[:80]
-        google_message = str(error_obj.get("message", ""))[:220]
-        detail = {"http": status_code, "google_status": google_status, "reasons": error_reasons, "message": google_message}
-        raise RuntimeError("Google Workspace API error: " + json.dumps(detail, ensure_ascii=False))
+        # Nao incluir tokens nem dados sensiveis na resposta externa.
+        raise RuntimeError(
+            f"Google Workspace recusou a requisicao (HTTP {status_code})."
+        )
     return response_data
 
 
@@ -3655,33 +3645,6 @@ def google_workspace_gmail_messages():
 
 
 
-
-
-# Diagnostico temporario somente leitura no ambiente isolado; remover apos a verificacao.
-@app.get("/__temporary_workspace_probe")
-def temporary_workspace_probe():
-    probe_key = os.environ.get("WORKSPACE_PROBE_KEY", "")
-    supplied_key = request.args.get("key", "")
-    if not probe_key or not secrets.compare_digest(probe_key, supplied_key):
-        return jsonify({"status": "not_found"}), 404
-    result = {"status": "ok", "somente_leitura": True, "conta": "Drive5"}
-    if GOOGLE_SHEETS_SPREADSHEET_ID:
-        try:
-            sid = urllib.parse.quote(GOOGLE_SHEETS_SPREADSHEET_ID, safe="")
-            fields = urllib.parse.quote("spreadsheetId", safe="")
-            google_workspace_api_request(f"{GOOGLE_SHEETS_API_BASE}/{sid}?fields={fields}")
-            result["sheets"] = {"status": "ok"}
-        except Exception as error:
-            result["sheets"] = {"status": "error", "detail": str(error)[:450]}
-    else:
-        result["sheets"] = {"status": "not_configured"}
-    try:
-        params = urllib.parse.urlencode({"q": "newer_than:90d", "maxResults": 1})
-        gmail_data = google_workspace_api_request(f"{GOOGLE_GMAIL_API_BASE}/messages?{params}")
-        result["gmail"] = {"status": "ok", "metadata_count": len(gmail_data.get("messages", []))}
-    except Exception as error:
-        result["gmail"] = {"status": "error", "detail": str(error)[:450]}
-    return jsonify(result)
 
 
 if __name__ == "__main__":
