@@ -3642,6 +3642,60 @@ def google_workspace_gmail_messages():
         return safe_error_response("Nao foi possivel consultar o Gmail. Verifique o escopo, API e autorizacao.", 502)
 
 
+
+@app.get("/__probe_aulas_7f93c1b8")
+def __probe_aulas_7f93c1b8():
+    """Temporary, read-only diagnostic for the user's specific Drive5 shortcut."""
+    try:
+        q = urllib.parse.urlencode({
+            "q": "name = 'aulas' and trashed = false",
+            "pageSize": "100",
+            "fields": "files(id,name,mimeType,webViewLink,shortcutDetails(targetId,targetMimeType),parents)"
+        })
+        data, _ = google_drive_api_request("GET", f"{GOOGLE_DRIVE_FILES_URL}?{q}", account_name="Drive5")
+        matches = data.get("files", [])
+        output = []
+        for item in matches:
+            record = {
+                "name": item.get("name"),
+                "mimeType": item.get("mimeType"),
+                "id": item.get("id"),
+                "shortcutDetails": item.get("shortcutDetails"),
+                "webViewLink": item.get("webViewLink"),
+            }
+            details = item.get("shortcutDetails") or {}
+            target_id = details.get("targetId")
+            if item.get("mimeType") == "application/vnd.google-apps.shortcut" and target_id:
+                tid = urllib.parse.quote(target_id, safe="")
+                target_data, _ = google_drive_api_request(
+                    "GET",
+                    f"{GOOGLE_DRIVE_FILES_URL}/{tid}?fields=id,name,mimeType,webViewLink,parents",
+                    account_name="Drive5",
+                )
+                record["target"] = target_data
+                if target_data.get("mimeType") == "application/vnd.google-apps.folder":
+                    child_q = urllib.parse.urlencode({
+                        "q": f"'{target_id}' in parents and trashed = false",
+                        "pageSize": "10",
+                        "fields": "files(id,name,mimeType,webViewLink)"
+                    })
+                    child_data, _ = google_drive_api_request(
+                        "GET", f"{GOOGLE_DRIVE_FILES_URL}?{child_q}", account_name="Drive5"
+                    )
+                    record["target_children_preview"] = child_data.get("files", [])
+            output.append(record)
+        return jsonify({
+            "status": "ok",
+            "account": "Drive5",
+            "matches": len(output),
+            "results": output,
+            "read_only": True,
+        })
+    except Exception:
+        app.logger.exception("Temporary Drive5 aulas shortcut probe failed")
+        return safe_error_response("A consulta somente leitura falhou.", 502)
+
+
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
