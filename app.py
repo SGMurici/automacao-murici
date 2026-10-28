@@ -1512,6 +1512,73 @@ def google_drive_test_delete_image_route():
         return safe_error_response("Não foi possível excluir a imagem de teste. Verifique os logs do serviço.", 502)
 
 
+@app.post("/google-drive/test-rename-image")
+def google_drive_test_rename_image_route():
+    """Renomeia apenas o PNG de teste conhecido, dentro da pasta de testes."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+
+    account_name = normalize_google_account_name(request.args.get("account", "Drive5"))
+    if account_name != "Drive5":
+        return jsonify({"status": "erro", "mensagem": "Este endpoint aceita exclusivamente a conta Drive5."}), 400
+    if not GOOGLE_DRIVE_ART_TEST_FOLDER_ID:
+        return jsonify({"status": "erro", "mensagem": "Pasta de teste não configurada."}), 503
+
+    old_name = "TESTE_UPLOAD_POSTMAN.png"
+    new_name = "TESTE_RENOMEADO_REQBIN.png"
+    try:
+        # Busca somente o nome autorizado dentro da pasta de teste.
+        query = urllib.parse.urlencode({
+            "q": "'" + GOOGLE_DRIVE_ART_TEST_FOLDER_ID + "' in parents and name = '" + old_name + "' and trashed = false",
+            "pageSize": "10",
+            "fields": "files(id,name,mimeType,parents,trashed)",
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+        })
+        listed, _ = google_drive_api_request(
+            "GET", f"{GOOGLE_DRIVE_FILES_URL}?{query}", account_name=account_name
+        )
+        matches = listed.get("files", [])
+        if len(matches) != 1:
+            return jsonify({
+                "status": "bloqueado",
+                "mensagem": "Esperava exatamente um arquivo PNG de teste com o nome original na pasta de teste; nada foi alterado.",
+                "quantidade_encontrada": len(matches),
+            }), 409
+
+        item = matches[0]
+        if (
+            item.get("mimeType") != "image/png"
+            or item.get("trashed")
+            or GOOGLE_DRIVE_ART_TEST_FOLDER_ID not in item.get("parents", [])
+        ):
+            return jsonify({
+                "status": "bloqueado",
+                "mensagem": "O arquivo encontrado não corresponde ao PNG autorizado na pasta de teste; nada foi alterado.",
+            }), 409
+
+        encoded_id = urllib.parse.quote(item["id"], safe="")
+        update_url = (
+            f"{GOOGLE_DRIVE_FILES_URL}/{encoded_id}"
+            f"?{urllib.parse.urlencode({'supportsAllDrives': 'true', 'fields': 'id,name,mimeType,parents,webViewLink'})}"
+        )
+        updated, _ = google_drive_api_request(
+            "PATCH", update_url, data={"name": new_name}, account_name=account_name
+        )
+        return jsonify({
+            "status": "ok",
+            "mensagem": "A imagem de teste foi renomeada pelo Google Drive.",
+            "arquivo_id": updated.get("id"),
+            "nome_anterior": old_name,
+            "nome_novo": updated.get("name"),
+            "pasta_teste_preservada": GOOGLE_DRIVE_ART_TEST_FOLDER_ID in updated.get("parents", []),
+        }), 200
+    except Exception:
+        app.logger.exception("Falha na renomeação controlada da imagem de teste")
+        return safe_error_response("Não foi possível renomear a imagem de teste. Verifique os logs do serviço.", 502)
+
+
 @app.post("/google-drive/upload-art-zip")
 def google_drive_upload_art_zip_route():
     """Recebe um ZIP e envia imagens para a pasta configurada, sem sobrescrever."""
