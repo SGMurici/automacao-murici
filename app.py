@@ -2,6 +2,7 @@ import os
 import json
 import secrets
 import hashlib
+import base64
 import io
 import zipfile
 import urllib.parse
@@ -95,6 +96,7 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 GOOGLE_DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files"
 GOOGLE_DRIVE_ART_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_ART_FOLDER_ID", "").strip()
+GOOGLE_DRIVE_ART_TEST_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_ART_TEST_FOLDER_ID", "").strip()
 
 
 
@@ -1349,17 +1351,18 @@ def google_drive_list_existing_art_files(account_name="Drive5"):
     return files
 
 
-def google_drive_upload_art_bytes(name, content, mime_type, sha256_hex, account_name="Drive5"):
+def google_drive_upload_art_bytes(name, content, mime_type, sha256_hex, account_name="Drive5", folder_id=None):
     """Envia uma imagem ao Drive e registra seu SHA-256 em appProperties."""
     account_name = normalize_google_account_name(account_name)
-    if not GOOGLE_DRIVE_ART_FOLDER_ID:
-        raise RuntimeError("GOOGLE_DRIVE_ART_FOLDER_ID nao configurado.")
+    destination_folder_id = folder_id or GOOGLE_DRIVE_ART_FOLDER_ID
+    if not destination_folder_id:
+        raise RuntimeError("Pasta de destino do Google Drive nao configurada.")
     token = google_drive_access_token(account_name)
     boundary = "murici_drive_upload_" + secrets.token_hex(16)
     metadata = {
         "name": name,
         "mimeType": mime_type,
-        "parents": [GOOGLE_DRIVE_ART_FOLDER_ID],
+        "parents": [destination_folder_id],
         "appProperties": {"sha256": sha256_hex},
     }
     query = urllib.parse.urlencode({
@@ -1397,6 +1400,69 @@ def google_drive_upload_art_bytes(name, content, mime_type, sha256_hex, account_
     if not payload.get("id"):
         raise RuntimeError("Google Drive nao confirmou o arquivo enviado.")
     return payload
+
+
+@app.post("/google-drive/test-upload-image")
+def google_drive_test_upload_image_route():
+    """Teste controlado: envia uma imagem PNG minima apenas para a subpasta de teste."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+
+    account_name = normalize_google_account_name(request.args.get("account", "Drive5"))
+    if account_name != "Drive5":
+        return jsonify({"status": "erro", "mensagem": "Este endpoint aceita exclusivamente a conta Drive5."}), 400
+    if not GOOGLE_DRIVE_ART_TEST_FOLDER_ID:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "GOOGLE_DRIVE_ART_TEST_FOLDER_ID nao configurado no servico de testes."
+        }), 503
+
+    try:
+        folder = google_drive_get_file_metadata(GOOGLE_DRIVE_ART_TEST_FOLDER_ID, account_name)
+        if folder.get("mimeType") != "application/vnd.google-apps.folder" or folder.get("trashed"):
+            return jsonify({"status": "erro", "mensagem": "A pasta de teste configurada nao e valida."}), 400
+
+        # PNG 1x1 valido, embutido no codigo: nao exige upload de arquivo pelo navegador.
+        png_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l2sAAAAASUVORK5CYII="
+        image_bytes = base64.b64decode(png_base64, validate=True)
+        digest = hashlib.sha256(image_bytes).hexdigest()
+        filename = "TESTE_UPLOAD_POSTMAN.png"
+
+        # Evita criar duplicatas se o endpoint for executado mais de uma vez.
+        query = urllib.parse.urlencode({
+            "q": "'" + GOOGLE_DRIVE_ART_TEST_FOLDER_ID + "' in parents and name = '" + filename + "' and trashed = false",
+            "pageSize": "10",
+            "fields": "files(id,name,mimeType,parents,webViewLink,appProperties)",
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+        })
+        existing, _ = google_drive_api_request(
+            "GET", f"{GOOGLE_DRIVE_FILES_URL}?{query}", account_name=account_name
+        )
+        for item in existing.get("files", []):
+            if item.get("appProperties", {}).get("sha256") == digest:
+                return jsonify({
+                    "status": "ok",
+                    "mensagem": "A imagem de teste ja existe; nenhuma duplicata foi criada.",
+                    "arquivo": item,
+                    "duplicata_criada": False,
+                })
+
+        uploaded = google_drive_upload_art_bytes(
+            filename, image_bytes, "image/png", digest,
+            account_name=account_name,
+            folder_id=GOOGLE_DRIVE_ART_TEST_FOLDER_ID,
+        )
+        return jsonify({
+            "status": "ok",
+            "mensagem": "Imagem PNG de teste enviada para a subpasta de teste.",
+            "arquivo": uploaded,
+            "duplicata_criada": False,
+        }), 201
+    except Exception:
+        app.logger.exception("Falha no teste controlado de upload de imagem")
+        return safe_error_response("Nao foi possivel enviar a imagem de teste. Verifique os logs do servico.", 502)
 
 
 @app.post("/google-drive/upload-art-zip")
