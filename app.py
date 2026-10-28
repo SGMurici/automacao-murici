@@ -1465,6 +1465,53 @@ def google_drive_test_upload_image_route():
         return safe_error_response("Nao foi possivel enviar a imagem de teste. Verifique os logs do servico.", 502)
 
 
+@app.post("/google-drive/test-delete-image")
+def google_drive_test_delete_image_route():
+    """Exclui somente a imagem de teste previamente autorizada, nunca arquivos arbitrários."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+
+    account_name = normalize_google_account_name(request.args.get("account", "Drive5"))
+    if account_name != "Drive5":
+        return jsonify({"status": "erro", "mensagem": "Este endpoint aceita exclusivamente a conta Drive5."}), 400
+    if not GOOGLE_DRIVE_ART_TEST_FOLDER_ID:
+        return jsonify({"status": "erro", "mensagem": "Pasta de teste não configurada."}), 503
+
+    # Lista fechada: não aceita ID fornecido pelo usuário nem exclui outros arquivos.
+    test_file_id = "1ORzEIbnRCIwVwSpBRfgAtuTFs6718Qlv"
+    expected_name = "TESTE_UPLOAD_POSTMAN.png"
+
+    try:
+        metadata = google_drive_get_file_metadata(test_file_id, account_name)
+        parents = metadata.get("parents", [])
+        if (
+            metadata.get("id") != test_file_id
+            or metadata.get("name") != expected_name
+            or metadata.get("trashed")
+            or GOOGLE_DRIVE_ART_TEST_FOLDER_ID not in parents
+        ):
+            return jsonify({
+                "status": "bloqueado",
+                "mensagem": "O arquivo não corresponde exatamente ao PNG autorizado na pasta de teste; nenhuma exclusão foi feita."
+            }), 409
+
+        delete_url = (
+            f"{GOOGLE_DRIVE_FILES_URL}/{urllib.parse.quote(test_file_id, safe='')}"
+            f"?{urllib.parse.urlencode({'supportsAllDrives': 'true'})}"
+        )
+        google_drive_api_request("DELETE", delete_url, account_name=account_name)
+        return jsonify({
+            "status": "ok",
+            "mensagem": "A imagem de teste foi excluída pelo Google Drive.",
+            "arquivo_id": test_file_id,
+            "nome": expected_name,
+        }), 200
+    except Exception:
+        app.logger.exception("Falha na exclusão controlada da imagem de teste")
+        return safe_error_response("Não foi possível excluir a imagem de teste. Verifique os logs do serviço.", 502)
+
+
 @app.post("/google-drive/upload-art-zip")
 def google_drive_upload_art_zip_route():
     """Recebe um ZIP e envia imagens para a pasta configurada, sem sobrescrever."""
