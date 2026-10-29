@@ -1870,8 +1870,8 @@ def google_drive_trash_file(file_id, confirmation, account_name="Drive5"):
     return {"status": "ok", "mensagem": "Item movido para a lixeira; não houve exclusão permanente.", **payload}
 
 
-def google_drive_find_duplicates(parent_id=None, account_name="Drive5"):
-    """Detecta duplicatas prováveis por checksum MD5; não altera nem exclui itens."""
+def google_drive_find_duplicates(parent_id=None, account_name="Drive5", detail_group=None, full_detail=False):
+    """Detecta duplicatas prováveis por MD5 em modo somente leitura."""
     listing = google_drive_list_files(parent_id, account_name, return_meta=True)
     items = listing["arquivos"]
     groups = {}
@@ -1882,15 +1882,59 @@ def google_drive_find_duplicates(parent_id=None, account_name="Drive5"):
         size = item.get("size")
         if checksum and size is not None:
             groups.setdefault((checksum, str(size)), []).append({
-                "id": item.get("id"), "name": item.get("name"),
-                "size": size, "modifiedTime": item.get("modifiedTime"),
-                "webViewLink": item.get("webViewLink"), "parents": item.get("parents", []),
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "size": size,
+                "modifiedTime": item.get("modifiedTime"),
+                "webViewLink": item.get("webViewLink"),
+                "parents": item.get("parents", []),
             })
     duplicates = [group for group in groups.values() if len(group) > 1]
-    return {"status": "parcial" if listing["truncated"] else "ok", "modo": "somente_leitura", "itens_analisados": len(items),
-            "truncated": listing["truncated"], "next_page_token": listing["next_page_token"],
-            "grupos_duplicados": len(duplicates), "duplicatas": duplicates,
-            "nota": "Nenhum item foi alterado. Revise cada grupo antes de enviar um ID à rota de lixeira." if not listing["truncated"] else "Atingido o limite de 20 páginas; resultados incompletos. Refine a pasta ou implemente paginação antes de concluir a auditoria."}
+    status = "parcial" if listing["truncated"] else "ok"
+    note = (
+        "Nenhum item foi alterado. Revise cada grupo antes de enviar um ID à rota de lixeira."
+        if not listing["truncated"]
+        else "Atingido o limite de 20 páginas; resultados incompletos. Refine a pasta ou implemente paginação antes de concluir a auditoria."
+    )
+    base = {
+        "status": status,
+        "modo": "somente_leitura",
+        "conta": account_name,
+        "pasta_consultada": parent_id or "drive_visivel_para_conta",
+        "itens_analisados": len(items),
+        "truncated": listing["truncated"],
+        "next_page_token": listing["next_page_token"],
+        "grupos_duplicados": len(duplicates),
+        "nota": note,
+    }
+    if detail_group is not None:
+        try:
+            index = int(detail_group)
+        except (TypeError, ValueError):
+            raise ValueError("group deve ser o número de um grupo listado, começando em 1.")
+        if index < 1 or index > len(duplicates):
+            raise ValueError(f"group fora do intervalo. Informe um número entre 1 e {len(duplicates)}.")
+        base["grupo_solicitado"] = index
+        base["arquivos_do_grupo"] = duplicates[index - 1]
+        base["quantidade_arquivos_no_grupo"] = len(duplicates[index - 1])
+        return base
+    if full_detail:
+        base["duplicatas"] = duplicates
+        return base
+    base["grupos"] = [
+        {
+            "grupo": index,
+            "quantidade_arquivos": len(group),
+            "nomes": [item.get("name") for item in group],
+            "ids": [item.get("id") for item in group],
+            "tamanho_bytes": group[0].get("size"),
+            "checksum_md5": next(
+                (key[0] for key, value in groups.items() if value is group), None
+            ),
+        }
+        for index, group in enumerate(duplicates, start=1)
+    ]
+    return base
 
 
 @app.get("/google-drive/files")
@@ -1989,10 +2033,25 @@ def google_drive_upload_file_route():
 
 @app.get("/google-drive/duplicates")
 def google_drive_duplicates_route():
+    """Resumo por padrão; detalhes sob demanda. Nunca altera itens do Drive."""
     auth_error = require_publish_secret()
-    if auth_error: return auth_error
+    if auth_error:
+        return auth_error
     try:
-        return jsonify(google_drive_find_duplicates(request.args.get("folder_id") or None, "Drive5"))
+        folder_id = request.args.get("folder_id") or None
+        group = request.args.get("group")
+        detail = request.args.get("detail", "").strip().lower()
+        if detail not in {"", "full"}:
+            return jsonify({"status": "erro", "mensagem": "detail aceita somente o valor 'full'."}), 400
+        result = google_drive_find_duplicates(
+            folder_id,
+            "Drive5",
+            detail_group=group,
+            full_detail=(detail == "full"),
+        )
+        return jsonify(result)
+    except ValueError as error:
+        return jsonify({"status": "erro", "mensagem": str(error)}), 400
     except Exception:
         app.logger.exception("Falha ao identificar duplicatas no Google Drive")
         return jsonify({"status": "erro", "mensagem": "Falha ao identificar duplicatas. Consulte os logs."}), 500
