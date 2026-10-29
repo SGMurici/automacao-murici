@@ -1884,7 +1884,7 @@ def google_drive_find_duplicates(parent_id=None, account_name="Drive5"):
             groups.setdefault((checksum, str(size)), []).append({
                 "id": item.get("id"), "name": item.get("name"),
                 "size": size, "modifiedTime": item.get("modifiedTime"),
-                "webViewLink": item.get("webViewLink"),
+                "webViewLink": item.get("webViewLink"), "parents": item.get("parents", []),
             })
     duplicates = [group for group in groups.values() if len(group) > 1]
     return {"status": "parcial" if listing["truncated"] else "ok", "modo": "somente_leitura", "itens_analisados": len(items),
