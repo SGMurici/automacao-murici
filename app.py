@@ -1782,7 +1782,7 @@ def google_drive_list_files(parent_id=None, account_name="Drive5", page_size=100
     account_name = normalize_google_account_name(account_name)
     page_size = max(1, min(int(page_size), 100))
     items, page_token = [], None
-    for _ in range(20):
+    for _ in range(100):
         params = {
             "pageSize": str(page_size),
             "orderBy": "name",
@@ -1894,7 +1894,7 @@ def google_drive_find_duplicates(parent_id=None, account_name="Drive5", detail_g
     note = (
         "Nenhum item foi alterado. Revise cada grupo antes de enviar um ID à rota de lixeira."
         if not listing["truncated"]
-        else "Atingido o limite de 20 páginas; resultados incompletos. Refine a pasta ou implemente paginação antes de concluir a auditoria."
+        else "Atingido o limite de segurança de 100 páginas; resultados incompletos. Use uma pasta específica ou continue a paginação antes de concluir a auditoria."
     )
     base = {
         "status": status,
