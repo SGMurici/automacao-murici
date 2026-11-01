@@ -1,6 +1,8 @@
 import os
 import json
 import secrets
+import hmac
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -36,6 +38,10 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 TOKEN_ENCRYPTION_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY")
 
 PUBLISH_SECRET = os.environ.get("PUBLISH_SECRET")
+GMAIL_MONITOR_SECRET = os.environ.get("GMAIL_MONITOR_SECRET")
+GMAIL_MONITORED_ACCOUNTS = ("SG", "Drive1", "Drive2", "Drive5")
+GOOGLE_GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+GOOGLE_GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 LINKEDIN_ACCOUNT_NAME = "LinkedIn Principal"
 
@@ -375,16 +381,21 @@ def linkedin_member_id_from_database():
 
 
 def normalize_google_account_name(account_name):
-    """Restringe as operacoes do projeto exclusivamente a conta Google Drive5."""
+    """Restringe as operações Google Drive exclusivamente à conta Drive5."""
     if account_name is None or not str(account_name).strip():
         return "Drive5"
     normalized = str(account_name).strip()
     if normalized != "Drive5":
-        raise ValueError(
-            "Esta automacao esta configurada para usar exclusivamente "
-            "a conta Drive5."
-        )
+        raise ValueError("Esta automação está configurada para usar exclusivamente a conta Drive5.")
     return "Drive5"
+
+
+def normalize_google_oauth_account_name(account_name):
+    """Permite OAuth Gmail nas quatro contas monitoradas; operações Drive seguem restritas."""
+    normalized = str(account_name or "Drive5").strip()
+    if normalized not in GMAIL_MONITORED_ACCOUNTS:
+        raise ValueError("Conta Google não autorizada para este projeto.")
+    return normalized
 
 
 def google_tokens_from_database(account_name="Drive5"):
@@ -1201,6 +1212,144 @@ def home():
     )
 
 
+def gmail_access_token(account_name):
+    """Obtém/renova token Gmail sem passar pelo normalizador restrito do Drive."""
+    account_name = normalize_google_oauth_account_name(account_name)
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT access_token, refresh_token, token_expires_at
+                   FROM google_accounts WHERE account_name = %s
+                   AND provider = 'google' LIMIT 1""", (account_name,),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise RuntimeError(f"Conta {account_name} ainda não foi autorizada.")
+    access_token = decrypt_value(row[0]) if row[0] else None
+    refresh_token = decrypt_value(row[1]) if row[1] else None
+    expires_at = row[2]
+    if not refresh_token:
+        raise RuntimeError(f"Refresh token de {account_name} não encontrado.")
+    now = datetime.now(timezone.utc)
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if not access_token or expires_at is None or expires_at <= now + timedelta(minutes=5):
+        payload = urllib.parse.urlencode({
+            "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
+            "refresh_token": refresh_token, "grant_type": "refresh_token",
+        }).encode("utf-8")
+        req = urllib.request.Request(GOOGLE_TOKEN_URL, data=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                token_data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f"Falha ao renovar Gmail de {account_name} (HTTP {error.code}).")
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise RuntimeError(f"Google não renovou o token Gmail de {account_name}.")
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""UPDATE google_accounts SET access_token = %s,
+                    token_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                    updated_at = NOW() WHERE account_name = %s""",
+                    (encrypt_value(access_token), token_data.get("expires_in") or 0, account_name))
+            conn.commit()
+    return access_token
+
+
+def gmail_api_request(account_name, url):
+    token = gmail_access_token(account_name)
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"}, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=8) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"Gmail {account_name} respondeu HTTP {error.code}.")
+
+
+def _gmail_monitor_one_account(account_name, query, max_results):
+    params = urllib.parse.urlencode({"q": query, "maxResults": max_results})
+    data = gmail_api_request(account_name, f"{GOOGLE_GMAIL_API_BASE}/messages?{params}")
+    messages = []
+    for item in data.get("messages", [])[:max_results]:
+        message_id = item.get("id")
+        if not message_id:
+            continue
+        encoded_id = urllib.parse.quote(message_id, safe="")
+        detail = gmail_api_request(account_name,
+            f"{GOOGLE_GMAIL_API_BASE}/messages/{encoded_id}?format=metadata"
+            "&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date")
+        headers = {h.get("name", "").lower(): h.get("value", "")
+            for h in detail.get("payload", {}).get("headers", [])
+            if isinstance(h, dict) and h.get("name")}
+        messages.append({"id": message_id, "threadId": detail.get("threadId"),
+            "date": headers.get("date"), "from": headers.get("from"),
+            "subject": headers.get("subject"), "snippet": detail.get("snippet", ""),
+            "labels": detail.get("labelIds", [])})
+    return {"status": "ok", "count": len(messages), "messages": messages}
+
+
+def gmail_monitor_snapshot(query="newer_than:7d -in:sent", max_results=1):
+    if not isinstance(query, str) or not query.strip() or len(query) > 300:
+        raise ValueError("Consulta Gmail inválida.")
+    max_results = max(1, min(int(max_results), 2))
+    report = {"status": "ok", "mode": "somente_leitura", "accounts": {}}
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(_gmail_monitor_one_account, account, query, max_results): account
+            for account in GMAIL_MONITORED_ACCOUNTS}
+        for future in as_completed(futures):
+            account = futures[future]
+            try:
+                report["accounts"][account] = future.result()
+            except Exception as error:
+                app.logger.warning("Falha no monitor Gmail %s: %s", account, str(error))
+                report["accounts"][account] = {"status": "erro", "count": 0,
+                    "message": f"Não foi possível consultar {account}; verifique a autorização Gmail."}
+                report["status"] = "parcial"
+    report["accounts"] = {name: report["accounts"][name] for name in GMAIL_MONITORED_ACCOUNTS}
+    return report
+
+
+GMAIL_MONITOR_LOCK_KEY = 83746292
+
+
+@app.post("/internal/gmail/monitor/run")
+def internal_gmail_monitor_run():
+    """Executa somente leitura Gmail; não aciona publicação no LinkedIn."""
+    if not GMAIL_MONITOR_SECRET:
+        return jsonify({"status": "erro", "mensagem": "Monitor Gmail não configurado."}), 503
+    supplied = request.headers.get("X-Gmail-Monitor-Secret", "")
+    if not supplied or not hmac.compare_digest(supplied, GMAIL_MONITOR_SECRET):
+        return jsonify({"status": "erro", "mensagem": "Não autorizado."}), 401
+    lock_conn = None
+    lock_acquired = False
+    try:
+        lock_conn = get_db_connection()
+        with lock_conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s);", (GMAIL_MONITOR_LOCK_KEY,))
+            row = cur.fetchone()
+            lock_acquired = bool(row and row[0])
+        if not lock_acquired:
+            return jsonify({"status": "busy", "mensagem": "Já existe uma execução do monitor Gmail."}), 409
+        report = gmail_monitor_snapshot(query="newer_than:7d -in:sent", max_results=1)
+        app.logger.info("Monitor Gmail concluído: status=%s; contas=%s",
+            report.get("status"), ",".join(report.get("accounts", {}).keys()))
+        return jsonify(report), (200 if report.get("status") == "ok" else 207)
+    except Exception:
+        app.logger.exception("Falha na execução agendada do monitor Gmail")
+        return safe_error_response("Falha no monitor Gmail. Consulte os logs do serviço.", 502)
+    finally:
+        if lock_conn is not None:
+            if lock_acquired:
+                try:
+                    with lock_conn.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_unlock(%s);", (GMAIL_MONITOR_LOCK_KEY,))
+                except Exception:
+                    app.logger.exception("Falha ao liberar bloqueio do monitor Gmail")
+            lock_conn.close()
+
+
 @app.get("/health")
 def health():
     return jsonify(
@@ -1626,7 +1775,7 @@ def google_login():
         ), 500
 
     try:
-        account_name = normalize_google_account_name(request.args.get("account", "Drive5"))
+        account_name = normalize_google_oauth_account_name(request.args.get("account", "Drive5"))
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
 
@@ -1638,7 +1787,7 @@ def google_login():
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "response_type": "code",
-        "scope": "https://www.googleapis.com/auth/drive.readonly",
+        "scope": (("https://www.googleapis.com/auth/drive.readonly " + GOOGLE_GMAIL_READONLY_SCOPE) if account_name == "Drive5" else GOOGLE_GMAIL_READONLY_SCOPE),
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -1699,7 +1848,7 @@ def google_callback():
         ), 403
 
     try:
-        account_name = normalize_google_account_name(session.get("google_oauth_account", "Drive5"))
+        account_name = normalize_google_oauth_account_name(session.get("google_oauth_account", "Drive5"))
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
 
