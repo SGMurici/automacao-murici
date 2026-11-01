@@ -13,6 +13,8 @@ from flask import Flask, jsonify, redirect, request, session
 import psycopg
 from cryptography.fernet import Fernet
 
+from gmail_workflow import build_triage_item
+
 
 app = Flask(__name__)
 
@@ -1348,6 +1350,84 @@ def internal_gmail_monitor_run():
                         cur.execute("SELECT pg_advisory_unlock(%s);", (GMAIL_MONITOR_LOCK_KEY,))
                 except Exception:
                     app.logger.exception("Falha ao liberar bloqueio do monitor Gmail")
+            lock_conn.close()
+
+
+
+def _gmail_triage_one_account(account_name, query, max_results):
+    params = urllib.parse.urlencode({"q": query, "maxResults": max_results})
+    data = gmail_api_request(account_name, f"{GOOGLE_GMAIL_API_BASE}/messages?{params}")
+    items = []
+    for item in data.get("messages", [])[:max_results]:
+        message_id = item.get("id")
+        if not message_id:
+            continue
+        encoded_id = urllib.parse.quote(message_id, safe="")
+        detail = gmail_api_request(
+            account_name,
+            f"{GOOGLE_GMAIL_API_BASE}/messages/{encoded_id}?format=full",
+        )
+        items.append(build_triage_item(detail, account_name))
+    return {"status": "ok", "count": len(items), "messages": items}
+
+
+@app.post("/internal/gmail/triage/run")
+def internal_gmail_triage_run():
+    """Lê e classifica mensagens; não envia respostas nem altera a caixa."""
+    if not GMAIL_MONITOR_SECRET:
+        return jsonify({"status": "erro", "mensagem": "Monitor Gmail não configurado."}), 503
+    supplied = request.headers.get("X-Gmail-Monitor-Secret", "")
+    if not supplied or not hmac.compare_digest(supplied, GMAIL_MONITOR_SECRET):
+        return jsonify({"status": "erro", "mensagem": "Não autorizado."}), 401
+    lock_conn = None
+    lock_acquired = False
+    try:
+        lock_conn = get_db_connection()
+        with lock_conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s);", (83746293,))
+            row = cur.fetchone()
+            lock_acquired = bool(row and row[0])
+        if not lock_acquired:
+            return jsonify({"status": "busy", "mensagem": "Já existe uma triagem Gmail em execução."}), 409
+        max_results = request.args.get("max_results", default=10, type=int)
+        max_results = max(1, min(max_results or 10, 20))
+        query = request.args.get("q", "newer_than:14d -in:sent")
+        if not isinstance(query, str) or not query.strip() or len(query) > 300:
+            return jsonify({"status": "erro", "mensagem": "Consulta Gmail inválida."}), 400
+        report = {"status": "ok", "mode": "somente_leitura_com_triagem", "accounts": {}}
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {
+                executor.submit(_gmail_triage_one_account, account, query, max_results): account
+                for account in GMAIL_MONITORED_ACCOUNTS
+            }
+            for future in as_completed(futures):
+                account = futures[future]
+                try:
+                    report["accounts"][account] = future.result()
+                except Exception as error:
+                    app.logger.warning("Falha na triagem Gmail %s: %s", account, str(error))
+                    report["accounts"][account] = {
+                        "status": "erro", "count": 0,
+                        "message": f"Não foi possível consultar {account}; verifique a autorização Gmail.",
+                    }
+                    report["status"] = "parcial"
+        report["accounts"] = {
+            name: report["accounts"][name] for name in GMAIL_MONITORED_ACCOUNTS
+        }
+        app.logger.info("Triagem Gmail concluída: status=%s; contas=%s",
+            report.get("status"), ",".join(report.get("accounts", {}).keys()))
+        return jsonify(report), (200 if report.get("status") == "ok" else 207)
+    except Exception:
+        app.logger.exception("Falha na triagem Gmail")
+        return safe_error_response("Falha na triagem Gmail. Consulte os logs do serviço.", 502)
+    finally:
+        if lock_conn is not None:
+            if lock_acquired:
+                try:
+                    with lock_conn.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_unlock(%s);", (83746293,))
+                except Exception:
+                    app.logger.exception("Falha ao liberar bloqueio da triagem Gmail")
             lock_conn.close()
 
 
