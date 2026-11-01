@@ -9,6 +9,7 @@ import zipfile
 import urllib.parse
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from datetime import datetime, timezone, timedelta
 
@@ -455,7 +456,7 @@ def gmail_access_token(account_name):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=30) as response:
+            with urllib.request.urlopen(req, timeout=10) as response:
                 token_data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             raise RuntimeError(f"Falha ao renovar Gmail de {account_name} (HTTP {error.code}).")
@@ -477,59 +478,80 @@ def gmail_access_token(account_name):
 
 
 def gmail_api_request(account_name, url):
+    """Consulta Gmail com timeout curto para não prender um worker do servidor."""
     token = gmail_access_token(account_name)
     status, data, _ = http_json_request(
-        url, method="GET", headers={"Authorization": f"Bearer {token}"}
+        url, method="GET", headers={"Authorization": f"Bearer {token}"}, timeout=8
     )
     if status != 200:
         raise RuntimeError(f"Gmail {account_name} respondeu HTTP {status}.")
     return data
 
 
-def gmail_monitor_snapshot(query="newer_than:7d -in:sent", max_results=10):
-    """Consulta quatro caixas em leitura; falhas isoladas não interrompem as demais."""
+def _gmail_monitor_one_account(account_name, query, max_results):
+    """Consulta uma conta isoladamente; no máximo 1 listagem + 2 metadados."""
+    params = urllib.parse.urlencode({"q": query, "maxResults": max_results})
+    data = gmail_api_request(
+        account_name, f"{GOOGLE_GMAIL_API_BASE}/messages?{params}"
+    )
+    messages = []
+    for item in data.get("messages", [])[:max_results]:
+        message_id = item.get("id")
+        if not message_id:
+            continue
+        encoded_id = urllib.parse.quote(message_id, safe="")
+        detail = gmail_api_request(
+            account_name,
+            f"{GOOGLE_GMAIL_API_BASE}/messages/{encoded_id}?format=metadata"
+            "&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date",
+        )
+        headers = {
+            h.get("name", "").lower(): h.get("value", "")
+            for h in detail.get("payload", {}).get("headers", [])
+            if isinstance(h, dict) and h.get("name")
+        }
+        messages.append({
+            "id": message_id, "threadId": detail.get("threadId"),
+            "date": headers.get("date"), "from": headers.get("from"),
+            "subject": headers.get("subject"), "snippet": detail.get("snippet", ""),
+            "labels": detail.get("labelIds", []),
+        })
+    return {"status": "ok", "count": len(messages), "messages": messages}
+
+
+def gmail_monitor_snapshot(query="newer_than:7d -in:sent", max_results=1):
+    """Consulta as quatro caixas em paralelo, com volume e tempo de rede limitados."""
     if not query or len(query) > 300:
         raise ValueError("Consulta Gmail inválida.")
-    max_results = max(1, min(int(max_results), 25))
+    # Limite deliberado para manter a execução abaixo do timeout padrão do Gunicorn.
+    max_results = max(1, min(int(max_results), 2))
     report = {"status": "ok", "mode": "somente_leitura", "accounts": {}}
-    for account_name in GMAIL_MONITORED_ACCOUNTS:
-        try:
-            params = urllib.parse.urlencode({"q": query, "maxResults": max_results})
-            data = gmail_api_request(
-                account_name, f"{GOOGLE_GMAIL_API_BASE}/messages?{params}"
-            )
-            messages = []
-            for item in data.get("messages", [])[:max_results]:
-                message_id = item.get("id")
-                if not message_id:
-                    continue
-                encoded_id = urllib.parse.quote(message_id, safe="")
-                detail = gmail_api_request(
-                    account_name,
-                    f"{GOOGLE_GMAIL_API_BASE}/messages/{encoded_id}?format=metadata"
-                    "&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date",
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            executor.submit(_gmail_monitor_one_account, account, query, max_results): account
+            for account in GMAIL_MONITORED_ACCOUNTS
+        }
+        for future in as_completed(futures):
+            account_name = futures[future]
+            try:
+                report["accounts"][account_name] = future.result()
+            except Exception as error:
+                app.logger.warning(
+                    "Falha no monitor Gmail %s: %s", account_name, str(error)
                 )
-                headers = {
-                    h.get("name", "").lower(): h.get("value", "")
-                    for h in detail.get("payload", {}).get("headers", [])
-                    if isinstance(h, dict) and h.get("name")
+                report["accounts"][account_name] = {
+                    "status": "erro", "count": 0,
+                    "message": (
+                        f"Não foi possível consultar {account_name}; "
+                        "verifique a autorização Gmail."
+                    ),
                 }
-                messages.append({
-                    "id": message_id, "threadId": detail.get("threadId"),
-                    "date": headers.get("date"), "from": headers.get("from"),
-                    "subject": headers.get("subject"), "snippet": detail.get("snippet", ""),
-                    "labels": detail.get("labelIds", []),
-                })
-            report["accounts"][account_name] = {
-                "status": "ok", "count": len(messages), "messages": messages
-            }
-        except Exception as error:
-            app.logger.warning("Falha no monitor Gmail %s: %s", account_name, str(error))
-            report["accounts"][account_name] = {
-                "status": "erro", "count": 0,
-                "message": f"Não foi possível consultar {account_name}; verifique a autorização Gmail."
-            }
-            report["status"] = "parcial"
+                report["status"] = "parcial"
+    # Mantém a ordem estável dos resultados, independentemente da conclusão das threads.
+    report["accounts"] = {
+        account: report["accounts"][account]
+        for account in GMAIL_MONITORED_ACCOUNTS
+    }
     return report
 
 
@@ -791,6 +813,7 @@ def http_json_request(
     method="GET",
     headers=None,
     data=None,
+    timeout=30,
 ):
     if headers is None:
         headers = {}
@@ -808,7 +831,7 @@ def http_json_request(
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
             body = response.read().decode("utf-8")
 
             if not body:
@@ -4053,7 +4076,7 @@ def internal_gmail_monitor_run():
         if not lock_acquired:
             return jsonify({"status": "busy", "mensagem": "Já existe uma execução do monitor Gmail."}), 409
 
-        report = gmail_monitor_snapshot(query="newer_than:7d -in:sent", max_results=10)
+        report = gmail_monitor_snapshot(query="newer_than:7d -in:sent", max_results=1)
         app.logger.info(
             "Monitor Gmail concluído: status=%s; contas=%s",
             report.get("status"),
@@ -4085,7 +4108,7 @@ def google_workspace_gmail_monitor():
         return auth_error
     query = request.args.get("q", "newer_than:7d -in:sent").strip()
     try:
-        report = gmail_monitor_snapshot(query=query, max_results=10)
+        report = gmail_monitor_snapshot(query=query, max_results=1)
         return jsonify(report), (200 if report["status"] == "ok" else 207)
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
