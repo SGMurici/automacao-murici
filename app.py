@@ -484,7 +484,7 @@ def gmail_api_request(account_name, url):
     return data
 
 
-def gmail_monitor_snapshot(query="newer_than:7d", max_results=10):
+def gmail_monitor_snapshot(query="newer_than:7d -in:sent", max_results=10):
     """Consulta três caixas em leitura; falhas isoladas não interrompem as demais."""
     if not query or len(query) > 300:
         raise ValueError("Consulta Gmail inválida.")
@@ -4035,7 +4035,7 @@ def google_workspace_gmail_monitor():
     auth_error = require_publish_secret()
     if auth_error:
         return auth_error
-    query = request.args.get("q", "newer_than:7d").strip()
+    query = request.args.get("q", "newer_than:7d -in:sent").strip()
     try:
         report = gmail_monitor_snapshot(query=query, max_results=10)
         return jsonify(report), (200 if report["status"] == "ok" else 207)
