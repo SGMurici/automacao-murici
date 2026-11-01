@@ -2,6 +2,7 @@ import os
 import json
 import secrets
 import hashlib
+import hmac
 import base64
 import io
 import zipfile
@@ -41,6 +42,7 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 TOKEN_ENCRYPTION_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY")
 
 PUBLISH_SECRET = os.environ.get("PUBLISH_SECRET")
+GMAIL_MONITOR_SECRET = os.environ.get("GMAIL_MONITOR_SECRET")
 
 LINKEDIN_ACCOUNT_NAME = "LinkedIn Principal"
 
@@ -4024,6 +4026,52 @@ def google_workspace_gmail_messages():
 
 
 
+
+
+GMAIL_MONITOR_LOCK_KEY = 83746292
+
+
+@app.post("/internal/gmail/monitor/run")
+def internal_gmail_monitor_run():
+    """Execução exclusiva do cron Gmail; nunca publica no LinkedIn."""
+    if not GMAIL_MONITOR_SECRET:
+        return jsonify({"status": "erro", "mensagem": "Monitor Gmail não configurado."}), 503
+
+    supplied = request.headers.get("X-Gmail-Monitor-Secret", "")
+    if not supplied or not hmac.compare_digest(supplied, GMAIL_MONITOR_SECRET):
+        return jsonify({"status": "erro", "mensagem": "Não autorizado."}), 401
+
+    lock_conn = None
+    lock_acquired = False
+    try:
+        lock_conn = get_db_connection()
+        with lock_conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s);", (GMAIL_MONITOR_LOCK_KEY,))
+            row = cur.fetchone()
+            lock_acquired = bool(row and row[0])
+
+        if not lock_acquired:
+            return jsonify({"status": "busy", "mensagem": "Já existe uma execução do monitor Gmail."}), 409
+
+        report = gmail_monitor_snapshot(query="newer_than:7d -in:sent", max_results=10)
+        app.logger.info(
+            "Monitor Gmail concluído: status=%s; contas=%s",
+            report.get("status"),
+            ",".join(report.get("accounts", {}).keys()),
+        )
+        return jsonify(report), (200 if report.get("status") == "ok" else 207)
+    except Exception:
+        app.logger.exception("Falha na execução agendada do monitor Gmail")
+        return safe_error_response("Falha no monitor Gmail. Consulte os logs do serviço.", 502)
+    finally:
+        if lock_conn is not None:
+            if lock_acquired:
+                try:
+                    with lock_conn.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_unlock(%s);", (GMAIL_MONITOR_LOCK_KEY,))
+                except Exception:
+                    app.logger.exception("Falha ao liberar bloqueio do monitor Gmail")
+            lock_conn.close()
 
 
 
