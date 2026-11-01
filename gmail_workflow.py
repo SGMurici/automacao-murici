@@ -73,12 +73,16 @@ def _header_map(message):
 
 def _redact_one_time_codes(text):
     """Hide short-lived numeric login codes before returning message bodies."""
-    pattern = re.compile(
-        r"((?:c[oó]digo|code)(?:.{0,100}?)(?:[:：]|\b))\s*(\d{6,8})",
-        re.IGNORECASE | re.DOTALL,
-    )
-    return pattern.sub(r"\1 [CÓDIGO TEMPORÁRIO OCULTO]", text or "")
+    value = text or ""
+    code_context = re.compile(r"(?:c[oó]digo|code|login|verification|senha)", re.IGNORECASE)
+    number = re.compile(r"(?<!\\d)\\d{6,8}(?!\\d)")
 
+    def replace_if_sensitive(match):
+        start, end = match.span()
+        context = value[max(0, start - 100):min(len(value), end + 100)]
+        return "[CÓDIGO TEMPORÁRIO OCULTO]" if code_context.search(context) else match.group(0)
+
+    return number.sub(replace_if_sensitive, value)
 
 _RULES = (
     ("entrevista", ("entrevista", "interview", "agendar conversa", "marcar conversa", "meet with")),
