@@ -71,6 +71,15 @@ def _header_map(message):
     }
 
 
+def _redact_one_time_codes(text):
+    """Hide short-lived numeric login codes before returning message bodies."""
+    pattern = re.compile(
+        r"((?:c[oó]digo|code)(?:.{0,100}?)(?:[:：]|\b))\s*(\d{6,8})",
+        re.IGNORECASE | re.DOTALL,
+    )
+    return pattern.sub(r"\1 [CÓDIGO TEMPORÁRIO OCULTO]", text or "")
+
+
 _RULES = (
     ("entrevista", ("entrevista", "interview", "agendar conversa", "marcar conversa", "meet with")),
     ("teste_seletivo", ("teste técnico", "teste tecnico", "avaliação técnica", "avaliacao tecnica", "case", "desafio técnico", "desafio tecnico")),
@@ -78,17 +87,58 @@ _RULES = (
     ("rejeicao", ("não seguiremos", "nao seguiremos", "não foi selecionado", "nao foi selecionado", "encerramos o processo", "not moving forward")),
     ("oferta", ("proposta salarial", "carta oferta", "offer letter", "oferta de emprego", "remuneração", "remuneracao")),
     ("documentos", ("documentação", "documentacao", "documentos", "cpf", "rg", "comprovante")),
-    ("contato_recrutador", ("recrutamento", "recruiter", "talent acquisition", "rh", "recursos humanos")),
+    ("contato_recrutador", ("recrutamento", "recruiter", "talent acquisition", "recursos humanos")),
 )
 
 
 def classify_message(subject="", sender="", body=""):
-    """Conservative keyword triage; never treats a heuristic as a decision."""
-    text = " ".join((subject or "", sender or "", body or "")).lower()
+    """Prioritize security and infrastructure alerts over broad job keywords."""
+    sender_text = (sender or "").lower()
+    subject_text = (subject or "").lower()
+    body_text = (body or "").lower()
+    text = " ".join((subject_text, sender_text, body_text))
+
+    security_markers = (
+        "código para continuar entrando sem uma senha",
+        "código de login",
+        "one-time passcode",
+        "verification code",
+        "security alert",
+        "atividade suspeita",
+        "atividade de segurança",
+        "você compartilhou alguns dados da sua conta do google",
+    )
+    if any(term in text for term in security_markers) or (
+        "noreply-accounts@google.com" in sender_text
+        and ("conta do google" in subject_text or "sign-in" in subject_text)
+    ):
+        return {
+            "categories": ["seguranca_conta"],
+            "priority": "alta",
+            "requires_human_review": True,
+            "external_action_allowed": False,
+        }
+
+    operational_markers = (
+        "cron job failure", "cron job failed", "exited with status",
+        "deploy failed", "deployment failed", "service unavailable",
+        "falha no cron", "falha no serviço", "erro no deploy",
+    )
+    if any(term in text for term in operational_markers) or (
+        "render" in sender_text and ("failure" in subject_text or "failed" in subject_text)
+    ):
+        return {
+            "categories": ["alerta_operacional"],
+            "priority": "alta",
+            "requires_human_review": True,
+            "external_action_allowed": False,
+        }
+
     matches = []
     for category, terms in _RULES:
         if any(term in text for term in terms):
             matches.append(category)
+
     if "oferta" in matches:
         priority = "alta"
     elif any(item in matches for item in ("entrevista", "teste_seletivo", "proxima_etapa", "documentos")):
@@ -117,7 +167,7 @@ def build_triage_item(message, account):
         "date": headers.get("date", ""),
         "from": sender,
         "subject": subject,
-        "snippet": message.get("snippet", ""),
-        "body_text": body,
+        "snippet": _redact_one_time_codes(message.get("snippet", "")),
+        "body_text": _redact_one_time_codes(body),
         "triage": classify_message(subject, sender, body),
     }
