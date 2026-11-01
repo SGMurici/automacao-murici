@@ -50,9 +50,10 @@ LINKEDIN_REDIRECT_URI = (
     "https://automacao-murici.onrender.com/linkedin/callback"
 )
 
-GOOGLE_REDIRECT_URI = (
-    "https://automacao-murici.onrender.com/google/callback"
-)
+GOOGLE_REDIRECT_URI = os.environ.get(
+    "GOOGLE_REDIRECT_URI",
+    "https://automacao-murici.onrender.com/google/callback",
+).strip()
 
 
 LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
