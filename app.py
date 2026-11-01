@@ -405,7 +405,7 @@ def normalize_google_account_name(account_name):
     return "Drive5"
 
 
-GMAIL_MONITORED_ACCOUNTS = ("SG", "Drive1", "Drive2")
+GMAIL_MONITORED_ACCOUNTS = ("SG", "Drive1", "Drive2", "Drive5")
 GOOGLE_GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 
 
@@ -421,7 +421,7 @@ def normalize_google_oauth_account_name(account_name):
 def gmail_access_token(account_name):
     account_name = normalize_google_oauth_account_name(account_name)
     if account_name not in GMAIL_MONITORED_ACCOUNTS:
-        raise ValueError("Monitoramento Gmail permitido somente para SG, Drive1 e Drive2.")
+        raise ValueError("Monitoramento Gmail permitido somente para SG, Drive1, Drive2 e Drive5.")
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -487,7 +487,7 @@ def gmail_api_request(account_name, url):
 
 
 def gmail_monitor_snapshot(query="newer_than:7d -in:sent", max_results=10):
-    """Consulta três caixas em leitura; falhas isoladas não interrompem as demais."""
+    """Consulta quatro caixas em leitura; falhas isoladas não interrompem as demais."""
     if not query or len(query) > 300:
         raise ValueError("Consulta Gmail inválida.")
     max_results = max(1, min(int(max_results), 25))
