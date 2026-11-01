@@ -54,7 +54,7 @@ class GmailWorkflowTests(unittest.TestCase):
         self.assertEqual(result["priority"], "alta")
 
     def test_one_time_login_code_is_redacted_from_triage_output(self):
-        message = {"id": "m2", "threadId": "t2", "snippet": "Código de login: 123456", "payload": {
+        message = {"id": "m2", "threadId": "t2", "snippet": "123456 – Seu código de login do Spotify", "payload": {
             "headers": [
                 {"name": "From", "value": "Spotify <no-reply@alerts.spotify.com>"},
                 {"name": "Subject", "value": "Seu código de login"},
