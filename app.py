@@ -403,6 +403,134 @@ def normalize_google_account_name(account_name):
     return "Drive5"
 
 
+GMAIL_MONITORED_ACCOUNTS = ("SG", "Drive1", "Drive2")
+GOOGLE_GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+
+
+def normalize_google_oauth_account_name(account_name):
+    """Permite OAuth Gmail nas contas monitoradas sem ampliar o acesso ao Drive."""
+    allowed = {"Drive5", *GMAIL_MONITORED_ACCOUNTS}
+    normalized = str(account_name or "Drive5").strip()
+    if normalized not in allowed:
+        raise ValueError("Conta Google não autorizada para este projeto.")
+    return normalized
+
+
+def gmail_access_token(account_name):
+    account_name = normalize_google_oauth_account_name(account_name)
+    if account_name not in GMAIL_MONITORED_ACCOUNTS:
+        raise ValueError("Monitoramento Gmail permitido somente para SG, Drive1 e Drive2.")
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT access_token, refresh_token, token_expires_at
+                   FROM google_accounts
+                   WHERE account_name = %s AND provider = 'google'
+                   LIMIT 1""",
+                (account_name,),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise RuntimeError(f"Conta {account_name} ainda não foi autorizada.")
+    access_token = decrypt_value(row[0]) if row[0] else None
+    refresh_token = decrypt_value(row[1]) if row[1] else None
+    expires_at = row[2]
+    if not refresh_token:
+        raise RuntimeError(f"Refresh token de {account_name} não encontrado.")
+    now = datetime.now(timezone.utc)
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if not access_token or expires_at is None or expires_at <= now + timedelta(minutes=5):
+        payload = urllib.parse.urlencode({
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            GOOGLE_TOKEN_URL, data=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                token_data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f"Falha ao renovar Gmail de {account_name} (HTTP {error.code}).")
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise RuntimeError(f"Google não renovou o token Gmail de {account_name}.")
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE google_accounts
+                       SET access_token = %s,
+                           token_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                           updated_at = NOW()
+                       WHERE account_name = %s""",
+                    (encrypt_value(access_token), token_data.get("expires_in") or 0, account_name),
+                )
+            conn.commit()
+    return access_token
+
+
+def gmail_api_request(account_name, url):
+    token = gmail_access_token(account_name)
+    status, data, _ = http_json_request(
+        url, method="GET", headers={"Authorization": f"Bearer {token}"}
+    )
+    if status != 200:
+        raise RuntimeError(f"Gmail {account_name} respondeu HTTP {status}.")
+    return data
+
+
+def gmail_monitor_snapshot(query="newer_than:7d", max_results=10):
+    """Consulta três caixas em leitura; falhas isoladas não interrompem as demais."""
+    if not query or len(query) > 300:
+        raise ValueError("Consulta Gmail inválida.")
+    max_results = max(1, min(int(max_results), 25))
+    report = {"status": "ok", "mode": "somente_leitura", "accounts": {}}
+    for account_name in GMAIL_MONITORED_ACCOUNTS:
+        try:
+            params = urllib.parse.urlencode({"q": query, "maxResults": max_results})
+            data = gmail_api_request(
+                account_name, f"{GOOGLE_GMAIL_API_BASE}/messages?{params}"
+            )
+            messages = []
+            for item in data.get("messages", [])[:max_results]:
+                message_id = item.get("id")
+                if not message_id:
+                    continue
+                encoded_id = urllib.parse.quote(message_id, safe="")
+                detail = gmail_api_request(
+                    account_name,
+                    f"{GOOGLE_GMAIL_API_BASE}/messages/{encoded_id}?format=metadata"
+                    "&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date",
+                )
+                headers = {
+                    h.get("name", "").lower(): h.get("value", "")
+                    for h in detail.get("payload", {}).get("headers", [])
+                    if isinstance(h, dict) and h.get("name")
+                }
+                messages.append({
+                    "id": message_id, "threadId": detail.get("threadId"),
+                    "date": headers.get("date"), "from": headers.get("from"),
+                    "subject": headers.get("subject"), "snippet": detail.get("snippet", ""),
+                    "labels": detail.get("labelIds", []),
+                })
+            report["accounts"][account_name] = {
+                "status": "ok", "count": len(messages), "messages": messages
+            }
+        except Exception as error:
+            app.logger.warning("Falha no monitor Gmail %s: %s", account_name, str(error))
+            report["accounts"][account_name] = {
+                "status": "erro", "count": 0,
+                "message": f"Não foi possível consultar {account_name}; verifique a autorização Gmail."
+            }
+            report["status"] = "parcial"
+    return report
+
+
 def google_tokens_from_database(account_name="Drive5"):
     """Recupera tokens criptografados da conta Google informada."""
     account_name = normalize_google_account_name(account_name)
@@ -2391,7 +2519,7 @@ def google_login():
         ), 500
 
     try:
-        account_name = normalize_google_account_name(request.args.get("account", "Drive5"))
+        account_name = normalize_google_oauth_account_name(request.args.get("account", "Drive5"))
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
 
@@ -2403,7 +2531,7 @@ def google_login():
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "response_type": "code",
-        "scope": GOOGLE_OAUTH_SCOPE,
+        "scope": (GOOGLE_GMAIL_READONLY_SCOPE if account_name in GMAIL_MONITORED_ACCOUNTS else GOOGLE_OAUTH_SCOPE),
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -2464,7 +2592,7 @@ def google_callback():
         ), 403
 
     try:
-        account_name = normalize_google_account_name(session.get("google_oauth_account", "Drive5"))
+        account_name = normalize_google_oauth_account_name(session.get("google_oauth_account", "Drive5"))
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
 
@@ -3897,6 +4025,25 @@ def google_workspace_gmail_messages():
 
 
 
+
+
+
+
+@app.get("/google-workspace/gmail/monitor")
+def google_workspace_gmail_monitor():
+    """Consulta SG, Drive1 e Drive2 em modo somente leitura."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    query = request.args.get("q", "newer_than:7d").strip()
+    try:
+        report = gmail_monitor_snapshot(query=query, max_results=10)
+        return jsonify(report), (200 if report["status"] == "ok" else 207)
+    except ValueError as error:
+        return jsonify({"status": "erro", "mensagem": str(error)}), 400
+    except Exception:
+        app.logger.exception("Falha geral no monitor Gmail mult contas")
+        return safe_error_response("Falha ao executar monitoramento Gmail.", 502)
 
 
 if __name__ == "__main__":
