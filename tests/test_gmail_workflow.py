@@ -35,6 +35,38 @@ class GmailWorkflowTests(unittest.TestCase):
         self.assertEqual(item["account"], "SG")
         self.assertIn("entrevista", item["triage"]["categories"])
 
+    def test_google_account_security_notice_is_not_recruitment(self):
+        result = classify_message(
+            "Você compartilhou alguns dados da sua Conta do Google com Spotify",
+            "Google <noreply-accounts@google.com>",
+            "Você está recebendo este e-mail porque usou Fazer Login com o Google.",
+        )
+        self.assertEqual(result["categories"], ["seguranca_conta"])
+        self.assertEqual(result["priority"], "alta")
+
+    def test_render_cron_failure_is_operational_alert(self):
+        result = classify_message(
+            "Cron job failure detected on automacao-murici-scheduler",
+            "Render <no-reply@render.com>",
+            "Reason: Exited with status 22. The most recent cron job run failed.",
+        )
+        self.assertEqual(result["categories"], ["alerta_operacional"])
+        self.assertEqual(result["priority"], "alta")
+
+    def test_one_time_login_code_is_redacted_from_triage_output(self):
+        message = {"id": "m2", "threadId": "t2", "snippet": "Código de login: 123456", "payload": {
+            "headers": [
+                {"name": "From", "value": "Spotify <no-reply@alerts.spotify.com>"},
+                {"name": "Subject", "value": "Seu código de login"},
+            ],
+            "mimeType": "text/plain",
+            "body": {"data": encoded("Insira este código para continuar: 123456")},
+        }}
+        item = build_triage_item(message, "Drive1")
+        self.assertNotIn("123456", item["body_text"])
+        self.assertNotIn("123456", item["snippet"])
+        self.assertEqual(item["triage"]["categories"], ["seguranca_conta"])
+
 
 if __name__ == "__main__":
     unittest.main()
