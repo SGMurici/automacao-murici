@@ -18,3 +18,58 @@ jobs:
           python-version: "3.12"
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
+
+  gmail-readonly-triage:
+    if: >-
+      github.event_name == 'push' &&
+      contains(github.event.head_commit.message, '[run-gmail-triage]')
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run read-only Gmail triage and retain summary only
+        env:
+          GMAIL_MONITOR_SECRET: ${{ secrets.GMAIL_MONITOR_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GMAIL_MONITOR_SECRET}" ]]; then
+            echo "GMAIL_MONITOR_SECRET is not configured in repository Actions secrets."
+            exit 1
+          fi
+
+          response_file="${RUNNER_TEMP}/gmail-triage-summary.json"
+          http_status="$(curl --silent --show-error \
+            --output "${response_file}" \
+            --write-out "%{http_code}" \
+            --request POST \
+            --header "X-Gmail-Monitor-Secret: ${GMAIL_MONITOR_SECRET}" \
+            "https://automacao-murici-testes-controlados.onrender.com/internal/gmail/triage/run?summary_only=true")"
+
+          if [[ ! "${http_status}" =~ ^2[0-9][0-9]$ ]]; then
+            echo "Gmail triage endpoint returned HTTP ${http_status}. Response content was withheld."
+            exit 1
+          fi
+
+          python - "${response_file}" "${http_status}" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as source:
+              report = json.load(source)
+
+          print(f"HTTP: {sys.argv[2]}")
+          print(f"Status: {report.get('status', 'not_provided')}")
+          accounts = report.get("accounts", {})
+          if isinstance(accounts, dict):
+              print(f"Accounts processed: {len(accounts)}")
+              for account_name, result in accounts.items():
+                  if not isinstance(result, dict):
+                      continue
+                  status = result.get("status", "not_provided")
+                  total = result.get("total_messages", result.get("total_mensagens", "not_provided"))
+                  print(f"{account_name}: status={status}; total={total}")
+          print("Individual message details were not emitted to the workflow log.")
+          PY
+
+          rm -f "${response_file}"
