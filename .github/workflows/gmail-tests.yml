@@ -1,6 +1,7 @@
 name: Gmail workflow tests
 # The triage job emits aggregate counts only; individual message content is never logged.
 # Controlled verification after the diagnostic-summary aggregation fix.
+# Read-only lifecycle classification verification [2026-11-02].
 
 on:
   pull_request:
