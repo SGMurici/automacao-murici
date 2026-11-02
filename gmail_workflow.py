@@ -204,6 +204,13 @@ def build_triage_item(message, account):
     }
 
 
+def summary_only_requested(value=None):
+    """Default to privacy-safe aggregate output; details require explicit opt-in."""
+    if value is None:
+        return True
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def summarize_triage_items(items):
     """Return aggregate counts only; never include message content or identifiers."""
     category_counts = {}
