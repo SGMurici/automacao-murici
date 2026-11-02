@@ -13,7 +13,7 @@ from flask import Flask, jsonify, redirect, request, session
 import psycopg
 from cryptography.fernet import Fernet
 
-from gmail_workflow import build_triage_item
+from gmail_workflow import build_triage_item, summarize_triage_items
 
 
 app = Flask(__name__)
@@ -1368,7 +1368,7 @@ def _gmail_triage_one_account(account_name, query, max_results):
             f"{GOOGLE_GMAIL_API_BASE}/messages/{encoded_id}?format=full",
         )
         items.append(build_triage_item(detail, account_name))
-    return {"status": "ok", "count": len(items), "messages": items}
+    return {"status": "ok", "count": len(items), "summary": summarize_triage_items(items), "messages": items}
 
 
 @app.post("/internal/gmail/triage/run")
@@ -1408,14 +1408,27 @@ def internal_gmail_triage_run():
                     app.logger.warning("Falha na triagem Gmail %s: %s", account, str(error))
                     report["accounts"][account] = {
                         "status": "erro", "count": 0,
+                        "summary": {"total": 0, "categories": {}, "priorities": {}},
                         "message": f"Não foi possível consultar {account}; verifique a autorização Gmail.",
                     }
                     report["status"] = "parcial"
         report["accounts"] = {
             name: report["accounts"][name] for name in GMAIL_MONITORED_ACCOUNTS
         }
-        app.logger.info("Triagem Gmail concluída: status=%s; contas=%s",
-            report.get("status"), ",".join(report.get("accounts", {}).keys()))
+        report["summary"] = {
+            "total": sum(v.get("summary", {}).get("total", 0) for v in report["accounts"].values()),
+            "categories": {},
+            "priorities": {},
+        }
+        for account_result in report["accounts"].values():
+            summary = account_result.get("summary", {})
+            for category, count in summary.get("categories", {}).items():
+                report["summary"]["categories"][category] = report["summary"]["categories"].get(category, 0) + count
+            for priority, count in summary.get("priorities", {}).items():
+                report["summary"]["priorities"][priority] = report["summary"]["priorities"].get(priority, 0) + count
+        app.logger.info("Triagem Gmail concluída: status=%s; contas=%s; totais=%s",
+            report.get("status"), ",".join(report.get("accounts", {}).keys()),
+            json.dumps({"total": report["summary"]["total"], "categories": report["summary"]["categories"]}, sort_keys=True))
         return jsonify(report), (200 if report.get("status") == "ok" else 207)
     except Exception:
         app.logger.exception("Falha na triagem Gmail")
