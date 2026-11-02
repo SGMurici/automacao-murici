@@ -9,3 +9,5 @@ Gmail triage: a rota interna retorna somente totais agregados por padrão. Detal
 <!-- [run-gmail-triage] Validar classificação documental explícita após deploy de testes. -->
 
 <!-- Validar execução de triagem após refinamento documental. -->
+
+<!-- Revalidar precedência de classificação em triagem agregada. -->
