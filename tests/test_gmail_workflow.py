@@ -210,6 +210,22 @@ class GmailWorkflowTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertFalse(summary_only_requested(value))
 
+    def test_unclassified_summary_exposes_only_aggregate_diagnostic_signals(self):
+        items = [
+            {"subject": "Confirme seu e-mail", "from": "Serviço", "snippet": "Ative sua conta", "body_text": "Bem-vindo", "triage": {"categories": ["nao_classificado"], "priority": "normal"}},
+            {"subject": "Newsletter de outubro", "from": "Marca", "snippet": "Ofertas exclusivas", "body_text": "Unsubscribe", "triage": {"categories": ["nao_classificado"], "priority": "normal"}},
+            {"subject": "Mensagem privada não deve aparecer", "body_text": "Texto confidencial", "triage": {"categories": ["nao_classificado"], "priority": "normal"}},
+        ]
+        summary = summarize_triage_items(items)
+        self.assertEqual(summary["unclassified_signals"], {
+            "cadastro_validacao": 1,
+            "marketing_newsletter": 1,
+        })
+        serialized = str(summary)
+        self.assertNotIn("Mensagem privada", serialized)
+        self.assertNotIn("Texto confidencial", serialized)
+        self.assertNotIn("Confirme seu e-mail", serialized)
+
     def test_triage_summary_contains_only_aggregate_classification_counts(self):
         items = [
             {"subject": "PRIVATE SUBJECT", "triage": {"categories": ["entrevista", "contato_recrutador"], "priority": "alta"}},
