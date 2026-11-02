@@ -201,3 +201,20 @@ def build_triage_item(message, account):
         "body_text": _redact_one_time_codes(body),
         "triage": classify_message(subject, sender, body, account=account),
     }
+
+
+def summarize_triage_items(items):
+    """Return aggregate counts only; never include message content or identifiers."""
+    category_counts = {}
+    priority_counts = {}
+    for item in items or []:
+        triage = item.get("triage") or {}
+        for category in triage.get("categories") or ["nao_classificado"]:
+            category_counts[category] = category_counts.get(category, 0) + 1
+        priority = triage.get("priority", "normal")
+        priority_counts[priority] = priority_counts.get(priority, 0) + 1
+    return {
+        "total": len(items or []),
+        "categories": dict(sorted(category_counts.items())),
+        "priorities": dict(sorted(priority_counts.items())),
+    }
