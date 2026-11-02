@@ -183,8 +183,7 @@ def classify_message(subject="", sender="", body="", account=None):
     marketing_markers = (
         "newsletter", "boletim informativo", "ofertas exclusivas",
         "promoções para você", "promocoes para voce", "novidades do mês",
-        "novidades do mes", "dicas e novidades", "unsubscribe",
-        "cancelar inscrição", "cancelar inscricao",
+        "novidades do mes", "dicas e novidades",
     )
     if any(term in text for term in marketing_markers):
         return {"categories": ["marketing_newsletter"], "priority": "normal",
@@ -282,23 +281,29 @@ def summary_only_requested(value=None):
 
 _UNCLASSIFIED_DIAGNOSTIC_SIGNALS = {
     "cadastro_validacao": (
-        "confirme seu e-mail", "confirmar email", "verify your email",
-        "verifique seu endereço", "verifique seu endereco", "ativar sua conta",
-        "activate your account", "bem-vindo", "welcome",
+        "confirme seu e-mail", "confirmar seu email", "verify your email",
+        "verifique seu endereço de e-mail", "verifique seu endereco de email",
+        "ative sua conta", "ativar sua conta", "activate your account",
+        "confirm your account", "email address confirmation",
     ),
     "recuperacao_acesso": (
-        "recuperar senha", "redefinir senha", "reset your password",
-        "password reset", "recuperação de conta", "recuperacao de conta",
+        "redefinir sua senha", "redefinição de senha", "redefinicao de senha",
+        "recuperar sua senha", "recuperação de conta", "recuperacao de conta",
+        "password reset", "reset your password", "recover your account",
+        "account recovery",
     ),
     "marketing_newsletter": (
-        "newsletter", "unsubscribe", "cancelar inscrição", "cancelar inscricao",
-        "ofertas exclusivas", "promoção", "promocao", "novidades do mês",
+        "newsletter", "boletim informativo", "ofertas exclusivas",
+        "promoções para você", "promocoes para voce", "novidades do mês",
         "novidades do mes", "dicas e novidades",
     ),
     "notificacao_servico": (
-        "notificação", "notificacao", "notification", "atualização da conta",
-        "atualizacao da conta", "sua assinatura", "your subscription",
-        "fatura", "invoice", "pedido confirmado", "order confirmed",
+        "sua assinatura foi renovada", "your subscription has been renewed",
+        "fatura disponível", "fatura disponivel", "invoice available",
+        "pagamento aprovado", "payment successful", "pedido confirmado",
+        "order confirmed", "recibo da sua compra", "your receipt",
+        "atualização da sua conta", "atualizacao da sua conta",
+        "your account has been updated",
     ),
 }
 
