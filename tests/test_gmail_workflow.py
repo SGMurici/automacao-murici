@@ -237,6 +237,7 @@ class GmailWorkflowTests(unittest.TestCase):
             "total": 3,
             "categories": {"alerta_vaga": 1, "contato_recrutador": 1, "entrevista": 2},
             "priorities": {"alta": 2, "media": 1},
+            "unclassified_signals": {},
         })
         self.assertNotIn("PRIVATE SUBJECT", str(summary))
 
