@@ -58,31 +58,37 @@ jobs:
           with open(sys.argv[1], encoding="utf-8") as source:
               report = json.load(source)
 
+          def safe_counts(value):
+              if not isinstance(value, dict):
+                  return {}
+              return {
+                  str(name): count for name, count in value.items()
+                  if isinstance(count, int) and not isinstance(count, bool)
+                  and 0 <= count <= 10000 and len(str(name)) <= 80
+              }
+
           print(f"HTTP: {sys.argv[2]}")
           print(f"Status: {report.get('status', 'not_provided')}")
           accounts = report.get("accounts", {})
           if isinstance(accounts, dict):
               print(f"Accounts processed: {len(accounts)}")
-              for account_name, result in accounts.items():
+              for account_name, result in sorted(accounts.items()):
                   if not isinstance(result, dict):
                       continue
                   status = result.get("status", "not_provided")
                   summary = result.get("summary", {})
-                  total = summary.get("total", "not_provided") if isinstance(summary, dict) else "not_provided"
-                  categories = summary.get("categories", {}) if isinstance(summary, dict) else {}
-                  category_total = sum(value for value in categories.values() if isinstance(value, int))
-                  print(f"{account_name}: status={status}; total={total}; category_items={category_total}")
+                  if not isinstance(summary, dict):
+                      summary = {}
+                  total = summary.get("total", "not_provided")
+                  print(f"{account_name}: status={status}; total={total}")
+                  print("  categories=" + json.dumps(safe_counts(summary.get("categories")), sort_keys=True))
+                  print("  priorities=" + json.dumps(safe_counts(summary.get("priorities")), sort_keys=True))
 
           summary = report.get("summary", {})
           if isinstance(summary, dict):
               print(f"Overall total: {summary.get('total', 'not_provided')}")
-              categories = summary.get("categories", {})
-              if isinstance(categories, dict):
-                  safe_categories = {
-                      str(name): value for name, value in categories.items()
-                      if isinstance(value, int) and len(str(name)) <= 80
-                  }
-                  print("Overall category counts: " + json.dumps(safe_categories, sort_keys=True))
+              print("Overall categories: " + json.dumps(safe_counts(summary.get("categories")), sort_keys=True))
+              print("Overall priorities: " + json.dumps(safe_counts(summary.get("priorities")), sort_keys=True))
           print("Individual message details were not emitted to the workflow log.")
           PY
 
