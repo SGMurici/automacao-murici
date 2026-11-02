@@ -1415,6 +1415,10 @@ def internal_gmail_triage_run():
         report["accounts"] = {
             name: report["accounts"][name] for name in GMAIL_MONITORED_ACCOUNTS
         }
+        summary_only = request.args.get("summary_only", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if summary_only:
+            for account_result in report["accounts"].values():
+                account_result.pop("messages", None)
         report["summary"] = {
             "total": sum(v.get("summary", {}).get("total", 0) for v in report["accounts"].values()),
             "categories": {},
