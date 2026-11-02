@@ -95,7 +95,6 @@ _RULES = (
     ("proxima_etapa", ("próxima etapa", "proxima etapa", "next step", "avançou para a próxima etapa", "avancou para a proxima etapa", "parabéns, você avançou", "parabens voce avancou", "convidamos para a próxima etapa", "convidamos para próxima etapa", "convidamos para a proxima etapa", "foi aprovado para a próxima etapa", "foi aprovada para a próxima etapa")),
     ("rejeicao", ("não seguiremos", "nao seguiremos", "não foi selecionado", "nao foi selecionado", "encerramos o processo", "not moving forward")),
     ("oferta", ("proposta salarial", "carta oferta", "offer letter", "oferta de emprego", "remuneração", "remuneracao")),
-    ("contato_recrutador", ("recrutamento", "recruiter", "talent acquisition", "recursos humanos")),
 )
 
 # Recognize explicit online assessment wording; keep next-stage detection phrase-specific to avoid generic congratulation matches.
@@ -224,6 +223,16 @@ def classify_message(subject="", sender="", body="", account=None):
     matches = []
     if _has_explicit_document_context(text):
         matches.append("documentos")
+    recruiter_identity_markers = ("recrutamento", "recruiter", "talent acquisition", "recursos humanos", "recruitment team", "hiring team")
+    career_context_markers = (
+        "entrevista", "interview", "vaga", "processo seletivo", "candidatura",
+        "currículo", "curriculo", "cv ", "oportunidade", "posição", "posicao",
+        "candidate", "application", "job opening", "job opportunity",
+    )
+    if (is_career_mailbox and any(term in text for term in recruiter_identity_markers)
+            and any(term in text for term in career_context_markers)):
+        matches.append("contato_recrutador")
+
     for category, terms in _RULES:
         if category in _CAREER_ONLY_CATEGORIES and not is_career_mailbox:
             continue
