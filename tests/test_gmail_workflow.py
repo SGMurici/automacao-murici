@@ -111,7 +111,7 @@ class GmailWorkflowTests(unittest.TestCase):
         self.assertEqual(result["categories"], ["nao_classificado"])
         self.assertEqual(result["priority"], "normal")
 
-    def test_drive1_job_process_terms_are_not_classified_as_recruitment(self):
+    def test_drive2_job_process_terms_are_not_classified_as_recruitment(self):
         result = classify_message(
             "Próxima etapa do processo seletivo",
             "Remetente genérico",
@@ -120,6 +120,25 @@ class GmailWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(result["categories"], ["nao_classificado"])
         self.assertEqual(result["priority"], "normal")
+
+    def test_drive1_professional_mailbox_classifies_interview(self):
+        result = classify_message(
+            "Convite para entrevista",
+            "Recrutamento",
+            "Podemos agendar uma conversa?",
+            account="Drive1",
+        )
+        self.assertEqual(result["categories"], ["entrevista"])
+        self.assertEqual(result["priority"], "alta")
+
+    def test_drive1_indeed_digest_is_vacancy_alert(self):
+        result = classify_message(
+            "21 novas vagas para você",
+            "Indeed <alert@indeed.com>",
+            "Vagas que combinam com seu perfil.",
+            account="Drive1",
+        )
+        self.assertEqual(result["categories"], ["alerta_vaga"])
 
     def test_sg_mailbox_still_classifies_interview(self):
         result = classify_message(
