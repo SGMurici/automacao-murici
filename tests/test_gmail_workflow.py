@@ -273,6 +273,8 @@ class GmailWorkflowTests(unittest.TestCase):
             {"subject": "Confirme seu e-mail", "from": "Serviço", "snippet": "Ative sua conta", "body_text": "Bem-vindo", "triage": {"categories": ["nao_classificado"], "priority": "normal"}},
             {"subject": "Newsletter de outubro", "from": "Marca", "snippet": "Ofertas exclusivas", "body_text": "Unsubscribe", "triage": {"categories": ["nao_classificado"], "priority": "normal"}},
             {"subject": "Mensagem privada não deve aparecer", "body_text": "Texto confidencial", "triage": {"categories": ["nao_classificado"], "priority": "normal"}},
+            {"subject": "Notification preferences", "from": "Service", "snippet": "Unsubscribe at any time.", "triage": {"categories": ["nao_classificado"], "priority": "normal"}},
+            {"subject": "Your notification is ready", "from": "Service", "snippet": "View your latest notification.", "triage": {"categories": ["nao_classificado"], "priority": "normal"}},
         ]
         summary = summarize_triage_items(items)
         self.assertEqual(summary["unclassified_signals"], {
