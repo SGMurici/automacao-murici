@@ -1,7 +1,7 @@
 import base64
 import unittest
 
-from gmail_workflow import classify_message, extract_message_text, build_triage_item, summarize_triage_items
+from gmail_workflow import classify_message, extract_message_text, build_triage_item, summarize_triage_items, summary_only_requested
 
 
 def encoded(text):
@@ -195,6 +195,20 @@ class GmailWorkflowTests(unittest.TestCase):
         self.assertEqual(result["categories"], ["documentos"])
         self.assertEqual(result["priority"], "media")
 
+
+    def test_summary_only_is_the_default_for_privacy(self):
+        self.assertTrue(summary_only_requested())
+        self.assertTrue(summary_only_requested(None))
+
+    def test_summary_only_accepts_explicit_true_values(self):
+        for value in ("1", "true", "TRUE", "yes", "on"):
+            with self.subTest(value=value):
+                self.assertTrue(summary_only_requested(value))
+
+    def test_full_message_details_require_explicit_false_opt_in(self):
+        for value in ("0", "false", "no", "off", ""):
+            with self.subTest(value=value):
+                self.assertFalse(summary_only_requested(value))
 
     def test_triage_summary_contains_only_aggregate_classification_counts(self):
         items = [
