@@ -22,7 +22,7 @@ class GmailWorkflowTests(unittest.TestCase):
 
     def test_classifies_offer_as_high_priority_and_needs_review(self):
         result = classify_message("Proposta salarial", "RH", "Segue a oferta de emprego", account="SG")
-        self.assertEqual(result["priority"], "media")
+        self.assertEqual(result["priority"], "alta")
         self.assertTrue(result["requires_human_review"])
         self.assertFalse(result["external_action_allowed"])
 
@@ -365,7 +365,7 @@ class GmailWorkflowTests(unittest.TestCase):
             account="Drive1",
         )
         self.assertIn("documentos", result["categories"])
-        self.assertEqual(result["priority"], "alta")
+        self.assertEqual(result["priority"], "media")
         self.assertTrue(result["requires_human_review"])
         self.assertFalse(result["external_action_allowed"])
 
