@@ -441,5 +441,42 @@ class GmailWorkflowTests(unittest.TestCase):
         self.assertEqual(result["priority"], "alta")
 
 
+    def test_generic_hr_newsletter_does_not_trigger_recruiter_contact(self):
+        result = classify_message(
+            "Novidades de Recursos Humanos",
+            "Departamento de RH",
+            "Confira nossas políticas internas e comunicados.",
+            account="SG",
+        )
+        self.assertNotIn("contato_recrutador", result["categories"])
+
+    def test_recruiter_contact_requires_career_context(self):
+        result = classify_message(
+            "Mensagem da equipe de recrutamento",
+            "Talent Acquisition",
+            "Estamos compartilhando atualizações institucionais.",
+            account="Drive1",
+        )
+        self.assertNotIn("contato_recrutador", result["categories"])
+
+    def test_recruiter_identity_with_job_context_is_classified(self):
+        result = classify_message(
+            "Oportunidade para seu perfil",
+            "Talent Acquisition",
+            "Nossa equipe de recrutamento gostaria de conversar sobre esta vaga.",
+            account="Drive1",
+        )
+        self.assertIn("contato_recrutador", result["categories"])
+
+    def test_recruiter_contact_remains_restricted_to_career_mailboxes(self):
+        result = classify_message(
+            "Oportunidade para seu perfil",
+            "Talent Acquisition",
+            "Nossa equipe de recrutamento gostaria de conversar sobre esta vaga.",
+            account="Drive2",
+        )
+        self.assertNotIn("contato_recrutador", result["categories"])
+
+
 if __name__ == "__main__":
     unittest.main()
