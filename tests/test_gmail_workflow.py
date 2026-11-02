@@ -150,6 +150,26 @@ class GmailWorkflowTests(unittest.TestCase):
         self.assertIn("entrevista", result["categories"])
         self.assertEqual(result["priority"], "alta")
 
+    def test_generic_congratulations_do_not_trigger_next_stage(self):
+        result = classify_message(
+            "Parabéns pela sua compra",
+            "Loja Online",
+            "Seu pedido foi confirmado.",
+            account="SG",
+        )
+        self.assertEqual(result["categories"], ["nao_classificado"])
+        self.assertEqual(result["priority"], "normal")
+
+    def test_explicit_next_stage_notice_is_classified(self):
+        result = classify_message(
+            "Processo seletivo – próxima etapa",
+            "Equipe de Recrutamento",
+            "Convidamos você para a próxima etapa do processo.",
+            account="SG",
+        )
+        self.assertIn("proxima_etapa", result["categories"])
+        self.assertEqual(result["priority"], "alta")
+
     def test_generic_document_keyword_does_not_create_high_priority(self):
         result = classify_message("Pasta compartilhada com você", "Google Drive", "A pasta contém documentos.")
         self.assertEqual(result["categories"], ["documentos"])
