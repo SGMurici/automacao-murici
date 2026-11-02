@@ -43,6 +43,8 @@ PUBLISH_SECRET = os.environ.get("PUBLISH_SECRET")
 GMAIL_MONITOR_SECRET = os.environ.get("GMAIL_MONITOR_SECRET")
 GMAIL_MONITORED_ACCOUNTS = ("SG", "Drive1", "Drive2", "Drive5")
 GOOGLE_GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+GOOGLE_CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+GOOGLE_CALENDAR_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 GOOGLE_GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 LINKEDIN_ACCOUNT_NAME = "LinkedIn Principal"
@@ -1852,6 +1854,61 @@ def linkedin_callback():
     )
 
 
+
+
+def google_calendar_readonly_check(account_name="SG"):
+    """Valida escopo Calendar readonly sem retornar dados de eventos."""
+    account_name = normalize_google_oauth_account_name(account_name)
+    if account_name != "SG":
+        raise ValueError("A Agenda principal deste projeto está restrita à conta SG.")
+    access_token = gmail_access_token(account_name)
+    params = urllib.parse.urlencode({
+        "maxResults": 1,
+        "singleEvents": "true",
+        "orderBy": "startTime",
+        "timeMin": datetime.now(timezone.utc).isoformat(),
+        "fields": "items(id)",
+    })
+    req = urllib.request.Request(
+        f"{GOOGLE_CALENDAR_EVENTS_URL}?{params}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        # Não propaga corpo remoto, que pode conter detalhes de autorização.
+        raise RuntimeError(f"Google Calendar recusou a consulta (HTTP {error.code}).")
+    return {
+        "status": "ok",
+        "conta": "SG",
+        "calendar": "primary",
+        "somente_leitura": True,
+        "consulta_autorizada": True,
+        "eventos_devolvidos": len(data.get("items", [])),
+        "detalhes_eventos_expostos": False,
+    }
+
+
+@app.get("/google-calendar/check")
+def google_calendar_check_route():
+    """Confirma acesso somente leitura à Agenda SG sem expor compromissos."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+    try:
+        return jsonify(google_calendar_readonly_check("SG"))
+    except ValueError as error:
+        return jsonify({"status": "erro", "mensagem": str(error)}), 400
+    except Exception:
+        app.logger.exception("Falha na rota /google-calendar/check")
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Falha interna na validação da Agenda. Consulte os logs do servidor.",
+        }), 500
+
+
 @app.get("/google/login")
 def google_login():
     session_error = require_session_secret()
@@ -1874,11 +1931,23 @@ def google_login():
     session["google_oauth_state"] = state
     session["google_oauth_account"] = account_name
 
+    oauth_purpose = request.args.get("purpose", "gmail").strip().lower()
+    if oauth_purpose not in {"gmail", "calendar_readonly"}:
+        return jsonify({"status": "erro", "mensagem": "Finalidade OAuth inválida."}), 400
+    if oauth_purpose == "calendar_readonly" and account_name != "SG":
+        return jsonify({"status": "erro", "mensagem": "A Agenda principal deste projeto está restrita à conta SG."}), 400
+    requested_scopes = [GOOGLE_GMAIL_READONLY_SCOPE]
+    if account_name == "Drive5":
+        requested_scopes.insert(0, "https://www.googleapis.com/auth/drive.readonly")
+    if oauth_purpose == "calendar_readonly":
+        requested_scopes.append(GOOGLE_CALENDAR_READONLY_SCOPE)
+    session["google_oauth_purpose"] = oauth_purpose
+
     params = {
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "response_type": "code",
-        "scope": (("https://www.googleapis.com/auth/drive.readonly " + GOOGLE_GMAIL_READONLY_SCOPE) if account_name == "Drive5" else GOOGLE_GMAIL_READONLY_SCOPE),
+        "scope": " ".join(requested_scopes),
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -2050,6 +2119,7 @@ def google_callback():
 
     session.pop("google_oauth_state", None)
     session.pop("google_oauth_account", None)
+    session.pop("google_oauth_purpose", None)
 
     return jsonify(
         {
