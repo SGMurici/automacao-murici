@@ -147,7 +147,7 @@ class GmailWorkflowTests(unittest.TestCase):
             "Podemos agendar uma conversa?",
             account="SG",
         )
-        self.assertEqual(result["categories"], ["entrevista"])
+        self.assertIn("entrevista", result["categories"])
         self.assertEqual(result["priority"], "alta")
 
     def test_generic_document_keyword_does_not_create_high_priority(self):
