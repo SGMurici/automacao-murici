@@ -248,10 +248,10 @@ class GmailWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(result["categories"], ["seguranca_conta"])
 
-    def test_generic_document_keyword_does_not_create_high_priority(self):
+    def test_generic_document_keyword_does_not_create_document_category(self):
         result = classify_message("Pasta compartilhada com você", "Google Drive", "A pasta contém documentos.")
-        self.assertEqual(result["categories"], ["documentos"])
-        self.assertEqual(result["priority"], "media")
+        self.assertEqual(result["categories"], ["nao_classificado"])
+        self.assertEqual(result["priority"], "normal")
 
 
     def test_summary_only_is_the_default_for_privacy(self):
@@ -353,8 +353,61 @@ class GmailWorkflowTests(unittest.TestCase):
             "Vamos conversar sobre a vaga. Os documentos institucionais estão no site.",
             account="Drive1",
         )
-        self.assertEqual(result["categories"], ["entrevista", "documentos", "contato_recrutador"])
+        self.assertEqual(result["categories"], ["entrevista", "contato_recrutador"])
         self.assertEqual(result["priority"], "alta")
+
+
+    def test_explicit_document_submission_request_is_classified(self):
+        result = classify_message(
+            "Documentação necessária para admissão",
+            "Equipe de RH",
+            "Envie os documentos necessários para admissão.",
+            account="Drive1",
+        )
+        self.assertIn("documentos", result["categories"])
+        self.assertEqual(result["priority"], "alta")
+        self.assertTrue(result["requires_human_review"])
+        self.assertFalse(result["external_action_allowed"])
+
+    def test_english_required_documents_phrase_is_classified(self):
+        result = classify_message(
+            "Your required documents are ready",
+            "Hiring team",
+            "Please download your document.",
+            account="SG",
+        )
+        self.assertIn("documentos", result["categories"])
+        self.assertEqual(result["priority"], "media")
+
+    def test_identity_document_requires_context_not_isolated_acronym(self):
+        result = classify_message(
+            "Atualização semanal",
+            "Newsletter",
+            "CPF é citado em um exemplo genérico.",
+            account="Drive2",
+        )
+        self.assertEqual(result["categories"], ["nao_classificado"])
+
+    def test_rg_copy_request_is_classified_as_documents(self):
+        result = classify_message(
+            "Envio de documentação",
+            "Recursos Humanos",
+            "Anexe uma cópia do RG para concluir o cadastro.",
+            account="Drive1",
+        )
+        self.assertIn("documentos", result["categories"])
+        self.assertTrue(result["requires_human_review"])
+        self.assertFalse(result["external_action_allowed"])
+
+    def test_career_email_with_explicit_document_request_keeps_both_categories(self):
+        result = classify_message(
+            "Próxima etapa da entrevista",
+            "Equipe de recrutamento",
+            "Envie os documentos necessários antes da próxima conversa.",
+            account="Drive1",
+        )
+        self.assertIn("entrevista", result["categories"])
+        self.assertIn("documentos", result["categories"])
 
 
 if __name__ == "__main__":
