@@ -21,7 +21,7 @@ class GmailWorkflowTests(unittest.TestCase):
         self.assertEqual(extract_message_text(message), "Texto simples")
 
     def test_classifies_offer_as_high_priority_and_needs_review(self):
-        result = classify_message("Proposta salarial", "RH", "Segue a oferta de emprego")
+        result = classify_message("Proposta salarial", "RH", "Segue a oferta de emprego", account="SG")
         self.assertEqual(result["priority"], "alta")
         self.assertTrue(result["requires_human_review"])
         self.assertFalse(result["external_action_allowed"])
@@ -88,7 +88,7 @@ class GmailWorkflowTests(unittest.TestCase):
         self.assertEqual(result["priority"], "alta")
 
     def test_indeed_job_digest_is_vacancy_alert_not_recruiter_contact(self):
-        result = classify_message("21 novas vagas para você", "Indeed <alert@indeed.com>", "Vagas que combinam com seu perfil.")
+        result = classify_message("21 novas vagas para você", "Indeed <alert@indeed.com>", "Vagas que combinam com seu perfil.", account="SG")
         self.assertEqual(result["categories"], ["alerta_vaga"])
         self.assertEqual(result["priority"], "media")
 
@@ -100,6 +100,36 @@ class GmailWorkflowTests(unittest.TestCase):
         result = classify_message("Lucas aceitou seu convite", "LinkedIn", "Agora vocês são conexões.")
         self.assertEqual(result["categories"], ["nao_classificado"])
         self.assertEqual(result["priority"], "normal")
+
+    def test_drive2_interview_word_is_not_classified_as_recruitment(self):
+        result = classify_message(
+            "Entrevista sobre atualização de produto",
+            "Notificação de serviço",
+            "Convite para uma entrevista sobre novidades da plataforma.",
+            account="Drive2",
+        )
+        self.assertEqual(result["categories"], ["nao_classificado"])
+        self.assertEqual(result["priority"], "normal")
+
+    def test_drive1_job_process_terms_are_not_classified_as_recruitment(self):
+        result = classify_message(
+            "Próxima etapa do processo seletivo",
+            "Remetente genérico",
+            "Agendar entrevista e realizar teste técnico.",
+            account="Drive1",
+        )
+        self.assertEqual(result["categories"], ["nao_classificado"])
+        self.assertEqual(result["priority"], "normal")
+
+    def test_sg_mailbox_still_classifies_interview(self):
+        result = classify_message(
+            "Convite para entrevista",
+            "Recrutamento",
+            "Podemos agendar uma conversa?",
+            account="SG",
+        )
+        self.assertEqual(result["categories"], ["entrevista"])
+        self.assertEqual(result["priority"], "alta")
 
     def test_generic_document_keyword_does_not_create_high_priority(self):
         result = classify_message("Pasta compartilhada com você", "Google Drive", "A pasta contém documentos.")
