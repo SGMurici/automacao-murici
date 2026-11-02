@@ -115,7 +115,8 @@ def classify_message(subject="", sender="", body="", account=None):
     subject_text = (subject or "").lower()
     body_text = (body or "").lower()
     text = " ".join((subject_text, sender_text, body_text))
-    account_key = (account or "").strip().casefold()\n    is_career_mailbox = account_key in _CAREER_MAILBOXES
+    account_key = (account or "").strip().casefold()
+    is_career_mailbox = account_key in _CAREER_MAILBOXES
 
     security_markers = (
         "código para continuar entrando sem uma senha",
