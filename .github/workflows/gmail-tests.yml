@@ -83,12 +83,14 @@ jobs:
                   print(f"{account_name}: status={status}; total={total}")
                   print("  categories=" + json.dumps(safe_counts(summary.get("categories")), sort_keys=True))
                   print("  priorities=" + json.dumps(safe_counts(summary.get("priorities")), sort_keys=True))
+                  print("  unclassified_signals=" + json.dumps(safe_counts(summary.get("unclassified_signals")), sort_keys=True))
 
           summary = report.get("summary", {})
           if isinstance(summary, dict):
               print(f"Overall total: {summary.get('total', 'not_provided')}")
               print("Overall categories: " + json.dumps(safe_counts(summary.get("categories")), sort_keys=True))
               print("Overall priorities: " + json.dumps(safe_counts(summary.get("priorities")), sort_keys=True))
+              print("Overall unclassified signals: " + json.dumps(safe_counts(summary.get("unclassified_signals")), sort_keys=True))
           print("Individual message details were not emitted to the workflow log.")
           PY
 
