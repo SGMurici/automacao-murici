@@ -223,6 +223,12 @@ def classify_message(subject="", sender="", body="", account=None):
     matches = []
     if _has_explicit_document_context(text):
         matches.append("documentos")
+    for category, terms in _RULES:
+        if category in _CAREER_ONLY_CATEGORIES and not is_career_mailbox:
+            continue
+        if any(term in text for term in terms):
+            matches.append(category)
+
     recruiter_identity_markers = ("recrutamento", "recruiter", "talent acquisition", "recursos humanos", "recruitment team", "hiring team")
     career_context_markers = (
         "entrevista", "interview", "vaga", "processo seletivo", "candidatura",
@@ -232,12 +238,6 @@ def classify_message(subject="", sender="", body="", account=None):
     if (is_career_mailbox and any(term in text for term in recruiter_identity_markers)
             and any(term in text for term in career_context_markers)):
         matches.append("contato_recrutador")
-
-    for category, terms in _RULES:
-        if category in _CAREER_ONLY_CATEGORIES and not is_career_mailbox:
-            continue
-        if any(term in text for term in terms):
-            matches.append(category)
 
     if "oferta" in matches:
         priority = "alta"
