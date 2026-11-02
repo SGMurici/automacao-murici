@@ -88,6 +88,7 @@ def _redact_one_time_codes(text):
 
     return number.sub(replace_if_sensitive, value)
 
+
 _RULES = (
     ("entrevista", ("entrevista", "interview", "agendar conversa", "marcar conversa", "meet with")),
     ("teste_seletivo", ("teste técnico", "teste tecnico", "avaliação técnica", "avaliacao tecnica", "estudo de caso", "desafio técnico", "desafio tecnico")),
@@ -98,13 +99,21 @@ _RULES = (
     ("contato_recrutador", ("recrutamento", "recruiter", "talent acquisition", "recursos humanos")),
 )
 
+# Career-process classifications are intentionally restricted to the SG
+# mailbox. Drive1, Drive2 and Drive5 are not application mailboxes.
+_SG_ONLY_CATEGORIES = {
+    "entrevista", "teste_seletivo", "proxima_etapa", "rejeicao",
+    "oferta", "contato_recrutador",
+}
 
-def classify_message(subject="", sender="", body=""):
-    """Prioritize security and infrastructure alerts over broad job keywords."""
+
+def classify_message(subject="", sender="", body="", account=None):
+    """Classify messages; career-process categories are allowed only for SG."""
     sender_text = (sender or "").lower()
     subject_text = (subject or "").lower()
     body_text = (body or "").lower()
     text = " ".join((subject_text, sender_text, body_text))
+    is_sg_account = (account or "").strip().casefold() == "sg"
 
     security_markers = (
         "código para continuar entrando sem uma senha",
@@ -147,11 +156,13 @@ def classify_message(subject="", sender="", body=""):
         }
 
     vacancy_markers = ("alerta de vaga", "vagas que combinam", "novas vagas", "job alert", "jobs for you", "vaga recomendada")
-    if "indeed" in sender_text and any(term in text for term in vacancy_markers):
+    if is_sg_account and "indeed" in sender_text and any(term in text for term in vacancy_markers):
         return {"categories": ["alerta_vaga"], "priority": "media", "requires_human_review": True, "external_action_allowed": False}
 
     matches = []
     for category, terms in _RULES:
+        if category in _SG_ONLY_CATEGORIES and not is_sg_account:
+            continue
         if any(term in text for term in terms):
             matches.append(category)
 
@@ -185,5 +196,5 @@ def build_triage_item(message, account):
         "subject": _redact_one_time_codes(subject),
         "snippet": _redact_one_time_codes(message.get("snippet", "")),
         "body_text": _redact_one_time_codes(body),
-        "triage": classify_message(subject, sender, body),
+        "triage": classify_message(subject, sender, body, account=account),
     }
