@@ -316,5 +316,46 @@ class GmailWorkflowTests(unittest.TestCase):
         self.assertNotIn("PRIVATE SUBJECT", str(summary))
 
 
+    def test_security_category_takes_precedence_over_document_keywords(self):
+        result = classify_message(
+            "Alerta de segurança: atividade suspeita",
+            "Serviço de conta",
+            "Revise o acesso. Seus documentos e comprovantes permanecem disponíveis.",
+            account="Drive2",
+        )
+        self.assertEqual(result["categories"], ["seguranca_conta"])
+        self.assertEqual(result["priority"], "alta")
+
+    def test_operational_alert_takes_precedence_over_document_keywords(self):
+        result = classify_message(
+            "Deployment failed",
+            "Render",
+            "Service unavailable. Logs and documents are attached.",
+            account="Drive5",
+        )
+        self.assertEqual(result["categories"], ["alerta_operacional"])
+        self.assertEqual(result["priority"], "alta")
+
+    def test_transactional_service_category_is_not_polluted_by_document_footer(self):
+        result = classify_message(
+            "Pagamento aprovado",
+            "Serviço",
+            "Seu pedido confirmado. Consulte os documentos da compra.",
+            account="Drive2",
+        )
+        self.assertEqual(result["categories"], ["notificacao_servico"])
+        self.assertEqual(result["priority"], "media")
+
+    def test_career_category_is_not_polluted_by_generic_document_mention(self):
+        result = classify_message(
+            "Convite para entrevista",
+            "Equipe de recrutamento",
+            "Vamos conversar sobre a vaga. Os documentos institucionais estão no site.",
+            account="Drive1",
+        )
+        self.assertEqual(result["categories"], ["entrevista", "documentos"])
+        self.assertEqual(result["priority"], "alta")
+
+
 if __name__ == "__main__":
     unittest.main()
