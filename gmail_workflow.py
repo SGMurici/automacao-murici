@@ -204,6 +204,32 @@ def build_triage_item(message, account):
     }
 
 
+def merge_triage_summaries(summaries):
+    """Merge account summaries using aggregate counts only."""
+    merged = {
+        "total": 0,
+        "categories": {},
+        "priorities": {},
+        "unclassified_signals": {},
+    }
+    for summary in summaries or []:
+        if not isinstance(summary, dict):
+            continue
+        total = summary.get("total", 0)
+        if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
+            merged["total"] += total
+        for field in ("categories", "priorities", "unclassified_signals"):
+            counts = summary.get(field, {})
+            if not isinstance(counts, dict):
+                continue
+            for name, count in counts.items():
+                if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                    merged[field][name] = merged[field].get(name, 0) + count
+    for field in ("categories", "priorities", "unclassified_signals"):
+        merged[field] = dict(sorted(merged[field].items()))
+    return merged
+
+
 def summary_only_requested(value=None):
     """Default to privacy-safe aggregate output; details require explicit opt-in."""
     if value is None:
