@@ -121,6 +121,16 @@ class GmailWorkflowTests(unittest.TestCase):
         self.assertEqual(result["categories"], ["nao_classificado"])
         self.assertEqual(result["priority"], "normal")
 
+    def test_pandape_online_tests_are_classified_as_selection_test(self):
+        result = classify_message(
+            "Processo Seletivo | Aprovação Testes Online",
+            "PandaPé <no-reply@pandape.com.br>",
+            "Você foi aprovado nos testes online.",
+            account="SG",
+        )
+        self.assertIn("teste_seletivo", result["categories"])
+        self.assertEqual(result["priority"], "alta")
+
     def test_drive1_professional_mailbox_classifies_interview(self):
         result = classify_message(
             "Convite para entrevista",
