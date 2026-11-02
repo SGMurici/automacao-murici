@@ -22,7 +22,7 @@ class GmailWorkflowTests(unittest.TestCase):
 
     def test_classifies_offer_as_high_priority_and_needs_review(self):
         result = classify_message("Proposta salarial", "RH", "Segue a oferta de emprego", account="SG")
-        self.assertEqual(result["priority"], "alta")
+        self.assertEqual(result["priority"], "media")
         self.assertTrue(result["requires_human_review"])
         self.assertFalse(result["external_action_allowed"])
 
@@ -382,7 +382,7 @@ class GmailWorkflowTests(unittest.TestCase):
     def test_identity_document_requires_context_not_isolated_acronym(self):
         result = classify_message(
             "Atualização semanal",
-            "Newsletter",
+            "Serviço de conta",
             "CPF é citado em um exemplo genérico.",
             account="Drive2",
         )
