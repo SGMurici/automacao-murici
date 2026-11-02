@@ -57,7 +57,7 @@ class GmailWorkflowTests(unittest.TestCase):
         message = {"id": "m2", "threadId": "t2", "snippet": "123456 – Seu código de login do Spotify", "payload": {
             "headers": [
                 {"name": "From", "value": "Spotify <no-reply@alerts.spotify.com>"},
-                {"name": "Subject", "value": "Seu código de login"},
+                {"name": "Subject", "value": "Seu código de login 123456"},
             ],
             "mimeType": "text/plain",
             "body": {"data": encoded("Insira este código para continuar: 123456")},
@@ -65,7 +65,32 @@ class GmailWorkflowTests(unittest.TestCase):
         item = build_triage_item(message, "Drive1")
         self.assertNotIn("123456", item["body_text"])
         self.assertNotIn("123456", item["snippet"])
+        self.assertNotIn("123456", item["subject"])
         self.assertEqual(item["triage"]["categories"], ["seguranca_conta"])
+
+    def test_spotify_new_login_is_security_alert(self):
+        result = classify_message("Novo login no Spotify", "Spotify <no-reply@spotify.com>", "Um novo login foi detectado.")
+        self.assertEqual(result["categories"], ["seguranca_conta"])
+        self.assertEqual(result["priority"], "alta")
+
+    def test_indeed_job_digest_is_vacancy_alert_not_recruiter_contact(self):
+        result = classify_message("21 novas vagas para você", "Indeed <alert@indeed.com>", "Vagas que combinam com seu perfil.")
+        self.assertEqual(result["categories"], ["alerta_vaga"])
+        self.assertEqual(result["priority"], "media")
+
+    def test_marketing_case_word_does_not_trigger_selection_test(self):
+        result = classify_message("A better roller – What’s new in October", "Metricool", "New product features and updates.")
+        self.assertNotIn("teste_seletivo", result["categories"])
+
+    def test_linkedin_connection_notification_is_not_document_priority(self):
+        result = classify_message("Lucas aceitou seu convite", "LinkedIn", "Agora vocês são conexões.")
+        self.assertEqual(result["categories"], ["nao_classificado"])
+        self.assertEqual(result["priority"], "normal")
+
+    def test_generic_document_keyword_does_not_create_high_priority(self):
+        result = classify_message("Pasta compartilhada com você", "Google Drive", "A pasta contém documentos.")
+        self.assertEqual(result["categories"], ["documentos"])
+        self.assertEqual(result["priority"], "media")
 
 
 if __name__ == "__main__":
