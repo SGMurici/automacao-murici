@@ -116,7 +116,7 @@ class GmailWorkflowTests(unittest.TestCase):
             "Próxima etapa do processo seletivo",
             "Remetente genérico",
             "Agendar entrevista e realizar teste técnico.",
-            account="Drive1",
+            account="Drive2",
         )
         self.assertEqual(result["categories"], ["nao_classificado"])
         self.assertEqual(result["priority"], "normal")
