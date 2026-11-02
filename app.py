@@ -13,7 +13,7 @@ from flask import Flask, jsonify, redirect, request, session
 import psycopg
 from cryptography.fernet import Fernet
 
-from gmail_workflow import build_triage_item, summarize_triage_items
+from gmail_workflow import build_triage_item, summarize_triage_items, summary_only_requested
 
 
 app = Flask(__name__)
@@ -1415,7 +1415,7 @@ def internal_gmail_triage_run():
         report["accounts"] = {
             name: report["accounts"][name] for name in GMAIL_MONITORED_ACCOUNTS
         }
-        summary_only = request.args.get("summary_only", "false").strip().lower() in {"1", "true", "yes", "on"}
+        summary_only = summary_only_requested(request.args.get("summary_only"))
         if summary_only:
             for account_result in report["accounts"].values():
                 account_result.pop("messages", None)
