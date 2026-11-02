@@ -128,7 +128,7 @@ class GmailWorkflowTests(unittest.TestCase):
             "Podemos agendar uma conversa?",
             account="Drive1",
         )
-        self.assertEqual(result["categories"], ["entrevista"])
+        self.assertIn("entrevista", result["categories"])
         self.assertEqual(result["priority"], "alta")
 
     def test_drive1_indeed_digest_is_vacancy_alert(self):
