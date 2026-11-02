@@ -99,6 +99,7 @@ _RULES = (
     ("contato_recrutador", ("recrutamento", "recruiter", "talent acquisition", "recursos humanos")),
 )
 
+# Keep next-stage detection phrase-specific: generic congratulations are common in retail and service mail.
 # Career-process classifications belong in the personal (SG) and
 # professional (Drive1) mailboxes. Drive2 is primarily for website accounts;
 # Drive5 is reserved for automation operations.
