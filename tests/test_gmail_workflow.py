@@ -1,7 +1,7 @@
 import base64
 import unittest
 
-from gmail_workflow import classify_message, extract_message_text, build_triage_item, summarize_triage_items, summary_only_requested
+from gmail_workflow import classify_message, extract_message_text, build_triage_item, summarize_triage_items, summary_only_requested, merge_triage_summaries
 
 
 def encoded(text):
@@ -225,6 +225,20 @@ class GmailWorkflowTests(unittest.TestCase):
         self.assertNotIn("Mensagem privada", serialized)
         self.assertNotIn("Texto confidencial", serialized)
         self.assertNotIn("Confirme seu e-mail", serialized)
+
+    def test_merge_triage_summaries_combines_unclassified_signals(self):
+        merged = merge_triage_summaries([
+            {"total": 10, "categories": {"nao_classificado": 7}, "priorities": {"normal": 7},
+             "unclassified_signals": {"notificacao_servico": 7}},
+            {"total": 10, "categories": {"nao_classificado": 5}, "priorities": {"normal": 5},
+             "unclassified_signals": {"marketing_newsletter": 5, "notificacao_servico": 1}},
+        ])
+        self.assertEqual(merged, {
+            "total": 20,
+            "categories": {"nao_classificado": 12},
+            "priorities": {"normal": 12},
+            "unclassified_signals": {"marketing_newsletter": 5, "notificacao_servico": 8},
+        })
 
     def test_triage_summary_contains_only_aggregate_classification_counts(self):
         items = [
