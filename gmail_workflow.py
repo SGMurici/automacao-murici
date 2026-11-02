@@ -159,6 +159,49 @@ def classify_message(subject="", sender="", body="", account=None):
             "external_action_allowed": False,
         }
 
+    # Account lifecycle and service messages are distinct from recruiting and marketing.
+    signup_markers = (
+        "confirme seu e-mail", "confirmar seu email", "verify your email",
+        "verifique seu endereço de e-mail", "verifique seu endereco de email",
+        "ative sua conta", "ativar sua conta", "activate your account",
+        "confirm your account", "email address confirmation",
+    )
+    if any(term in text for term in signup_markers):
+        return {"categories": ["cadastro_validacao"], "priority": "media",
+                "requires_human_review": True, "external_action_allowed": False}
+
+    recovery_markers = (
+        "redefinir sua senha", "redefinição de senha", "redefinicao de senha",
+        "recuperar sua senha", "recuperação de conta", "recuperacao de conta",
+        "password reset", "reset your password", "recover your account",
+        "account recovery",
+    )
+    if any(term in text for term in recovery_markers):
+        return {"categories": ["recuperacao_acesso"], "priority": "alta",
+                "requires_human_review": True, "external_action_allowed": False}
+
+    marketing_markers = (
+        "newsletter", "boletim informativo", "ofertas exclusivas",
+        "promoções para você", "promocoes para voce", "novidades do mês",
+        "novidades do mes", "dicas e novidades", "unsubscribe",
+        "cancelar inscrição", "cancelar inscricao",
+    )
+    if any(term in text for term in marketing_markers):
+        return {"categories": ["marketing_newsletter"], "priority": "normal",
+                "requires_human_review": True, "external_action_allowed": False}
+
+    service_markers = (
+        "sua assinatura foi renovada", "your subscription has been renewed",
+        "fatura disponível", "fatura disponivel", "invoice available",
+        "pagamento aprovado", "payment successful", "pedido confirmado",
+        "order confirmed", "recibo da sua compra", "your receipt",
+        "atualização da sua conta", "atualizacao da sua conta",
+        "your account has been updated",
+    )
+    if any(term in text for term in service_markers):
+        return {"categories": ["notificacao_servico"], "priority": "media",
+                "requires_human_review": True, "external_action_allowed": False}
+
     vacancy_markers = ("alerta de vaga", "vagas que combinam", "novas vagas", "job alert", "jobs for you", "vaga recomendada")
     if is_career_mailbox and "indeed" in sender_text and any(term in text for term in vacancy_markers):
         return {"categories": ["alerta_vaga"], "priority": "media", "requires_human_review": True, "external_action_allowed": False}
