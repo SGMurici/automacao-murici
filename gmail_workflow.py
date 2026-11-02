@@ -74,8 +74,12 @@ def _header_map(message):
 def _redact_one_time_codes(text):
     """Hide short-lived numeric login codes before returning message bodies."""
     value = text or ""
-    code_context = re.compile(r"(?:c[oó]digo|code|login|verification|senha)", re.IGNORECASE)
-    number = re.compile(r"(?<!\d)\d{6,8}(?!\d)")
+    code_context = re.compile(
+        r"(?:c[oó]digo|code|login|verification|verifica[cç][aã]o|"
+        r"seguran[cç]a|tempor[aá]rio|one[- ]time|passcode|otp|senha)",
+        re.IGNORECASE,
+    )
+    number = re.compile(r"(?<!\d)\d{4,8}(?!\d)")
 
     def replace_if_sensitive(match):
         start, end = match.span()
