@@ -190,6 +190,64 @@ class GmailWorkflowTests(unittest.TestCase):
         self.assertIn("proxima_etapa", result["categories"])
         self.assertEqual(result["priority"], "alta")
 
+    def test_drive2_signup_confirmation_is_classified_separately(self):
+        result = classify_message(
+            "Confirme seu e-mail para ativar sua conta",
+            "Serviço <no-reply@example.com>",
+            "Verify your email address.",
+            account="Drive2",
+        )
+        self.assertEqual(result["categories"], ["cadastro_validacao"])
+        self.assertEqual(result["priority"], "media")
+
+    def test_drive2_password_recovery_is_high_priority(self):
+        result = classify_message(
+            "Redefinir sua senha",
+            "Serviço <no-reply@example.com>",
+            "Use este link para recuperar sua senha.",
+            account="Drive2",
+        )
+        self.assertEqual(result["categories"], ["recuperacao_acesso"])
+        self.assertEqual(result["priority"], "alta")
+
+    def test_drive2_marketing_newsletter_is_normal_priority(self):
+        result = classify_message(
+            "Newsletter de novembro",
+            "Marca",
+            "Ofertas exclusivas e novidades do mês. Unsubscribe.",
+            account="Drive2",
+        )
+        self.assertEqual(result["categories"], ["marketing_newsletter"])
+        self.assertEqual(result["priority"], "normal")
+
+    def test_drive2_transactional_service_notice_is_classified(self):
+        result = classify_message(
+            "Pagamento aprovado",
+            "Serviço",
+            "Seu pedido confirmado. Obrigado pela compra.",
+            account="Drive2",
+        )
+        self.assertEqual(result["categories"], ["notificacao_servico"])
+        self.assertEqual(result["priority"], "media")
+
+    def test_generic_welcome_is_not_enough_for_signup_classification(self):
+        result = classify_message(
+            "Bem-vindo à nossa comunidade",
+            "Marca",
+            "Confira nossos conteúdos e novidades.",
+            account="Drive2",
+        )
+        self.assertNotEqual(result["categories"], ["cadastro_validacao"])
+
+    def test_unsubscribe_footer_alone_does_not_override_security(self):
+        result = classify_message(
+            "Alerta de segurança da sua conta",
+            "Serviço",
+            "Detectamos atividade suspeita. Unsubscribe.",
+            account="Drive2",
+        )
+        self.assertEqual(result["categories"], ["seguranca_conta"])
+
     def test_generic_document_keyword_does_not_create_high_priority(self):
         result = classify_message("Pasta compartilhada com você", "Google Drive", "A pasta contém documentos.")
         self.assertEqual(result["categories"], ["documentos"])
