@@ -95,7 +95,6 @@ _RULES = (
     ("proxima_etapa", ("próxima etapa", "proxima etapa", "next step", "avançou para a próxima etapa", "avancou para a proxima etapa", "parabéns, você avançou", "parabens voce avancou", "convidamos para a próxima etapa", "convidamos para próxima etapa", "convidamos para a proxima etapa", "foi aprovado para a próxima etapa", "foi aprovada para a próxima etapa")),
     ("rejeicao", ("não seguiremos", "nao seguiremos", "não foi selecionado", "nao foi selecionado", "encerramos o processo", "not moving forward")),
     ("oferta", ("proposta salarial", "carta oferta", "offer letter", "oferta de emprego", "remuneração", "remuneracao")),
-    ("documentos", ("documentação", "documentacao", "documentos", "cpf", "rg", "comprovante")),
     ("contato_recrutador", ("recrutamento", "recruiter", "talent acquisition", "recursos humanos")),
 )
 
@@ -108,6 +107,23 @@ _CAREER_ONLY_CATEGORIES = {
     "entrevista", "teste_seletivo", "proxima_etapa", "rejeicao",
     "oferta", "contato_recrutador",
 }
+
+
+_DOCUMENT_CONTEXT_MARKERS = (
+    "envie os documentos", "enviar os documentos", "anexe os documentos",
+    "anexar os documentos", "encaminhe os documentos", "encaminhar os documentos",
+    "documentação necessária", "documentacao necessaria", "documentos pendentes",
+    "documentos para admissão", "documentos para admissao", "required documents",
+    "submit your documents", "upload documents", "your documents are ready",
+    "documento disponível", "documento disponivel", "documentos recebidos",
+    "comprovante disponível", "comprovante disponivel", "download your document",
+    "documento de identidade", "cópia do rg", "copia do rg",
+    "número do cpf", "numero do cpf",
+)
+
+
+def _has_explicit_document_context(text):
+    return any(marker in text for marker in _DOCUMENT_CONTEXT_MARKERS)
 
 
 def classify_message(subject="", sender="", body="", account=None):
@@ -206,6 +222,8 @@ def classify_message(subject="", sender="", body="", account=None):
         return {"categories": ["alerta_vaga"], "priority": "media", "requires_human_review": True, "external_action_allowed": False}
 
     matches = []
+    if _has_explicit_document_context(text):
+        matches.append("documentos")
     for category, terms in _RULES:
         if category in _CAREER_ONLY_CATEGORIES and not is_career_mailbox:
             continue
