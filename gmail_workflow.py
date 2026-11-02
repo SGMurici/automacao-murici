@@ -211,18 +211,56 @@ def summary_only_requested(value=None):
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+_UNCLASSIFIED_DIAGNOSTIC_SIGNALS = {
+    "cadastro_validacao": (
+        "confirme seu e-mail", "confirmar email", "verify your email",
+        "verifique seu endereço", "verifique seu endereco", "ativar sua conta",
+        "activate your account", "bem-vindo", "welcome",
+    ),
+    "recuperacao_acesso": (
+        "recuperar senha", "redefinir senha", "reset your password",
+        "password reset", "recuperação de conta", "recuperacao de conta",
+    ),
+    "marketing_newsletter": (
+        "newsletter", "unsubscribe", "cancelar inscrição", "cancelar inscricao",
+        "ofertas exclusivas", "promoção", "promocao", "novidades do mês",
+        "novidades do mes", "dicas e novidades",
+    ),
+    "notificacao_servico": (
+        "notificação", "notificacao", "notification", "atualização da conta",
+        "atualizacao da conta", "sua assinatura", "your subscription",
+        "fatura", "invoice", "pedido confirmado", "order confirmed",
+    ),
+}
+
+
 def summarize_triage_items(items):
     """Return aggregate counts only; never include message content or identifiers."""
     category_counts = {}
     priority_counts = {}
+    diagnostic_counts = {key: 0 for key in _UNCLASSIFIED_DIAGNOSTIC_SIGNALS}
     for item in items or []:
         triage = item.get("triage") or {}
-        for category in triage.get("categories") or ["nao_classificado"]:
+        categories = triage.get("categories") or ["nao_classificado"]
+        for category in categories:
             category_counts[category] = category_counts.get(category, 0) + 1
         priority = triage.get("priority", "normal")
         priority_counts[priority] = priority_counts.get(priority, 0) + 1
+        if "nao_classificado" in categories:
+            text = " ".join((
+                str(item.get("subject") or ""),
+                str(item.get("from") or ""),
+                str(item.get("snippet") or ""),
+                str(item.get("body_text") or ""),
+            )).casefold()
+            for signal, terms in _UNCLASSIFIED_DIAGNOSTIC_SIGNALS.items():
+                if any(term in text for term in terms):
+                    diagnostic_counts[signal] += 1
     return {
         "total": len(items or []),
         "categories": dict(sorted(category_counts.items())),
         "priorities": dict(sorted(priority_counts.items())),
+        "unclassified_signals": {
+            key: count for key, count in sorted(diagnostic_counts.items()) if count
+        },
     }
