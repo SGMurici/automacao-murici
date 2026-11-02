@@ -353,7 +353,7 @@ class GmailWorkflowTests(unittest.TestCase):
             "Vamos conversar sobre a vaga. Os documentos institucionais estão no site.",
             account="Drive1",
         )
-        self.assertEqual(result["categories"], ["entrevista", "documentos"])
+        self.assertEqual(result["categories"], ["entrevista", "documentos", "contato_recrutador"])
         self.assertEqual(result["priority"], "alta")
 
 
