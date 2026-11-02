@@ -1,7 +1,7 @@
 import base64
 import unittest
 
-from gmail_workflow import classify_message, extract_message_text, build_triage_item
+from gmail_workflow import classify_message, extract_message_text, build_triage_item, summarize_triage_items
 
 
 def encoded(text):
@@ -154,6 +154,21 @@ class GmailWorkflowTests(unittest.TestCase):
         result = classify_message("Pasta compartilhada com você", "Google Drive", "A pasta contém documentos.")
         self.assertEqual(result["categories"], ["documentos"])
         self.assertEqual(result["priority"], "media")
+
+
+    def test_triage_summary_contains_only_aggregate_classification_counts(self):
+        items = [
+            {"subject": "PRIVATE SUBJECT", "triage": {"categories": ["entrevista", "contato_recrutador"], "priority": "alta"}},
+            {"subject": "ANOTHER PRIVATE SUBJECT", "triage": {"categories": ["alerta_vaga"], "priority": "media"}},
+            {"triage": {"categories": ["entrevista"], "priority": "alta"}},
+        ]
+        summary = summarize_triage_items(items)
+        self.assertEqual(summary, {
+            "total": 3,
+            "categories": {"alerta_vaga": 1, "contato_recrutador": 1, "entrevista": 2},
+            "priorities": {"alta": 2, "media": 1},
+        })
+        self.assertNotIn("PRIVATE SUBJECT", str(summary))
 
 
 if __name__ == "__main__":
