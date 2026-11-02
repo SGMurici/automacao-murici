@@ -410,5 +410,36 @@ class GmailWorkflowTests(unittest.TestCase):
         self.assertIn("documentos", result["categories"])
 
 
+    def test_password_recovery_precedes_email_confirmation_language(self):
+        result = classify_message(
+            "Redefinir sua senha e confirmar seu e-mail",
+            "Serviço de conta",
+            "Confirme seu endereço antes de recuperar sua senha.",
+            account="Drive2",
+        )
+        self.assertEqual(result["categories"], ["recuperacao_acesso"])
+        self.assertEqual(result["priority"], "alta")
+
+    def test_transactional_payment_notice_precedes_marketing_footer(self):
+        result = classify_message(
+            "Pagamento aprovado",
+            "Serviço",
+            "Seu pedido confirmado. Veja também nossa newsletter e ofertas exclusivas.",
+            account="Drive2",
+        )
+        self.assertEqual(result["categories"], ["notificacao_servico"])
+        self.assertEqual(result["priority"], "media")
+
+    def test_security_still_precedes_recovery_and_marketing_markers(self):
+        result = classify_message(
+            "Alerta de segurança e redefinição de senha",
+            "Serviço",
+            "Security alert. Newsletter e ofertas exclusivas.",
+            account="Drive2",
+        )
+        self.assertEqual(result["categories"], ["seguranca_conta"])
+        self.assertEqual(result["priority"], "alta")
+
+
 if __name__ == "__main__":
     unittest.main()
