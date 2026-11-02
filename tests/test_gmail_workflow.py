@@ -68,6 +68,20 @@ class GmailWorkflowTests(unittest.TestCase):
         self.assertNotIn("123456", item["subject"])
         self.assertEqual(item["triage"]["categories"], ["seguranca_conta"])
 
+    def test_short_verification_code_is_redacted_in_all_returned_text_fields(self):
+        message = {"id": "m3", "threadId": "t3", "snippet": "Código de verificação: 4821", "payload": {
+            "headers": [
+                {"name": "From", "value": "Serviço <no-reply@example.com>"},
+                {"name": "Subject", "value": "Seu código de verificação 4821"},
+            ],
+            "mimeType": "text/plain",
+            "body": {"data": encoded("Use o código de segurança 4821 para continuar.")},
+        }}
+        item = build_triage_item(message, "Drive2")
+        self.assertNotIn("4821", item["body_text"])
+        self.assertNotIn("4821", item["snippet"])
+        self.assertNotIn("4821", item["subject"])
+
     def test_spotify_new_login_is_security_alert(self):
         result = classify_message("Novo login no Spotify", "Spotify <no-reply@spotify.com>", "Um novo login foi detectado.")
         self.assertEqual(result["categories"], ["seguranca_conta"])
