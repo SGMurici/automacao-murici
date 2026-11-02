@@ -13,7 +13,7 @@ from flask import Flask, jsonify, redirect, request, session
 import psycopg
 from cryptography.fernet import Fernet
 
-from gmail_workflow import build_triage_item, summarize_triage_items, summary_only_requested
+from gmail_workflow import build_triage_item, summarize_triage_items, summary_only_requested, merge_triage_summaries
 
 
 app = Flask(__name__)
@@ -1419,17 +1419,10 @@ def internal_gmail_triage_run():
         if summary_only:
             for account_result in report["accounts"].values():
                 account_result.pop("messages", None)
-        report["summary"] = {
-            "total": sum(v.get("summary", {}).get("total", 0) for v in report["accounts"].values()),
-            "categories": {},
-            "priorities": {},
-        }
-        for account_result in report["accounts"].values():
-            summary = account_result.get("summary", {})
-            for category, count in summary.get("categories", {}).items():
-                report["summary"]["categories"][category] = report["summary"]["categories"].get(category, 0) + count
-            for priority, count in summary.get("priorities", {}).items():
-                report["summary"]["priorities"][priority] = report["summary"]["priorities"].get(priority, 0) + count
+        report["summary"] = merge_triage_summaries(
+            account_result.get("summary", {})
+            for account_result in report["accounts"].values()
+        )
         app.logger.info("Triagem Gmail concluída: status=%s; contas=%s; totais=%s",
             report.get("status"), ",".join(report.get("accounts", {}).keys()),
             json.dumps({"total": report["summary"]["total"], "categories": report["summary"]["categories"]}, sort_keys=True))
