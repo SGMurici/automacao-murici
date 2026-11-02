@@ -91,7 +91,7 @@ def _redact_one_time_codes(text):
 
 _RULES = (
     ("entrevista", ("entrevista", "interview", "agendar conversa", "marcar conversa", "meet with")),
-    ("teste_seletivo", ("teste técnico", "teste tecnico", "avaliação técnica", "avaliacao tecnica", "estudo de caso", "desafio técnico", "desafio tecnico")),
+    ("teste_seletivo", ("teste técnico", "teste tecnico", "testes online", "teste online", "avaliação técnica", "avaliacao tecnica", "estudo de caso", "desafio técnico", "desafio tecnico", "aprovação nos testes", "aprovacao nos testes", "aprovado nos testes", "aprovada nos testes")),
     ("proxima_etapa", ("próxima etapa", "proxima etapa", "next step", "avançou para a próxima etapa", "avancou para a proxima etapa", "parabéns, você avançou", "parabens voce avancou", "convidamos para a próxima etapa", "convidamos para próxima etapa", "convidamos para a proxima etapa", "foi aprovado para a próxima etapa", "foi aprovada para a próxima etapa")),
     ("rejeicao", ("não seguiremos", "nao seguiremos", "não foi selecionado", "nao foi selecionado", "encerramos o processo", "not moving forward")),
     ("oferta", ("proposta salarial", "carta oferta", "offer letter", "oferta de emprego", "remuneração", "remuneracao")),
