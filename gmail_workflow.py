@@ -75,7 +75,7 @@ def _redact_one_time_codes(text):
     """Hide short-lived numeric login codes before returning message bodies."""
     value = text or ""
     code_context = re.compile(r"(?:c[oó]digo|code|login|verification|senha)", re.IGNORECASE)
-    number = re.compile(r"(?<!\\d)\\d{6,8}(?!\\d)")
+    number = re.compile(r"(?<!\d)\d{6,8}(?!\d)")
 
     def replace_if_sensitive(match):
         start, end = match.span()
@@ -86,7 +86,7 @@ def _redact_one_time_codes(text):
 
 _RULES = (
     ("entrevista", ("entrevista", "interview", "agendar conversa", "marcar conversa", "meet with")),
-    ("teste_seletivo", ("teste técnico", "teste tecnico", "avaliação técnica", "avaliacao tecnica", "case", "desafio técnico", "desafio tecnico")),
+    ("teste_seletivo", ("teste técnico", "teste tecnico", "avaliação técnica", "avaliacao tecnica", "estudo de caso", "desafio técnico", "desafio tecnico")),
     ("proxima_etapa", ("próxima etapa", "proxima etapa", "next step", "avançou", "avancou", "parabéns", "parabens")),
     ("rejeicao", ("não seguiremos", "nao seguiremos", "não foi selecionado", "nao foi selecionado", "encerramos o processo", "not moving forward")),
     ("oferta", ("proposta salarial", "carta oferta", "offer letter", "oferta de emprego", "remuneração", "remuneracao")),
@@ -108,6 +108,10 @@ def classify_message(subject="", sender="", body=""):
         "one-time passcode",
         "verification code",
         "security alert",
+        "alerta de segurança",
+        "alerta de seguranca",
+        "novo login no spotify",
+        "new login to spotify",
         "atividade suspeita",
         "atividade de segurança",
         "você compartilhou alguns dados da sua conta do google",
@@ -138,6 +142,10 @@ def classify_message(subject="", sender="", body=""):
             "external_action_allowed": False,
         }
 
+    vacancy_markers = ("alerta de vaga", "vagas que combinam", "novas vagas", "job alert", "jobs for you", "vaga recomendada")
+    if "indeed" in sender_text and any(term in text for term in vacancy_markers):
+        return {"categories": ["alerta_vaga"], "priority": "media", "requires_human_review": True, "external_action_allowed": False}
+
     matches = []
     for category, terms in _RULES:
         if any(term in text for term in terms):
@@ -145,7 +153,7 @@ def classify_message(subject="", sender="", body=""):
 
     if "oferta" in matches:
         priority = "alta"
-    elif any(item in matches for item in ("entrevista", "teste_seletivo", "proxima_etapa", "documentos")):
+    elif any(item in matches for item in ("entrevista", "teste_seletivo", "proxima_etapa")):
         priority = "alta"
     elif matches:
         priority = "media"
@@ -168,9 +176,9 @@ def build_triage_item(message, account):
         "account": account,
         "id": message.get("id"),
         "thread_id": message.get("threadId"),
-        "date": headers.get("date", ""),
-        "from": sender,
-        "subject": subject,
+        "date": _redact_one_time_codes(headers.get("date", "")),
+        "from": _redact_one_time_codes(sender),
+        "subject": _redact_one_time_codes(subject),
         "snippet": _redact_one_time_codes(message.get("snippet", "")),
         "body_text": _redact_one_time_codes(body),
         "triage": classify_message(subject, sender, body),
