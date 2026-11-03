@@ -85,7 +85,7 @@ def send_test_template(recipient, *, env=None, opener=None):
     api_version = env.get("WHATSAPP_GRAPH_API_VERSION", "").strip()
     if not token or not phone_number_id:
         raise WhatsAppConfigurationError("Credenciais do remetente de teste não configuradas.")
-    if not re.fullmatch(r"v[0-9]+\\.[0-9]+", api_version):
+    if not re.fullmatch(r"v[0-9]+\.[0-9]+", api_version):
         raise WhatsAppConfigurationError("Versão Graph API ausente ou inválida.")
 
     template_name = env.get("WHATSAPP_TEST_TEMPLATE", "hello_world").strip()
