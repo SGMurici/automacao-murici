@@ -41,3 +41,5 @@ A integração permanece somente leitura. Criação, alteração, resposta a con
 e exclusão de eventos não fazem parte desta etapa.
 
 <!-- run-gmail-triage -->
+
+<!-- Controlled Calendar read-only verification trigger -->
