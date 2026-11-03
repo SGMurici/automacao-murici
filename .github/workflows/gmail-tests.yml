@@ -5,7 +5,7 @@ name: Gmail workflow tests
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, gmail-production-integration]
   push:
     branches: [gmail-production-integration, whatsapp-cloud-api-test]
 
