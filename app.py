@@ -2117,24 +2117,42 @@ def google_callback():
 
         conn.commit()
 
+    oauth_purpose = session.get("google_oauth_purpose", "gmail")
+    calendar_validation = None
+    if oauth_purpose == "calendar_readonly" and account_name == "SG":
+        try:
+            calendar_validation = google_calendar_readonly_check("SG")
+        except Exception:
+            app.logger.exception("Falha na validacao automatica da Agenda SG apos OAuth")
+            calendar_validation = {
+                "status": "pendente",
+                "conta": "SG",
+                "somente_leitura": True,
+                "consulta_autorizada": False,
+                "detalhes_eventos_expostos": False,
+                "mensagem": "Autorizacao concluida; a consulta tecnica da Agenda precisa ser revalidada.",
+            }
+
     session.pop("google_oauth_state", None)
     session.pop("google_oauth_account", None)
     session.pop("google_oauth_purpose", None)
 
-    return jsonify(
-        {
-            "status": "google_autorizado",
-            "projeto": "Automacao Murici",
-            "conta": account_name,
-            "mensagem": (
-                "Google autorizado e token armazenado "
-                "com criptografia."
-            ),
-            "token_recebido": True,
-            "refresh_token_recebido": bool(refresh_token),
-            "expira_em": "armazenado no banco",
-        }
-    )
+    result = {
+        "status": "google_autorizado",
+        "projeto": "Automacao Murici",
+        "conta": account_name,
+        "mensagem": (
+            "Google autorizado e token armazenado "
+            "com criptografia."
+        ),
+        "token_recebido": True,
+        "refresh_token_recebido": bool(refresh_token),
+        "expira_em": "armazenado no banco",
+    }
+    if oauth_purpose == "calendar_readonly" and account_name == "SG":
+        result["calendar_readonly_check"] = calendar_validation
+
+    return jsonify(result)
 
 
 @app.post("/linkedin/publish")
