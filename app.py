@@ -1878,8 +1878,10 @@ def google_calendar_readonly_check(account_name="SG"):
         with urllib.request.urlopen(req, timeout=30) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
-        # Não propaga corpo remoto, que pode conter detalhes de autorização.
-        raise RuntimeError(f"Google Calendar recusou a consulta (HTTP {error.code}).")
+        # Retorna somente o status HTTP; nunca propaga corpo remoto ou credenciais.
+        raise RuntimeError(f"GOOGLE_CALENDAR_HTTP_{error.code}")
+    except urllib.error.URLError:
+        raise RuntimeError("GOOGLE_CALENDAR_NETWORK_ERROR")
     return {
         "status": "ok",
         "conta": "SG",
@@ -2122,15 +2124,18 @@ def google_callback():
     if oauth_purpose == "calendar_readonly" and account_name == "SG":
         try:
             calendar_validation = google_calendar_readonly_check("SG")
-        except Exception:
-            app.logger.exception("Falha na validacao automatica da Agenda SG apos OAuth")
+        except Exception as error:
+            # Registra apenas classe/código sanitizado; nunca tokens nem resposta remota.
+            safe_code = str(error) if str(error).startswith("GOOGLE_CALENDAR_") else "GOOGLE_CALENDAR_INTERNAL_ERROR"
+            app.logger.warning("Validacao Calendar SG nao concluida: %s", safe_code)
             calendar_validation = {
                 "status": "pendente",
                 "conta": "SG",
                 "somente_leitura": True,
                 "consulta_autorizada": False,
                 "detalhes_eventos_expostos": False,
-                "mensagem": "Autorizacao concluida; a consulta tecnica da Agenda precisa ser revalidada.",
+                "codigo_diagnostico": safe_code,
+                "mensagem": "Autorizacao concluida; a consulta tecnica da Agenda precisa ser corrigida conforme o codigo de diagnostico.",
             }
 
     session.pop("google_oauth_state", None)
