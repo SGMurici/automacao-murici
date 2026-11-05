@@ -32,3 +32,16 @@ O horário de referência é UTC, preservando o instante absoluto do timestamp p
 
 ## Testes
 `python -m unittest tests/test_image_retention.py`
+
+## Integração de leitura no backend de teste
+Foi adicionada a rota autenticada `GET /google-drive/image-retention/dry-run`.
+Ela consulta somente:
+- `project_assets.drive_file_id`, `mime_type`, `post_id` e `asset_status`;
+- `editorial_posts.status` e `published_at`, por meio de `project_assets.post_id = editorial_posts.id`.
+
+A rota considera somente ativos com `asset_status = 'stored'` e referência de Drive presente. O planejador exclui itens sem publicação confirmada, vínculo editorial válido ou timestamp com timezone. A resposta informa `drive_api_called: false` e `database_modified: false`.
+
+A existência das colunas e da FK foi verificada por leitura do esquema da branch de testes Neon `murici-controlled-tests-20261024`. Nenhuma consulta de dados de clientes foi feita e nenhuma alteração SQL foi executada.
+
+## Validação pendente
+A branch GitHub não está implantada no serviço Render de testes; portanto, a rota ainda não foi executada via HTTP. Os testes unitários foram adicionados, mas a execução CI ainda não foi observada. Não há operação de exclusão implementada.
