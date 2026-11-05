@@ -1115,6 +1115,52 @@ def require_publish_secret():
     return None
 
 
+
+@app.get("/google-drive/image-retention/dry-run")
+def google_drive_image_retention_dry_run():
+    """Gera relatório de elegibilidade de imagens sem alterar Drive ou banco."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+
+    try:
+        from image_retention import plan_image_retention
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        pa.drive_file_id,
+                        pa.mime_type,
+                        pa.post_id AS editorial_post_id,
+                        ep.status AS publication_status,
+                        ep.published_at
+                    FROM project_assets AS pa
+                    LEFT JOIN editorial_posts AS ep
+                        ON ep.id = pa.post_id
+                    WHERE pa.asset_status = 'stored'
+                      AND pa.drive_file_id IS NOT NULL
+                    ORDER BY pa.id ASC;
+                    """
+                )
+                columns = [item.name for item in cur.description]
+                assets = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+        report = plan_image_retention(assets)
+        report["source"] = "postgresql_project_assets_join_editorial_posts"
+        report["database_rows_evaluated"] = len(assets)
+        report["drive_api_called"] = False
+        report["database_modified"] = False
+        return jsonify(report), 200
+    except Exception:
+        app.logger.exception("Falha ao gerar dry-run da retenção de imagens")
+        return safe_error_response(
+            "Não foi possível gerar o relatório de retenção. Nenhum arquivo foi alterado.",
+            500,
+        )
+
+
 def parse_scheduled_for(value):
     """
     Converte uma data ISO 8601 em datetime com timezone.
