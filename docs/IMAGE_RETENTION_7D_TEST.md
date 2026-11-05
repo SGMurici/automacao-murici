@@ -71,3 +71,10 @@ A resposta `already_deleted` só pode ser emitida pelo adaptador Drive após res
 Os testes agora cobrem lock, metadados ausentes, idempotência explícita e auditoria. Nenhum workflow GitHub Actions foi encontrado para o commit mais recente; portanto, os testes não estão declarados como executados ou aprovados.
 
 A rota operacional continua deliberadamente não integrada. A integração real depende de confirmar que o serviço de testes está ligado à branch Neon `murici-controlled-tests-20261024`, validar a pasta de teste e garantir uma chave de habilitação destrutiva desativada por padrão. Até isso acontecer, não há chamada DELETE disponível pela rota de retenção.
+
+
+## CI automatizada
+
+Foi criado `.github/workflows/image-retention-tests.yml`. O workflow executa `python -m unittest discover -s tests -p "test_image_retention*.py" -v` em Python 3.12 quando arquivos do planejador, executor ou testes são alterados na branch de trabalho, e também em pull requests para `main`. A criação do workflow foi registrada; a execução e o resultado ainda precisam ser confirmados no GitHub Actions.
+
+A rota de execução continua não integrada e não há deploy. A integração depende de confirmar o workspace Render e o ambiente de testes, além de configurar explicitamente o bloqueio por ambiente/branch e a pasta de teste. Nenhuma operação destrutiva foi executada.
