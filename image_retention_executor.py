@@ -65,7 +65,7 @@ def execute_one_image_deletion(
     parents = metadata.get("parents") or []
     if (
         metadata.get("id") != file_id
-        or metadata.get("trashed") is True
+        or metadata.get("trashed") is not False
         or not str(metadata.get("mimeType") or "").lower().startswith("image/")
         or test_folder_id not in parents
     ):
@@ -80,7 +80,7 @@ def execute_one_image_deletion(
         raise RetentionExecutionError("Drive did not confirm permanent deletion.")
 
     # This callback must update only project_assets, with a guarded WHERE clause.
-    updated = mark_deleted(file_id, datetime.now(timezone.utc))
+    deleted_at = datetime.now(timezone.utc)\n    updated = mark_deleted(file_id, deleted_at)
     if updated is not True:
         raise RetentionExecutionError(
             "Drive deletion succeeded but database marking failed; manual reconciliation required."
@@ -90,7 +90,7 @@ def execute_one_image_deletion(
         "status": "deleted",
         "drive_file_id": file_id,
         "editorial_post_id": current.get("editorial_post_id"),
-        "deleted_at": datetime.now(timezone.utc).isoformat(),
+        "deleted_at": deleted_at.isoformat(),
         "drive_delete_result": delete_result,
         "preserved": [
             "editorial_posts",
