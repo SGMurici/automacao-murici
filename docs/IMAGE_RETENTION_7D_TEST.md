@@ -60,3 +60,14 @@ Foi adicionado `image_retention_executor.py`, com dependências injetadas para l
 Foram adicionados testes em `tests/test_image_retention_executor.py` cobrindo caminho válido e falhas de segurança. Os testes ainda precisam ser executados em CI ou ambiente Python controlado. O executor ainda não foi conectado a uma rota HTTP nem habilitado em serviço; não há execução operacional, exclusão real, deploy ou alteração de produção.
 
 Antes de conectar a rota, ainda é necessário implementar bloqueio transacional/concorrência durante a operação, política explícita para HTTP 404 (arquivo já ausente), auditoria de reconciliação e um modo de simulação que nunca chame DELETE.
+
+
+## Proteções adicionais do executor
+
+O executor agora exige um gerenciador de lock por ativo, mantido durante releitura, validação, chamada ao Drive e atualização do estado. A integração deverá implementar esse callback com lock transacional/linha no banco de testes, impedindo execuções concorrentes para o mesmo ativo.
+
+A resposta `already_deleted` só pode ser emitida pelo adaptador Drive após resposta HTTP 404 autoritativa para o mesmo ID; outros erros de rede/autorização não podem ser convertidos nesse estado. O executor registra auditoria de exclusão concluída e de reconciliação necessária quando o Drive exclui mas o banco não confirma a atualização.
+
+Os testes agora cobrem lock, metadados ausentes, idempotência explícita e auditoria. Nenhum workflow GitHub Actions foi encontrado para o commit mais recente; portanto, os testes não estão declarados como executados ou aprovados.
+
+A rota operacional continua deliberadamente não integrada. A integração real depende de confirmar que o serviço de testes está ligado à branch Neon `murici-controlled-tests-20261024`, validar a pasta de teste e garantir uma chave de habilitação destrutiva desativada por padrão. Até isso acontecer, não há chamada DELETE disponível pela rota de retenção.
