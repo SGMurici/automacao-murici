@@ -1,0 +1,36 @@
+name: Image retention safety tests
+
+on:
+  pull_request:
+    branches:
+      - main
+      - drive5-art-upload-test
+    paths:
+      - "image_retention.py"
+      - "image_retention_executor.py"
+      - "tests/test_image_retention*.py"
+      - ".github/workflows/image-retention-tests.yml"
+  push:
+    branches:
+      - drive-image-retention-7d-test
+    paths:
+      - "image_retention.py"
+      - "image_retention_executor.py"
+      - "tests/test_image_retention*.py"
+      - ".github/workflows/image-retention-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run retention unit tests
+        run: python -m unittest discover -s tests -p "test_image_retention*.py" -v
