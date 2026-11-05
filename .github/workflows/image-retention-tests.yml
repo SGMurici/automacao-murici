@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - main
+      - drive5-art-upload-test
     paths:
       - "image_retention.py"
       - "image_retention_executor.py"
