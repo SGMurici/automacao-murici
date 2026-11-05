@@ -78,3 +78,12 @@ A rota operacional continua deliberadamente não integrada. A integração real 
 Foi criado `.github/workflows/image-retention-tests.yml`. O workflow executa `python -m unittest discover -s tests -p "test_image_retention*.py" -v` em Python 3.12 quando arquivos do planejador, executor ou testes são alterados na branch de trabalho, e também em pull requests para `main`. A criação do workflow foi registrada; a execução e o resultado ainda precisam ser confirmados no GitHub Actions.
 
 A rota de execução continua não integrada e não há deploy. A integração depende de confirmar o workspace Render e o ambiente de testes, além de configurar explicitamente o bloqueio por ambiente/branch e a pasta de teste. Nenhuma operação destrutiva foi executada.
+
+
+## Resultado da primeira execução de CI
+
+Em 2026-11-05, o GitHub Actions executou o workflow no evento `push`, commit `a220ed95dafef8c0e7ffd7b7d1823031289c2d65`. O job `unit-tests` e a etapa `Run retention unit tests` terminaram com conclusão `success`. Execução: https://github.com/SGMurici/automacao-murici/actions/runs/42060328579.
+
+O gatilho de pull request foi ampliado para incluir também a branch-base atual `drive5-art-upload-test`, além de `main`, evitando que o PR #6 fique fora do CI por usar essa branch-base. A alteração do gatilho está no commit `717917d516938bd8db755ebe6877db9b5b788bad`; a execução desse novo commit ainda deve ser consultada separadamente.
+
+O resultado comprova os testes unitários automatizados do planejador/executor na versão testada. Não comprova integração com Render, Neon ou Google Drive, nem autoriza exclusão real.
