@@ -45,3 +45,18 @@ A existência das colunas e da FK foi verificada por leitura do esquema da branc
 
 ## Validação pendente
 A branch GitHub não está implantada no serviço Render de testes; portanto, a rota ainda não foi executada via HTTP. Os testes unitários foram adicionados, mas a execução CI ainda não foi observada. Não há operação de exclusão implementada.
+
+
+## Executor de exclusão permanente — implementação isolada
+
+Foi adicionado `image_retention_executor.py`, com dependências injetadas para leitura atual do registro, leitura de metadados do Drive, exclusão permanente e atualização do estado do ativo. O módulo:
+- revalida o registro e exige `asset_status = 'stored'`;
+- recalcula a elegibilidade com a regra fixa de sete dias;
+- exige identidade do arquivo, MIME type de imagem e presença na pasta de testes configurada;
+- só atualiza o estado do ativo após confirmação da exclusão pelo Drive;
+- em caso de falha ao atualizar o banco depois da exclusão no Drive, informa necessidade de reconciliação;
+- não recebe nem altera registros editoriais, fila ou métricas do LinkedIn.
+
+Foram adicionados testes em `tests/test_image_retention_executor.py` cobrindo caminho válido e falhas de segurança. Os testes ainda precisam ser executados em CI ou ambiente Python controlado. O executor ainda não foi conectado a uma rota HTTP nem habilitado em serviço; não há execução operacional, exclusão real, deploy ou alteração de produção.
+
+Antes de conectar a rota, ainda é necessário implementar bloqueio transacional/concorrência durante a operação, política explícita para HTTP 404 (arquivo já ausente), auditoria de reconciliação e um modo de simulação que nunca chame DELETE.
