@@ -949,7 +949,21 @@ def require_publish_secret():
             401,
         )
 
-    if not secrets.compare_digest(provided_secret, PUBLISH_SECRET):
+    try:
+        provided_secret_bytes = provided_secret.encode("ascii")
+        expected_secret_bytes = PUBLISH_SECRET.encode("ascii")
+    except UnicodeEncodeError:
+        return (
+            jsonify(
+                {
+                    "status": "erro",
+                    "mensagem": "Chave de publicacao invalida.",
+                }
+            ),
+            403,
+        )
+
+    if not secrets.compare_digest(provided_secret_bytes, expected_secret_bytes):
         return (
             jsonify(
                 {
