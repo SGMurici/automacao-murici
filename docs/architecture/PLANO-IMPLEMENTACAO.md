@@ -4,7 +4,7 @@
 - [x] Criar branch isolada a partir da main.
 - [x] Registrar decisões aprovadas de agendamento e e-mail.
 - [ ] Inventariar rotas, dependências, configuração e modelo atual de fila.
-- [ ] Identificar contratos e limitações atuais de autenticação, sessão e persistência.
+- [x] Identificar contratos e limitações atuais de autenticação, sessão e persistência.
 - [ ] Definir ambiente de teste isolado sem credenciais ou dados de produção.
 
 ## Fase 1 — Contratos e testes do agendador
@@ -25,10 +25,10 @@
 - [ ] Garantir ausência de operações de escrita na API de e-mail.
 
 ## Fase 3 — Identidade e isolamento
-- [ ] Definir identidade individual e autorização por recurso.
-- [ ] Cobrir isolamento entre usuários em todos os endpoints e tarefas assíncronas.
-- [ ] Separar titularidade de dados de cobrança familiar.
-- [ ] Testar revogação de sessão e consentimento OAuth.
+- [x] Definir contrato de identidade individual e autorização por recurso (desenho + helpers isolados; integração pendente).
+- [ ] Integrar isolamento em todos os endpoints e tarefas assíncronas (não iniciado; exige camada real de autenticação).
+- [x] Definir separação entre titularidade de dados e cobrança familiar.
+- [ ] Implementar e testar revogação de sessão e consentimento OAuth.
 
 ## Fase 4 — Validação e entrega
 - [ ] Rodar lint, testes, análise de dependências e revisão de segurança.
