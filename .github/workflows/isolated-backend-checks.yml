@@ -1,0 +1,28 @@
+name: Isolated backend checks
+
+on:
+  push:
+    branches:
+      - integracao-base-2026-11-07
+  pull_request:
+    branches:
+      - main
+      - integracao-base-2026-11-07
+
+permissions:
+  contents: read
+
+jobs:
+  python-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile Python sources
+        run: python -m compileall -q scheduler_policy.py tests
+      - name: Run isolated unit tests
+        run: python -m unittest discover -s tests -v
