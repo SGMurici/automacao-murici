@@ -81,3 +81,15 @@ Inspeção somente de leitura das PRs #1, #6 e #7, patches, metadados, arquivos 
 
 ### Resultado
 A PR #6 tem CI unitário aprovado, mas não está pronta para integração devido à divergência de schema/manifesto e à existência de executor destrutivo não operacional. A PR #7 contém correção pontual, ainda sem CI observado. A PR #1 permanece uma proposta ampla com dependências de OAuth, ownership e hardening de recuperação. Nenhuma dessas PRs foi integrada nesta etapa.
+
+
+### Verificação adicional da branch-base da PR #6 (08/11/2026)
+- O `app.py` da base `drive5-art-upload-test` não contém referência a `project_assets`; o `app.py` do head da PR #6 passa a consultar essa tabela.
+- O `app.py` da PR #1 cria/usa `editorial_image_assets`, não `project_assets`. A tabela proposta pela PR #1 guarda `post_number` e `version`, enquanto a rota da PR #6 espera `post_id`, `asset_status` e associação direta com `editorial_posts`.
+- Portanto, a incompatibilidade não é apenas entre produção e branch: o código-base identificado da PR #6 também não demonstra a existência do manifesto que sua rota/migration pressupõem. A migration #6 não cria `project_assets`; apenas tenta alterar sua constraint e adicionar `deleted_at`.
+- Classificação: bloqueio de integração confirmado por inspeção estática. É necessário escolher e migrar para um único contrato de manifesto, com FK editorial e estados coerentes, antes de reutilizar o planejador de retenção. Não aplicar migration nem conectar executor.
+
+### Observação adicional — reconciliação de upload da PR #1
+- A listagem da pasta Drive retorna no máximo 10 páginas e expõe indicador `truncated`; a reconciliação usa essa lista para identificar arquivos ausentes/não registrados.
+- Quando `truncated=true`, a reconciliação não pode ser tratada como inventário completo: arquivos fora das páginas lidas podem ser classificados incorretamente como ausentes ou a lista de órfãos pode ficar incompleta. O consumidor deve interromper a conclusão de reconciliação e paginar até o fim ou marcar explicitamente o resultado como parcial.
+- A PR reconhece limite de 1.000 arquivos; falta um fluxo de continuação/reconciliação incremental com checkpoint, deduplicação e recuperação de órfãos após upload parcial.
