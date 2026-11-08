@@ -19,7 +19,7 @@ A tela deve começar deixando explícito, em linguagem simples e destacada:
 
 Não prometer anonimato absoluto sem validação técnica. O sistema deve aplicar minimização, remoção de identificadores, limiares mínimos de agregação e revisão contra reidentificação antes de disponibilizar qualquer padrão.
 
-### 1.2 O que são “métricas” neste contexto
+### 1.2 Exemplo visual obrigatório\n\n![Ilustração: dados privados do cliente versus padrões analíticos agregados](../assets/consentimento-metricas-exemplo.svg)\n\n### 1.3 O que são “métricas” neste contexto
 
 Explicar que métricas compartilháveis são conclusões estruturais sobre formatos, características e desempenho agregado de conteúdo — não os conteúdos dos clientes.
 
@@ -40,13 +40,13 @@ Exemplo de resultado agregado, sempre identificado como ilustrativo até que exi
 
 Não apresentar o exemplo como resultado real do produto, nem como causalidade comprovada, sem estudo efetivamente realizado, metodologia, período, amostra e validação. Na interface, usar rótulo como “Exemplo ilustrativo” enquanto não houver estudo verificável.
 
-### 1.3 Por que compartilhar
+### 1.4 Por que compartilhar
 
 A base coletiva ajuda a atualizar recomendações sem exigir que cada cliente repita todos os testes. Preferências e tendências mudam: uma cor que chama atenção hoje pode se tornar repetitiva amanhã. Resultados agregados e autorizados permitem que a inteligência evolua para todos os participantes sem expor quem contribuiu.
 
 A base deve permanecer atualizada por novas observações elegíveis, com data, tamanho de amostra, período, confiança/limitações e expiração ou reavaliação de padrões antigos. Não tratar um padrão histórico como regra permanente.
 
-### 1.4 Escolha explícita
+### 1.5 Escolha explícita
 
 Apresentar duas opções equivalentes e não pré-selecionadas:
 
@@ -55,7 +55,7 @@ Apresentar duas opções equivalentes e não pré-selecionadas:
 
 A escolha deve ser individual, granular para este propósito e revogável. “Discordo” não impede o cliente de receber recomendações derivadas da base coletiva, desde que não haja uso de seus próprios dados para alimentá-la.
 
-### 1.5 Fluxo técnico e governança
+### 1.6 Fluxo técnico e governança
 
 - Separar fisicamente/logicamente identidade e dataset analítico.
 - Manter a tabela de consentimento vinculada ao usuário em domínio de identidade; a camada analítica recebe somente registros elegíveis, sem identificador reversível do cliente.
