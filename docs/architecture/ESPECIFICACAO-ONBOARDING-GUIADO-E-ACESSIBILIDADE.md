@@ -181,3 +181,44 @@ A assistente de orientação (nome oficial: Mentora Lyla) poderá reconhecer e c
 ## Atualização de decisão — nome oficial confirmado (08/11/2026)
 
 O usuário confirmou a substituição definitiva de **Mentora Mila** por **Mentora Lyla**. A decisão anterior de Mentora Mila fica preservada apenas como histórico de aprovação inicial, posteriormente substituída. A justificativa final foi a sonoridade de “Mentora Lyla”, considerada melhor pelo usuário. A pronúncia poderá ser apresentada como “Lyla”; não presumir pronúncia alternativa sem validação. A marca principal permanece **Camarada Murici**. A alteração é documental; não houve implementação no Lovable, consumo de créditos, publicação ou deploy.
+
+
+## Revisão de decisão — fronteiras definitivas entre Mentora Lyla e Camarada Murici (08/11/2026)
+
+Esta revisão substitui qualquer formulação anterior que sugira encaminhamento rotineiro do cliente entre as duas assistentes. Encaminhamentos sem necessidade concreta devem ser evitados: geram atrito, repetição e cansaço. Cada assistente responde diretamente dentro de seu próprio escopo; não há transferência de conversa como etapa padrão.
+
+### Mentora Lyla — mentora e auxiliar de carreira
+
+A Lyla é responsável pela orientação do cliente e pela comunicação de informações relevantes de carreira e do próprio aplicativo. Seu escopo inclui:
+- Ensinar o cliente a navegar e utilizar o aplicativo: telas, botões, indicadores, funcionalidades e tutoriais contextuais.
+- Conduzir onboarding, ajuda contextual e explicações de novidades do produto.
+- Atuar como auxiliar de carreira, comunicando e explicando informações relevantes como atualizações de processos seletivos, oportunidades e orientações de desenvolvimento profissional.
+- Apresentar mensagens informativas no topo do aplicativo (banner/faixa de novidades), incluindo atualizações de processos seletivos, avisos sobre situações como publicação sem validação e mudanças relevantes nos processos do aplicativo.
+- Reconhecer conquistas e parabenizar o cliente por evolução, habilidades, competências e marcos de score confirmados.
+
+A Lyla comunica, contextualiza e orienta. Não é responsável por executar métricas, preparar/publicar conteúdo ou operar automações editoriais.
+
+### Camarada Murici — automação
+
+O Murici é responsável pela automação e execução operacional do aplicativo, incluindo:
+- Métricas, coleta, organização e análises.
+- Processos editoriais, preparação e automação de publicações.
+- Agendamentos, filas, execuções e demais rotinas automatizadas.
+
+Tudo que envolve métricas, publicações e automação pertence ao escopo do Camarada Murici. A comunicação de orientação e de novidades ao cliente pertence à Lyla, ainda que a informação comunicada tenha sido produzida por um processo automatizado do Murici.
+
+### Regra de interação entre assistentes
+
+- Não encaminhar o cliente de uma assistente para a outra por conveniência interna, divisão técnica ou simples continuidade de fluxo.
+- Cada assistente deve resolver diretamente o que estiver dentro de seu escopo.
+- Integração interna entre componentes pode ocorrer sem expor ao cliente uma transferência de conversa.
+- Só considerar encaminhamento visível quando houver uma necessidade concreta que não possa ser resolvida no escopo atual; não é comportamento padrão.
+- Não duplicar mensagens, perguntas ou tarefas entre as assistentes.
+
+### Mensagens no topo do aplicativo
+
+A faixa/banner de novidades é um canal de comunicação da Mentora Lyla. O conteúdo pode ser alimentado por eventos e dados gerados pelas automações do Murici, mas a apresentação, explicação e contextualização para o cliente ficam com a Lyla. Exemplos incluem atualizações de processos seletivos, avisos sobre publicações sem validação e novidades relevantes do aplicativo. Não apresentar como fato uma atualização que não tenha sido confirmada pela fonte correspondente.
+
+### Estado da decisão
+
+Decisão funcional confirmada pelo usuário em 08/11/2026. Esta revisão prevalece sobre trechos anteriores que atribuam métricas/publicações à Lyla ou proponham encaminhamento genérico entre assistentes. Registro documental apenas: não implementado no Lovable, sem consumo de créditos, deploy ou publicação.
