@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+<title id="title">O que permanece privado e o que pode contribuir para métricas coletivas</title>
+<desc id="desc">À esquerda, dados privados do cliente não são compartilhados. À direita, somente padrões analíticos desidentificados e agregados podem contribuir mediante consentimento.</desc>
+<rect width="1200" height="680" rx="28" fill="#f7f8fa"/>
+<text x="600" y="64" text-anchor="middle" font-family="Arial,sans-serif" font-size="34" font-weight="700" fill="#172033">Sua identidade fica separada da inteligência coletiva</text>
+<text x="600" y="104" text-anchor="middle" font-family="Arial,sans-serif" font-size="19" fill="#526078">Exemplo visual do que não sai da sua conta e do que pode ser agregado</text>
+<rect x="55" y="150" width="500" height="440" rx="22" fill="#fff" stroke="#d7dee8" stroke-width="3"/>
+<rect x="645" y="150" width="500" height="440" rx="22" fill="#fff" stroke="#b8d8c8" stroke-width="3"/>
+<rect x="85" y="180" width="440" height="58" rx="14" fill="#e9edf3"/>
+<text x="305" y="218" text-anchor="middle" font-family="Arial,sans-serif" font-size="25" font-weight="700" fill="#26344a">PRIVADO — NÃO COMPARTILHADO</text>
+<g font-family="Arial,sans-serif" font-size="22" fill="#26344a">
+<text x="105" y="292">• Identidade e nome do cliente</text>
+<text x="105" y="344">• Empresa, conta e contatos</text>
+<text x="105" y="396">• Textos, imagens e publicações</text>
+<text x="105" y="448">• Arquivos e dados estratégicos</text>
+</g>
+<rect x="85" y="490" width="440" height="66" rx="14" fill="#fceeee"/>
+<text x="305" y="531" text-anchor="middle" font-family="Arial,sans-serif" font-size="21" font-weight="700" fill="#9a3434">Permanece na sua conta</text>
+<rect x="675" y="180" width="440" height="58" rx="14" fill="#e4f3eb"/>
+<text x="895" y="218" text-anchor="middle" font-family="Arial,sans-serif" font-size="25" font-weight="700" fill="#205b3d">AGREGADO — COM AUTORIZAÇÃO</text>
+<g font-family="Arial,sans-serif" font-size="21" fill="#26344a">
+<text x="695" y="292">• Formato: passo a passo ou estudo de caso</text>
+<text x="695" y="344">• Tema amplo: processos computadorizados</text>
+<text x="695" y="396">• Padrão de engajamento em grupo</text>
+</g>
+<rect x="695" y="430" width="400" height="112" rx="14" fill="#f0f7f3" stroke="#b8d8c8" stroke-width="2"/>
+<text x="895" y="466" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" fill="#205b3d">EXEMPLO DE PADRÃO</text>
+<text x="895" y="500" text-anchor="middle" font-family="Arial,sans-serif" font-size="19" font-weight="700" fill="#205b3d">“Passo a passo gera mais</text>
+<text x="895" y="526" text-anchor="middle" font-family="Arial,sans-serif" font-size="19" font-weight="700" fill="#205b3d">engajamento positivo”</text>
+<path d="M570 360 H630" stroke="#8793a5" stroke-width="5" stroke-linecap="round"/>
+<path d="M616 346 L632 360 L616 374" fill="none" stroke="#8793a5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="600" y="630" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" fill="#526078">A contribuição só acontece após escolha explícita: CONCORDO ou DISCORDO.</text>
+</svg>
