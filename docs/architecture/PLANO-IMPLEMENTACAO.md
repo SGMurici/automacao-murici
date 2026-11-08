@@ -3,7 +3,7 @@
 ## Fase 0 — Segurança e inventário
 - [x] Criar branch isolada a partir da main.
 - [x] Registrar decisões aprovadas de agendamento e e-mail.
-- [ ] Inventariar rotas, dependências, configuração e modelo atual de fila.
+- [x] Inventariar rotas, dependências, configuração e modelo atual de fila (leitura estática; schema real do banco ainda pendente).
 - [x] Identificar contratos e limitações atuais de autenticação, sessão e persistência.
 - [ ] Definir ambiente de teste isolado sem credenciais ou dados de produção.
 
