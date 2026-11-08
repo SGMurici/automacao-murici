@@ -29,9 +29,10 @@ A experiência deve lembrar os tutoriais interativos de jogos (ex.: Clash of Cla
 
 ## Assistente e identidade
 - A personagem/assistente será uma guia de uso da plataforma, com identidade própria e linguagem simples, respeitosa e adulta. Não deve ser apresentada como subordinada, secretária ou como alguém que exige interação social.
-- Nome recomendado após pesquisa inicial: **Mila**. Apresentação sugerida: “Mila — assistente da Automação Murici”; em comunicação mais informal, “Mila, sua guia na Automação Murici”.
-- A marca principal continua sendo **Camarada Murici**. Mila é a identidade feminina da experiência de ajuda/tutorial, não uma substituição do nome do serviço ou da IA principal.
-- A recomendação é provisória até validação de disponibilidade de marca/domínio e eventual análise jurídica. O nome não deve ser tratado como marca registrada.
+- Nome e identidade aprovados pelo usuário em 08/11/2026: **Mentora Mila**.
+- A marca principal continua sendo **Camarada Murici**. As identidades têm papéis complementares: Camarada Murici representa companheirismo, parceria e execução; Mentora Mila representa seriedade, conhecimento, didática e orientação, ensinando, explicando, demonstrando e conduzindo o cliente pelas funcionalidades.
+- “Mentora” foi escolhido por transmitir profissionalismo e remeter a uma professora/mentora que ensina algo, sem colocar a assistente em posição de subordinação. “Mila Descomplica” foi considerada alternativa, mas não escolhida.
+- A aprovação do nome no produto não equivale a registro de marca. Disponibilidade no INPI e de domínios ainda precisa ser verificada antes de eventual proteção/uso jurídico exclusivo.
 
 ## Preferências de comunicação: áudio ou texto
 - O cliente escolhe explicitamente como prefere receber as orientações: **somente texto**, **áudio sob solicitação** ou **áudio automático**.
@@ -124,7 +125,7 @@ Registrar feedback mínimo para melhorar a ajuda, sem coletar conteúdo desneces
 - Testes de usabilidade com pessoas com baixa alfabetização são essenciais; não presumir que a solução de áudio seja suficiente por si só.
 
 ## Decisões ainda abertas
-- Aprovação final do nome Mila e validação de marca/domínio.
+- Validação de disponibilidade de marca/domínio para Mentora Mila antes de eventual registro ou alegação de exclusividade.
 - Aparência visual e personalidade da personagem.
 - Fornecedor, tipo de voz, idioma(s), voz humana/sintética e custos.
 - Política de reapresentação automática após atualizações e por período.
