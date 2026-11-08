@@ -136,3 +136,41 @@ Registrar feedback mínimo para melhorar a ajuda, sem coletar conteúdo desneces
 
 ## Limites desta entrega
 Esta atualização altera somente a especificação documental. Nenhum código, tela, áudio, personagem, serviço externo ou crédito Lovable foi alterado/consumido. Nenhuma publicação ou deploy foi realizado.
+
+
+## Reconhecimento de conquistas e marcos de score — requisito solicitado em 08/11/2026
+
+A assistente de orientação (atualmente nomeada Mentora Mila; nome em reavaliação pelo usuário) poderá reconhecer e celebrar a evolução do cliente por meio de mensagens contextuais de parabéns.
+
+### Eventos que podem gerar reconhecimento
+- Atingir um marco de score pela primeira vez.
+- Evoluir o score associado a uma atualização realizada.
+- Desenvolver ou registrar uma habilidade ou competência, nova ou já existente, conforme as regras do sistema de pontuação.
+- Alcançar uma nova faixa de pontuação ou superar um recorde pessoal, quando essa informação estiver disponível e validada.
+
+### Marcos iniciais de pontuação
+10, 20, 50, 100, 150, 200, 300, 500, 750, 950, 1000, 1200, 1300, 1500, 1800, 2000, 2500, 3000, 3500, 4000, 4500 e 5000 pontos. A lista é extensível: novos marcos podem ser acrescentados sem alteração estrutural do produto.
+
+### Comportamento e linguagem
+- Ao alcançar um marco, apresentar uma mensagem curta e positiva, informando o valor exato atingido.
+- Variar os qualificativos para evitar repetição: “incrível”, “fabulosa”, “excelente”, “notável”, “impressionante”, “expressiva”, “extraordinária”, “consistente”, “admirável” e equivalentes.
+- Exemplo de estrutura: “Parabéns! Seu score atingiu a marca de 100 pontos. Uma conquista notável! Continue assim!”
+- O texto deve soar profissional, encorajador e adulto; evitar exagero, infantilização ou elogio automático sem fundamento.
+- Não elogiar como conquista um valor que não tenha sido efetivamente calculado e confirmado pelo sistema.
+- Não repetir a mesma comemoração a cada carregamento da tela. Registrar que o marco já foi celebrado para aquele usuário e ciclo/versão de pontuação.
+- Se o usuário ultrapassar vários marcos de uma só vez, evitar uma sequência excessiva de notificações: priorizar o marco mais alto atingido e, quando útil, mencionar a evolução desde o marco anterior.
+- As mensagens devem respeitar preferências de comunicação: texto sempre disponível; áudio somente conforme a escolha do cliente (somente texto, áudio sob solicitação ou áudio automático).
+
+### Critérios de aceite
+- Cada marco é celebrado uma única vez por usuário, conforme a regra de ciclo definida para o score.
+- O valor apresentado corresponde ao score confirmado.
+- Marcos e mensagens são configuráveis e extensíveis.
+- Atualizações, habilidades e competências podem ser reconhecidas sem duplicar a comemoração do mesmo marco.
+- A experiência não gera notificações intrusivas nem expõe score a outros usuários.
+- A funcionalidade só é apresentada quando o cálculo e a origem do score estiverem implementados e auditáveis.
+
+### Pendências
+- Confirmar a regra de cálculo e a relação entre score geral, score por atualização e score por habilidade/competência.
+- Definir se os marcos são globais, por categoria ou ambos.
+- Definir se um marco pode ser celebrado novamente após perda e recuperação de pontos, mudança de ciclo ou revisão da fórmula.
+- Definir canal de exibição (mensagem contextual, central de conquistas ou ambos) e controles de frequência.
