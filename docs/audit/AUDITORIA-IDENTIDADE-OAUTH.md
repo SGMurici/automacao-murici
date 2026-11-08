@@ -36,3 +36,48 @@ Método: leitura estática de app.py; nenhuma chamada externa ou consulta ao ban
 - Mapear todas as rotas e operações que leem/escrevem recursos pessoais.
 - Revisar configuração de cookies, CSRF, CORS, proxy trust e rate limiting.
 - Definir desenho OAuth state com TTL, consumo atômico e PKCE conforme o fluxo/provedor.
+
+
+## Continuidade da auditoria — revisão das PRs de armazenamento, retenção e autenticação (08/11/2026)
+
+### Escopo e método
+Inspeção somente de leitura das PRs #1, #6 e #7, patches, metadados, arquivos alterados, workflow e código versionado. Nenhum workflow foi disparado manualmente; nenhuma branch, PR, migration, banco, Drive, OAuth ou serviço foi alterado.
+
+### PR #6 — retenção de imagens após sete dias
+- PR permanece aberta e em Draft; base `drive5-art-upload-test`, head `drive-image-retention-7d-test`, 17 commits e 8 arquivos alterados.
+- O workflow `Image retention safety tests` teve execução confirmada no commit `01c10d99ce7b9eb1c87b74940bde2dc244487f6c`, run #42062070416. Job `unit-tests` e etapa `Run retention unit tests` concluíram com sucesso.
+- O planejador exige ID único de Drive, MIME `image/*`, vínculo editorial, status `publicado`, timestamp com timezone e sete dias completos.
+- A rota `GET /google-drive/image-retention/dry-run` é autenticada pelo segredo operacional e declara não chamar Drive nem modificar banco.
+- O módulo `image_retention_executor.py` contém uma função de exclusão permanente com callbacks injetados, lock por ativo, validação de pasta de teste e auditoria de reconciliação. Não está conectada a rota HTTP nem habilitada em serviço. Os testes usam callbacks/mocks; não comprovam operação real.
+- A migration adiciona estado `deleted` e `deleted_at` em `public.project_assets`. A rota também consulta `project_assets`.
+
+**Bloqueio estrutural:** a inspeção anterior do Neon production não encontrou `public.project_assets`; a PR #1, por sua vez, cria um manifesto chamado `editorial_image_assets`, com colunas e modelo diferentes. Não há evidência suficiente nesta auditoria de que a branch-base `drive5-art-upload-test` contenha uma tabela `project_assets` compatível com a migration e a rota da PR #6. Não integrar nem aplicar migration até reconciliar nome, schema, ownership, FK editorial e origem dos dados. O sucesso do CI valida apenas os testes unitários do commit testado.
+
+### PR #1 — armazenamento de imagens e ampliação Google Workspace
+- Permanece aberta e em Draft, com base `main` e head `ai-code-executor-bootstrap`.
+- O patch cria `editorial_image_assets` por SQL defensivo no código, com unicidade por `(post_number, version)`, hash e metadados; não cria `project_assets`.
+- O código inclui upload Drive com flag de escrita desligada por padrão e reconciliação somente leitura. Não houve upload real nem autorização OAuth nesta auditoria.
+- O conjunto de escopos documentado/codificado nessa proposta inclui Drive read/write limitado, Gmail read-only e Gmail send. O escopo `gmail.send` amplia capacidade de envio e não deve ser tratado como autorização operacional por si só.
+- A proposta permite três nomes de conta Google e fluxo Gmail. Continua bloqueada pela ausência de identidade individual/ownership e isolamento multiusuário, conforme achados anteriores.
+- A PR descreve recuperação/reconciliação limitada aos primeiros 1.000 arquivos e reconhece que órfãos após falhas parciais exigem hardening adicional.
+
+### PR #7 — header X-Publish-Secret não ASCII
+- Permanece aberta e em Draft, com base `main` e head `fix/publish-secret-ascii-header`.
+- O patch codifica header e segredo em ASCII antes de chamar `secrets.compare_digest`; rejeita Unicode não ASCII com HTTP 403 e preserva 401 para ausência.
+- Foram adicionados quatro testes unitários: ausente, incorreto, não ASCII e correto.
+- Não foi encontrada execução CI associada ao head `f141e227945be2ad4c98c999be454b5a3084502c` nesta inspeção. A correção é plausível, mas permanece não validada por CI no estado observado.
+
+### Estado da branch de integração
+- O arquivo `app.py` em `main` e em `integracao-base-2026-11-07` retornou o mesmo blob SHA `85438c84f78a7ae719d99d80a5da9385e256ef83` durante esta inspeção. As alterações documentais recentes não equivalem à integração das PRs de código.
+- A branch `integracao-base-2026-11-07` foi preservada; nenhuma PR foi mesclada e nenhuma alteração de produção foi feita.
+
+### Próximas verificações prioritárias
+1. Inspecionar a árvore e migrations da base `drive5-art-upload-test` e confirmar se `project_assets` existe, sua definição, constraints, FK e origem.
+2. Reconciliar formalmente `editorial_image_assets` versus `project_assets`; escolher um manifesto canônico antes de integrar retenção.
+3. Revisar o upload e a reconciliação da PR #1 para paginação completa, órfãos, idempotência, concorrência, limites de leitura e segurança dos metadados.
+4. Executar/confirmar CI da PR #7 em seu head e revisar o comportamento de erro sem revelar segredo.
+5. Manter o executor de exclusão permanente desconectado. A política de retenção precisa de decisão explícita sobre lixeira versus exclusão permanente e validação de ponta a ponta em pasta de teste.
+6. Não habilitar Gmail send nem vincular contas a usuários antes de autenticação individual, ownership, consentimento OAuth e testes de isolamento.
+
+### Resultado
+A PR #6 tem CI unitário aprovado, mas não está pronta para integração devido à divergência de schema/manifesto e à existência de executor destrutivo não operacional. A PR #7 contém correção pontual, ainda sem CI observado. A PR #1 permanece uma proposta ampla com dependências de OAuth, ownership e hardening de recuperação. Nenhuma dessas PRs foi integrada nesta etapa.
