@@ -62,3 +62,11 @@ Use `identity_lookup.normalize_identity(identity_type, value)` before any identi
 - Do not rotate this key casually. Rotation requires recomputing lookup digests for all stored identities and active OTP challenges. A plain SHA-256 digest cannot be converted to HMAC without recovering the original identity from its encrypted value; if that is impossible, require identity re-verification before enabling the new key.
 
 The helper is provider-agnostic and does not create routes or activate authentication. Before connecting any signup/login route, confirm that every caller uses the same normalization and keyed digest path.
+
+
+## Canonical rate-limit dimensions
+
+- IP dimensions are canonicalized with Python's `ipaddress` parser before HMAC. IPv4-mapped IPv6 is collapsed to the corresponding IPv4 address, equivalent IPv6 spellings produce the same digest, and scoped IPv6 addresses are rejected.
+- Identity dimensions must first be normalized with `identity_lookup.normalize_identity` using the known identity type. Do not pass raw or inconsistently formatted e-mail/phone values.
+- Device dimensions must be stable app-generated identifiers, not user-agent strings or raw hardware identifiers.
+- The IP value must come from the trusted proxy configuration. Do not trust arbitrary client-supplied `X-Forwarded-For` values.

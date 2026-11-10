@@ -185,7 +185,7 @@ class OtpCoreTests(unittest.TestCase):
             "identity", "person@example.test", self.pepper
         )
         ip = otp_core.hash_otp_rate_limit_dimension(
-            "ip", "person@example.test", self.pepper
+            "ip", "192.0.2.1", self.pepper
         )
         other_key = otp_core.hash_otp_rate_limit_dimension(
             "identity", "person@example.test", b"q" * 32
@@ -194,6 +194,30 @@ class OtpCoreTests(unittest.TestCase):
         self.assertEqual(identity, same)
         self.assertNotEqual(identity, ip)
         self.assertNotEqual(identity, other_key)
+
+    def test_ip_rate_limit_hash_canonicalizes_ipv4_mapped_ipv6(self):
+        ipv4 = otp_core.hash_otp_rate_limit_dimension(
+            "ip", "192.0.2.1", self.pepper
+        )
+        mapped = otp_core.hash_otp_rate_limit_dimension(
+            "ip", "::ffff:192.0.2.1", self.pepper
+        )
+        self.assertEqual(ipv4, mapped)
+
+    def test_ip_rate_limit_hash_canonicalizes_ipv6_compression(self):
+        expanded = otp_core.hash_otp_rate_limit_dimension(
+            "ip", "2001:0db8:0000:0000:0000:0000:0000:0001", self.pepper
+        )
+        compressed = otp_core.hash_otp_rate_limit_dimension(
+            "ip", "2001:db8::1", self.pepper
+        )
+        self.assertEqual(expanded, compressed)
+
+    def test_ip_rate_limit_hash_rejects_invalid_and_scoped_addresses(self):
+        for value in ("not-an-ip", "192.0.2.999", "fe80::1%eth0"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    otp_core.hash_otp_rate_limit_dimension("ip", value, self.pepper)
 
     def test_rate_limit_dimension_hash_rejects_invalid_inputs(self):
         with self.assertRaises(ValueError):
