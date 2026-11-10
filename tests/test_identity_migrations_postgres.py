@@ -194,7 +194,10 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             (uuid.uuid4(), self.user_id, self.tenant_id),
         )
         self.assertEqual(
-            self.conn.execute("SELECT COUNT(*) FROM user_identities").fetchone()[0], 1
+            self.conn.execute(
+                "SELECT COUNT(*) FROM user_identities WHERE user_id = %s",
+                (self.user_id,),
+            ).fetchone()[0], 1
         )
         self.assertEqual(
             self.conn.execute(
@@ -366,7 +369,7 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
                 self.conn,
                 request_id,
                 system,
-                evidence_reference=f"test-{system}-review",
+                evidence_reference=str(f"test-{system}-review-{request_id}"),
                 not_applicable=True,
             )
 
