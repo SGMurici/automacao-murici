@@ -37,3 +37,14 @@ The backend now contains provider-agnostic OTP challenge primitives in `otp_core
 - Do not activate customer authentication until the delivery adapter and abuse controls are reviewed.
 
 No provider account, credential, route, production setting or external message was created by this implementation.
+
+
+## OTP resend and abuse throttling
+
+Migration `0005_otp_request_limits.sql` adds an atomic quota ledger keyed by a dimension type, a pseudonymous 32-byte dimension digest and OTP purpose. The core exposes `reserve_otp_request_slot`, which enforces a resend cooldown and a rolling fixed-window request quota in one PostgreSQL UPSERT. Concurrent requests for the same dimension cannot both bypass the quota.
+
+The caller should reserve all dimensions available for a request (identity, IP and device) before creating or delivering a challenge. The dimension digest must be an HMAC-SHA-256 using a backend-only secret key, not a plain hash of an email, phone number, IP address or device identifier. Keep the HMAC key in the secret manager and rotate it only with a deliberate migration/expiry plan. Do not store raw dimensions in this table or logs.
+
+Default policy in the primitive: 60-second cooldown, at most 5 requests per 60-minute window per dimension and purpose. Parameters are validated and can be adjusted by the application policy. These limits are a foundation; final thresholds require monitoring and abuse testing before public signup/login routes are enabled.
+
+The new primitive does not send messages, expose routes or activate OTP authentication. The provider, public endpoints, generic anti-enumeration responses, distributed IP/device fingerprinting strategy and operational alerting remain pending.
