@@ -1347,7 +1347,7 @@ def api_current_user():
                 )
                 memberships = cur.fetchall()
 
-        return jsonify({
+        response = jsonify({
             "status": "ok",
             "usuario": {"id": str(user_id)},
             "tenants": [
@@ -1360,6 +1360,8 @@ def api_current_user():
                 for row in memberships
             ],
         })
+        response.headers["Cache-Control"] = "no-store"
+        return response
     except Exception:
         app.logger.exception("Falha ao consultar identidade autenticada")
         return safe_error_response("Não foi possível validar a sessão.")
