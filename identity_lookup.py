@@ -11,7 +11,7 @@ import unicodedata
 
 VALID_IDENTITY_TYPES = {"email", "phone"}
 MIN_PEPPER_BYTES = 32
-_EMAIL_LOCAL_FORBIDDEN = set('<>(),;:"[]')
+_EMAIL_LOCAL_FORBIDDEN = set("<>(),;:\"[]\\\\")
 _EMAIL_DOMAIN_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _PHONE_E164 = re.compile(r"\+[1-9][0-9]{7,14}\Z")
 
