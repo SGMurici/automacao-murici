@@ -193,5 +193,66 @@ class DeletionStepEvidenceTests(unittest.TestCase):
         self.assertEqual(params, ("completed", "backup-tombstone-456", "request-1", "backups"))
 
 
+
+class CoreGateCursor:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.executed = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, query, params=None):
+        self.executed.append((query, params))
+
+    def fetchone(self):
+        return self.rows.pop(0) if self.rows else None
+
+    def fetchall(self):
+        rows = self.rows
+        self.rows = []
+        return rows
+
+
+class CoreGateConnection:
+    def __init__(self, rows):
+        self.step_cursor = CoreGateCursor(rows)
+
+    def cursor(self):
+        return self.step_cursor
+
+
+class PrimaryDeletionEvidenceGateTests(unittest.TestCase):
+    def test_primary_purge_refuses_external_steps_without_evidence(self):
+        conn = CoreGateConnection([
+            ("user-1", "processing"),
+            ("connected_providers", "completed", "provider-revoke-1"),
+            ("app_storage", "completed", "device-purge-1"),
+            ("backups", "completed", None),
+            ("legal_retention", "not_applicable", "retention-review-1"),
+        ])
+        self.assertFalse(
+            account_deletion_core.process_primary_database_deletion(conn, "request-1")
+        )
+        self.assertEqual(len(conn.step_cursor.executed), 2)
+        self.assertIn("evidence_reference", conn.step_cursor.executed[1][0])
+
+    def test_primary_purge_refuses_blank_evidence(self):
+        conn = CoreGateConnection([
+            ("user-1", "processing"),
+            ("connected_providers", "completed", "provider-revoke-1"),
+            ("app_storage", "completed", "device-purge-1"),
+            ("backups", "completed", "   "),
+            ("legal_retention", "not_applicable", "retention-review-1"),
+        ])
+        self.assertFalse(
+            account_deletion_core.process_primary_database_deletion(conn, "request-1")
+        )
+        self.assertEqual(len(conn.step_cursor.executed), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
