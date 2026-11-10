@@ -1,6 +1,7 @@
 import os
 import json
 import secrets
+import hashlib
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -136,6 +137,62 @@ def consume_oauth_state(state_key, received_state):
         return False
 
     return secrets.compare_digest(received_bytes, expected_bytes)
+
+
+def get_oauth_browser_id():
+    """Vincula o fluxo OAuth ao navegador que o iniciou."""
+    browser_id = session.get("oauth_browser_id")
+    if not isinstance(browser_id, str) or len(browser_id) < 32:
+        browser_id = secrets.token_urlsafe(32)
+        session["oauth_browser_id"] = browser_id
+    return browser_id
+
+
+def create_server_oauth_state(provider, state, browser_id, account_name=None):
+    """Persiste somente o hash do state; o valor bruto segue apenas ao provedor."""
+    if provider not in {"google", "linkedin"}:
+        raise ValueError("Provedor OAuth inválido.")
+    if not isinstance(state, str) or not state or not isinstance(browser_id, str) or not browser_id:
+        raise ValueError("Contexto OAuth inválido.")
+    state_hash = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM oauth_states WHERE expires_at <= NOW();")
+            cur.execute(
+                """INSERT INTO oauth_states
+                   (state_hash, provider, browser_session_id, account_name, created_at, expires_at)
+                   VALUES (%s, %s, %s, %s, NOW(), NOW() + INTERVAL '10 minutes')""",
+                (state_hash, provider, browser_id, account_name),
+            )
+        conn.commit()
+    return state
+
+
+def consume_server_oauth_state(provider, received_state, browser_id):
+    """Consome state em uma única operação SQL, com TTL, provedor e navegador vinculados."""
+    if provider not in {"google", "linkedin"}:
+        return None
+    if not isinstance(received_state, str) or not received_state:
+        return None
+    if not isinstance(browser_id, str) or not browser_id:
+        return None
+    state_hash = hashlib.sha256(received_state.encode("utf-8")).hexdigest()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """DELETE FROM oauth_states
+                   WHERE state_hash = %s
+                     AND provider = %s
+                     AND browser_session_id = %s
+                     AND expires_at > NOW()
+                   RETURNING account_name""",
+                (state_hash, provider, browser_id),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    if not row:
+        return None
+    return {"provider": provider, "account_name": row[0]}
 
 
 def safe_error_response(message="Falha interna. Consulte os logs do servidor.", status=500):
@@ -1448,7 +1505,11 @@ def linkedin_login():
         ), 500
 
     state = secrets.token_urlsafe(32)
-    session["linkedin_oauth_state"] = state
+    try:
+        create_server_oauth_state("linkedin", state, get_oauth_browser_id())
+    except Exception:
+        app.logger.exception("Falha ao iniciar state OAuth do LinkedIn")
+        return safe_error_response("Não foi possível iniciar a autorização do LinkedIn.", 503)
 
     params = {
         "response_type": "code",
@@ -1472,37 +1533,32 @@ def linkedin_callback():
     session_error = require_session_secret()
     if session_error:
         return session_error
-    error = request.args.get("error")
+    state = request.args.get("state")
+    try:
+        oauth_context = consume_server_oauth_state(
+            "linkedin", state, session.get("oauth_browser_id")
+        )
+    except Exception:
+        app.logger.exception("Falha ao consumir state OAuth do LinkedIn")
+        return safe_error_response("Não foi possível validar a autorização do LinkedIn.", 503)
+    if not oauth_context:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Estado OAuth ausente, expirado ou já utilizado.",
+        }), 403
 
-    if error:
-        session.pop("linkedin_oauth_state", None)
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Autorizacao do LinkedIn recusada.",
-                "detalhe": error,
-            }
-        ), 400
+    if request.args.get("error"):
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Autorização do LinkedIn recusada.",
+        }), 400
 
     code = request.args.get("code")
-    state = request.args.get("state")
-
     if not code:
-        session.pop("linkedin_oauth_state", None)
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Codigo de autorizacao nao recebido.",
-            }
-        ), 400
-
-    if not consume_oauth_state("linkedin_oauth_state", state):
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Estado OAuth ausente ou invalido.",
-            }
-        ), 403
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Código de autorização não recebido.",
+        }), 400
 
     token_payload = urllib.parse.urlencode(
         {
@@ -1661,8 +1717,13 @@ def google_login():
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
 
     state = secrets.token_urlsafe(32)
-    session["google_oauth_state"] = state
-    session["google_oauth_account"] = account_name
+    try:
+        create_server_oauth_state(
+            "google", state, get_oauth_browser_id(), account_name=account_name
+        )
+    except Exception:
+        app.logger.exception("Falha ao iniciar state OAuth do Google")
+        return safe_error_response("Não foi possível iniciar a autorização do Google.", 503)
 
     params = {
         "client_id": GOOGLE_CLIENT_ID,
@@ -1688,43 +1749,37 @@ def google_callback():
     session_error = require_session_secret()
     if session_error:
         return session_error
-    error = request.args.get("error")
+    state = request.args.get("state")
+    try:
+        oauth_context = consume_server_oauth_state(
+            "google", state, session.get("oauth_browser_id")
+        )
+    except Exception:
+        app.logger.exception("Falha ao consumir state OAuth do Google")
+        return safe_error_response("Não foi possível validar a autorização do Google.", 503)
+    if not oauth_context:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Estado OAuth ausente, expirado ou já utilizado.",
+        }), 403
 
-    if error:
-        session.pop("google_oauth_state", None)
-        session.pop("google_oauth_account", None)
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Autorizacao do Google recusada.",
-                "detalhe": error,
-            }
-        ), 400
+    if request.args.get("error"):
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Autorização do Google recusada.",
+        }), 400
 
     code = request.args.get("code")
-    state = request.args.get("state")
-
     if not code:
-        session.pop("google_oauth_state", None)
-        session.pop("google_oauth_account", None)
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Codigo de autorizacao do Google nao recebido.",
-            }
-        ), 400
-
-    if not consume_oauth_state("google_oauth_state", state):
-        session.pop("google_oauth_account", None)
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Estado OAuth do Google ausente ou invalido.",
-            }
-        ), 403
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Código de autorização do Google não recebido.",
+        }), 400
 
     try:
-        account_name = normalize_google_account_name(session.pop("google_oauth_account", "Drive5"))
+        account_name = normalize_google_account_name(
+            oauth_context.get("account_name") or "Drive5"
+        )
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
 
@@ -1832,9 +1887,6 @@ def google_callback():
             )
 
         conn.commit()
-
-    session.pop("google_oauth_state", None)
-    session.pop("google_oauth_account", None)
 
     return jsonify(
         {
