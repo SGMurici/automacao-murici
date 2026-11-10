@@ -9,11 +9,12 @@ import app as application
 class OAuthErrorRedactionTests(unittest.TestCase):
     def setUp(self):
         self.client = application.app.test_client()
-        self.secret_patch = patch.object(
-            application.app, "secret_key", "test-session-secret"
-        )
-        self.secret_patch.start()
-        self.addCleanup(self.secret_patch.stop)
+        self.original_secret_key = application.app.config.get("SECRET_KEY")
+        application.app.config["SECRET_KEY"] = "test-session-secret"
+        self.addCleanup(self.restore_secret_key)
+
+    def restore_secret_key(self):
+        application.app.config["SECRET_KEY"] = self.original_secret_key
 
     def provider_error(self, url):
         return urllib.error.HTTPError(
