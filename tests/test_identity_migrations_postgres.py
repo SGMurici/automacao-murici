@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import app as application
 import identity_core
+import authorization_core
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -222,6 +223,16 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
                 "/api/v1/me", headers={"Authorization": "Bearer " + token}
             )
             self.assertEqual(after_logout.status_code, 401)
+
+    def test_suspended_user_cannot_use_active_tenant_membership(self):
+        self.conn.execute(
+            "UPDATE app_users SET status = 'suspended' WHERE id = %s",
+            (self.user_id,),
+        )
+        role = authorization_core.active_tenant_role(
+            self.conn, self.user_id, self.tenant_id
+        )
+        self.assertIsNone(role)
 
     def test_duplicate_identity_lookup_is_rejected(self):
         values = (self.user_id, b"same-hash", b"ciphertext")
