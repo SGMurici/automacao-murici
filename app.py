@@ -1589,20 +1589,13 @@ def linkedin_callback():
             )
 
     except urllib.error.HTTPError as error:
-        body = error.read().decode("utf-8")
-
-        try:
-            detail = json.loads(body)
-        except json.JSONDecodeError:
-            detail = body
-
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Falha ao obter token do LinkedIn.",
-                "detalhe": detail,
-            }
-        ), 400
+        app.logger.warning(
+            "LinkedIn token endpoint respondeu HTTP %s", error.code
+        )
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Falha ao obter token do LinkedIn.",
+        }), 502
 
     access_token = token_data.get("access_token")
     expires_in = token_data.get("expires_in")
@@ -1626,13 +1619,13 @@ def linkedin_callback():
     )
 
     if userinfo_status != 200:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Nao foi possivel obter o Member ID.",
-                "detalhe": userinfo_data,
-            }
-        ), 400
+        app.logger.warning(
+            "LinkedIn userinfo respondeu HTTP %s", userinfo_status
+        )
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Não foi possível obter o identificador da conta LinkedIn.",
+        }), 502
 
     member_id = userinfo_data.get("sub")
 
@@ -1812,20 +1805,13 @@ def google_callback():
             )
 
     except urllib.error.HTTPError as error:
-        body = error.read().decode("utf-8")
-
-        try:
-            detail = json.loads(body)
-        except json.JSONDecodeError:
-            detail = body
-
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Falha ao obter token do Google.",
-                "detalhe": detail,
-            }
-        ), 400
+        app.logger.warning(
+            "Google token endpoint respondeu HTTP %s", error.code
+        )
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Falha ao obter token do Google.",
+        }), 502
 
     access_token = token_data.get("access_token")
     refresh_token = token_data.get("refresh_token")
