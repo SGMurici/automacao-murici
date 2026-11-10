@@ -39,3 +39,12 @@ Do not use account suspension/deactivation as the final deletion outcome.
 - Do not delete project-wide operational credentials, editorial content or analytics rows that are not linked to the requesting customer.
 - A worker/scheduler, provider revocation adapters, Android local purge handshake, object-store inventory, backup tombstone/replay handling, public web deletion page and privacy-policy retention schedule must be completed before production launch.
 - Keep the PR in Draft until these gates and the product's actual data inventory are validated.
+
+
+## Gated worker command
+
+- `account_deletion_worker.run_ready_deletions` serializes worker instances with a PostgreSQL advisory lock.
+- It selects only requests for which all four external gates (`connected_providers`, `app_storage`, `backups`, `legal_retention`) are independently `completed` or `not_applicable`.
+- Each final PostgreSQL purge runs in its own transaction. A failed request does not roll back another request in the same batch.
+- CLI entry point: `python run_account_deletion_worker.py`. Requires `DATABASE_URL` and returns a machine-readable summary.
+- The command is not scheduled or deployed. Do not configure a production cron until provider revocation, Android/device deletion, object-store cleanup, backup tombstones and legal-retention handling are implemented and tested.
