@@ -82,6 +82,8 @@ class DeletionWorkerTests(unittest.TestCase):
         self.assertTrue(conn.closed)
         query, params = conn.cursors[1].executed[0]
         self.assertIn("COUNT(*)", query)
+        self.assertIn("s.evidence_reference IS NOT NULL", query)
+        self.assertIn("BTRIM(s.evidence_reference)", query)
         self.assertIn("s.status IN ('completed', 'not_applicable')", query)
         self.assertEqual(params, (4, 5))
 
