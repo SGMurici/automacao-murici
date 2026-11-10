@@ -3,6 +3,7 @@
 The suite uses an isolated schema and never touches the configured public schema.
 Set TEST_DATABASE_URL to enable it; local runs without PostgreSQL skip cleanly.
 """
+import hashlib
 import os
 import unittest
 import uuid
@@ -10,6 +11,9 @@ from pathlib import Path
 
 import psycopg
 from psycopg import sql
+from unittest.mock import patch
+
+import app as application
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -80,6 +84,79 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
     def tearDown(self):
         self.conn.rollback()
         self.conn.close()
+
+    def _application_db_connection(self):
+        connection = psycopg.connect(DATABASE_URL)
+        connection.execute(
+            sql.SQL("SET search_path TO {}").format(sql.Identifier(self.schema))
+        )
+        return connection
+
+    def test_oauth_state_is_hashed_and_consumed_only_once(self):
+        raw_state = "integration-oauth-state-" + uuid.uuid4().hex
+        browser_id = "browser-" + uuid.uuid4().hex
+
+        with patch.object(
+            application, "get_db_connection", side_effect=self._application_db_connection
+        ):
+            application.create_server_oauth_state("google", raw_state, browser_id)
+
+            stored_hash = self.conn.execute(
+                "SELECT state_hash FROM oauth_states WHERE browser_session_id = %s",
+                (browser_id,),
+            ).fetchone()[0]
+            self.assertEqual(stored_hash.strip(), hashlib.sha256(raw_state.encode()).hexdigest())
+            self.assertNotEqual(stored_hash.strip(), raw_state)
+
+            first = application.consume_server_oauth_state("google", raw_state, browser_id)
+            second = application.consume_server_oauth_state("google", raw_state, browser_id)
+
+        self.assertEqual(first, {"provider": "google", "account_name": None})
+        self.assertIsNone(second)
+
+    def test_oauth_state_is_bound_to_provider_and_browser(self):
+        raw_state = "bound-oauth-state-" + uuid.uuid4().hex
+        browser_id = "browser-" + uuid.uuid4().hex
+
+        with patch.object(
+            application, "get_db_connection", side_effect=self._application_db_connection
+        ):
+            application.create_server_oauth_state("linkedin", raw_state, browser_id)
+            self.assertIsNone(
+                application.consume_server_oauth_state("google", raw_state, browser_id)
+            )
+            self.assertIsNone(
+                application.consume_server_oauth_state("linkedin", raw_state, "other-browser")
+            )
+            valid = application.consume_server_oauth_state("linkedin", raw_state, browser_id)
+
+        self.assertEqual(valid, {"provider": "linkedin", "account_name": None})
+
+    def test_expired_oauth_state_cannot_be_consumed(self):
+        raw_state = "expired-oauth-state-" + uuid.uuid4().hex
+        state_hash = hashlib.sha256(raw_state.encode()).hexdigest()
+        browser_id = "browser-" + uuid.uuid4().hex
+        self.conn.execute(
+            """INSERT INTO oauth_states
+               (state_hash, provider, browser_session_id, created_at, expires_at)
+               VALUES (%s, 'google', %s, NOW() - INTERVAL '20 minutes',
+                       NOW() - INTERVAL '10 minutes')""",
+            (state_hash, browser_id),
+        )
+
+        with patch.object(
+            application, "get_db_connection", side_effect=self._application_db_connection
+        ):
+            result = application.consume_server_oauth_state("google", raw_state, browser_id)
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM oauth_states WHERE state_hash = %s",
+                (state_hash,),
+            ).fetchone()[0],
+            1,
+        )
 
     def test_valid_identity_session_consent_and_audit_rows(self):
         identity_id = uuid.uuid4()
