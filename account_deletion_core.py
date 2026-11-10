@@ -136,27 +136,54 @@ def complete_deletion_step(
 ):
     """Record an independently verified external deletion step.
 
-    This is an internal worker primitive, not a public client endpoint.
-    Evidence references must be opaque IDs, never personal data or credentials.
+    Completion requires an opaque evidence reference. Terminal states are
+    immutable; repeating the same terminal result is idempotent. The caller
+    owns the database transaction.
     """
     if system_key not in DELETION_SYSTEMS or system_key == "primary_database":
         raise ValueError("Etapa de exclusão inválida para confirmação externa.")
-    if evidence_reference is not None and (
-        not isinstance(evidence_reference, str) or len(evidence_reference) > 160
+    if (
+        not isinstance(evidence_reference, str)
+        or not evidence_reference.strip()
+        or len(evidence_reference) > 160
     ):
-        raise ValueError("Referência de evidência inválida.")
-    status = "not_applicable" if not_applicable else "completed"
+        raise ValueError("Referência de evidência obrigatória e inválida.")
+
+    target_status = "not_applicable" if not_applicable else "completed"
     with conn.cursor() as cur:
+        cur.execute(
+            """SELECT s.status, s.evidence_reference, r.status
+               FROM account_deletion_steps AS s
+               JOIN account_deletion_requests AS r ON r.id = s.request_id
+               WHERE s.request_id = %s AND s.system_key = %s
+               FOR UPDATE OF s, r""",
+            (request_id, system_key),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError("Solicitação ou etapa de exclusão não encontrada.")
+
+        current_status, current_evidence, request_status = row
+        if request_status == "completed":
+            raise ValueError("Solicitação de exclusão já concluída.")
+        if current_status in {"completed", "not_applicable"}:
+            if current_status == target_status and current_evidence == evidence_reference:
+                return True
+            raise ValueError("Etapa concluída não pode ser reclassificada.")
+        if request_status not in {"requested", "processing", "blocked"}:
+            raise ValueError("Solicitação não aceita novas confirmações de etapa.")
+
         cur.execute(
             """UPDATE account_deletion_steps
                SET status = %s, completed_at = NOW(),
                    evidence_reference = %s, failure_code = NULL
                WHERE request_id = %s AND system_key = %s
+                 AND status IN ('pending', 'in_progress', 'blocked', 'failed')
                RETURNING id""",
-            (status, evidence_reference, request_id, system_key),
+            (target_status, evidence_reference, request_id, system_key),
         )
         if not cur.fetchone():
-            raise ValueError("Solicitação ou etapa de exclusão não encontrada.")
+            raise ValueError("Etapa de exclusão não está em estado atualizável.")
         cur.execute(
             """UPDATE account_deletion_requests
                SET status = 'processing', started_at = COALESCE(started_at, NOW())
@@ -164,7 +191,6 @@ def complete_deletion_step(
             (request_id,),
         )
     return True
-
 
 def process_primary_database_deletion(conn, request_id):
     """Purge known user-linked PostgreSQL identity data after external steps finish.
