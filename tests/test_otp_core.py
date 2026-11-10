@@ -177,5 +177,32 @@ class OtpCoreTests(unittest.TestCase):
         self.assertEqual(conn.cursor_instance.executed, [])
 
 
+    def test_rate_limit_dimension_hash_is_keyed_and_domain_separated(self):
+        identity = otp_core.hash_otp_rate_limit_dimension(
+            "identity", "person@example.test", self.pepper
+        )
+        same = otp_core.hash_otp_rate_limit_dimension(
+            "identity", "person@example.test", self.pepper
+        )
+        ip = otp_core.hash_otp_rate_limit_dimension(
+            "ip", "person@example.test", self.pepper
+        )
+        other_key = otp_core.hash_otp_rate_limit_dimension(
+            "identity", "person@example.test", b"q" * 32
+        )
+        self.assertEqual(len(identity), 32)
+        self.assertEqual(identity, same)
+        self.assertNotEqual(identity, ip)
+        self.assertNotEqual(identity, other_key)
+
+    def test_rate_limit_dimension_hash_rejects_invalid_inputs(self):
+        with self.assertRaises(ValueError):
+            otp_core.hash_otp_rate_limit_dimension("email", "person@example.test", self.pepper)
+        with self.assertRaises(ValueError):
+            otp_core.hash_otp_rate_limit_dimension("identity", " ", self.pepper)
+        with self.assertRaises(ValueError):
+            otp_core.hash_otp_rate_limit_dimension("identity", "person@example.test", b"weak")
+
+
 if __name__ == "__main__":
     unittest.main()
