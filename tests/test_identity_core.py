@@ -45,16 +45,17 @@ class IdentitySessionTests(unittest.TestCase):
         )
 
     def test_issue_session_stores_only_hash_and_bounded_ttl(self):
-        conn = FakeConnection()
+        conn = FakeConnection(one=("token-hash",))
         token = identity_core.issue_session(
             conn, "user-123", ttl_seconds=600, device_label="Android"
         )
         self.assertGreaterEqual(len(token), 32)
         query, params = conn.fake_cursor.calls[0]
         self.assertIn("INSERT INTO auth_sessions", query)
+        self.assertIn("status = 'active'", query)
         self.assertEqual(params[0], hashlib.sha256(token.encode()).hexdigest())
         self.assertNotIn(token, params)
-        self.assertEqual(params[1:], ("user-123", 600, "Android"))
+        self.assertEqual(params[1:], (600, "Android", "user-123"))
 
     def test_issue_session_rejects_unbounded_ttl(self):
         conn = FakeConnection()
