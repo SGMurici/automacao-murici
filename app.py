@@ -115,7 +115,13 @@ def require_session_secret():
 
 
 def consume_oauth_state(state_key, received_state):
-    """Valida e consome o state OAuth uma unica vez."""
+    """
+    Valida e remove o state do snapshot de sessao atual.
+
+    A sessao Flask padrao e assinada no cliente; isto nao oferece
+    protecao anti-replay global contra a reutilizacao de um cookie antigo.
+    Para essa garantia, sera necessario armazenamento server-side com TTL.
+    """
     expected_state = session.pop(state_key, None)
 
     if not isinstance(received_state, str) or not received_state:
