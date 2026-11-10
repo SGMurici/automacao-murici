@@ -25,11 +25,13 @@ def active_tenant_role(conn, user_id, tenant_id, allowed_roles=None):
 
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT role
-               FROM tenant_memberships
-               WHERE tenant_id = %s
-                 AND user_id = %s
-                 AND status = 'active'
+            """SELECT m.role
+               FROM tenant_memberships AS m
+               JOIN app_users AS u ON u.id = m.user_id
+               WHERE m.tenant_id = %s
+                 AND m.user_id = %s
+                 AND m.status = 'active'
+                 AND u.status = 'active'
                LIMIT 1""",
             (tenant_id, user_id),
         )
