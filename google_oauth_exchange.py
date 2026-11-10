@@ -152,7 +152,12 @@ def refresh_google_access_token(
 
     returned_scope = token_data.get("scope")
     scopes = returned_scope.split() if isinstance(returned_scope, str) and returned_scope.strip() else previous_scopes
-    scopes = validate_granted_scopes(scopes)
+    try:
+        scopes = validate_granted_scopes(scopes)
+    except ValueError:
+        raise GoogleOAuthExchangeError(
+            "Google alterou os escopos concedidos; reautorização necessária."
+        ) from None
     rotated_refresh = token_data.get("refresh_token")
     if not isinstance(rotated_refresh, str) or not rotated_refresh:
         rotated_refresh = refresh_token
