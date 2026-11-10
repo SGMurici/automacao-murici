@@ -114,3 +114,28 @@ Foi criado `drive_backup_connections.py` para reutilizar `external_connections` 
 - Testes unitários cobrem PKCE, escopo, membership, HTTPS redirect, state de uso único, expiração e falha de descriptografia.
 
 **Ainda não é um OAuth funcional ponta a ponta:** faltam rota autenticada de início, callback server-side, troca do authorization code com PKCE, validação do Google subject/userinfo, persistência dos tokens com `drive_backup_connections.py`, renovação/revogação remota e deep-link/UX Android. A migration não foi aplicada em banco algum; PR continua Draft.
+
+
+## Estado do lote de implementação — 11/11/2026
+
+### Arquivos adicionados
+- `migrations/0004_customer_drive_oauth.sql`: vincula estados OAuth temporários ao user/tenant e guarda PKCE verifier criptografado; mantém estados legados isolados com purpose `legacy`.
+- `drive_backup_oauth.py`: cria fluxo state + PKCE S256 de 10 minutos, exige usuário e membership ativos, guarda hash do state e verifier cifrado e consome o state atomicamente uma única vez.
+- `drive_backup_connections.py`: persistência de tokens e metadados por usuário/tenant, criptografia via função injetada, escopo mínimo `drive.file`, leitura restrita ao titular, listagem sem tokens e revogação local com apagamento de ciphertext.
+- `tests/test_drive_backup_oauth.py` e `tests/test_drive_backup_connections.py`: testes unitários.
+- `tests/test_identity_migrations_postgres.py`: migração 0004 incluída e novos testes de integração PostgreSQL para state/PKCE, conexão, isolamento de titular e revogação local.
+
+### Decisões mantidas
+- Não usar integração global Drive5 para clientes.
+- Não criar tabela de conexão duplicada; reutilizar `external_connections`.
+- Tokens são segredos: armazenar somente ciphertext e nunca retornar em listagens.
+- State OAuth é armazenado como SHA-256 e consumido por DELETE RETURNING; PKCE verifier fica criptografado e expira em 10 minutos.
+- Escopo `drive.file` é obrigatório; escopos globais `drive` e `drive.readonly` são rejeitados.
+
+### Pendências antes de conectar uma conta real
+- Implementar rotas autenticadas para iniciar o fluxo e callback server-side.
+- Trocar authorization code usando o verifier PKCE e redirect URI exata.
+- Consultar Google userinfo e validar `sub` como identificador externo estável e escopos efetivamente concedidos.
+- Persistir tokens com Fernet/`TOKEN_ENCRYPTION_KEY`; implementar refresh, revogação remota e reconciliação de falhas.
+- Criar UI Android e deep-link de retorno, testar app Android e fluxo de consentimento OAuth/verificação Google.
+- Não aplicar migration 0004 nem habilitar cliente real até revisão do callback e testes de integração.
