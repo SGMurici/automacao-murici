@@ -29,8 +29,13 @@ class FakeConnection:
 
 class DriveBackupOAuthTests(unittest.TestCase):
     def setUp(self):
-        self.encrypt = lambda value: ("cipher:" + value).encode()
-        self.decrypt = lambda value: value.decode().removeprefix("cipher:")
+        self.vault = {}
+        def encrypt(value):
+            ciphertext = b"cipher:" + hashlib.sha256(value.encode()).digest()
+            self.vault[ciphertext] = value
+            return ciphertext
+        self.encrypt = encrypt
+        self.decrypt = lambda value: self.vault[value]
 
     def test_create_flow_uses_pkce_s256_and_minimal_scope(self):
         conn = FakeConnection(one=("state-hash",))
@@ -50,6 +55,7 @@ class DriveBackupOAuthTests(unittest.TestCase):
         self.assertIn("m.status = 'active'", query)
         self.assertEqual(values[1:3], (oauth.FLOW_PROVIDER, oauth.FLOW_PURPOSE))
         self.assertTrue(values[3].startswith(b"cipher:"))
+        self.assertNotIn(result["state"].encode(), values[3])
         self.assertNotIn(result["state"], repr(values))
 
     def test_rejects_non_https_redirect_and_missing_client_id(self):
