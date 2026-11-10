@@ -63,6 +63,10 @@ def normalize_identity(identity_type, value):
             raise ValueError("E-mail excede o tamanho permitido.")
         return normalized
 
+    # Validate display syntax before stripping separators. Without this check,
+    # malformed strings can collapse into a valid-looking E.164 number.
+    if not re.fullmatch(r"\+[1-9][0-9]*(?: ?\([0-9]+\))?(?:[ .-]?[0-9]+)*", value):
+        raise ValueError("Formatação de telefone inválida.")
     compact = re.sub(r"[ .()-]", "", value)
     if not _PHONE_E164.fullmatch(compact):
         raise ValueError("Telefone deve estar em formato internacional E.164.")

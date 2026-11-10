@@ -18,7 +18,7 @@ class IdentityLookupTests(unittest.TestCase):
         )
 
     def test_phone_requires_explicit_country_code_and_valid_length(self):
-        for value in ("21987654321", "+0123456789", "+123", "+1234567890123456"):
+        for value in ("21987654321", "+0123456789", "+123", "+1234567890123456", "+55 )(21) 98765-4321", "+55 (21 98765-4321", "+55 () 98765-4321", "+55abc21987654321", "+55--21-98765-4321"):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     identity_lookup.normalize_identity("phone", value)
