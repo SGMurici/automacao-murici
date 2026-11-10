@@ -60,6 +60,31 @@ def validate_session(conn, raw_token):
     return row[0] if row else None
 
 
+
+def is_recent_session(conn, raw_token, max_age_seconds=900):
+    """Require a recently issued session for sensitive, irreversible actions."""
+    if isinstance(max_age_seconds, bool) or not 60 <= int(max_age_seconds) <= 3600:
+        raise ValueError("Janela de reautenticação fora do limite permitido.")
+    try:
+        token_hash = hash_session_token(raw_token)
+    except ValueError:
+        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT 1
+               FROM auth_sessions AS s
+               JOIN app_users AS u ON u.id = s.user_id
+               WHERE s.token_hash = %s
+                 AND u.status = 'active'
+                 AND s.revoked_at IS NULL
+                 AND s.expires_at > NOW()
+                 AND s.created_at >= NOW() - (%s * INTERVAL '1 second')
+               LIMIT 1""",
+            (token_hash, int(max_age_seconds)),
+        )
+        return cur.fetchone() is not None
+
+
 def rotate_session(conn, raw_token, ttl_seconds=60 * 60 * 24 * 7, device_label=None):
     if not MIN_SESSION_TTL_SECONDS <= int(ttl_seconds) <= MAX_SESSION_TTL_SECONDS:
         raise ValueError("Prazo de sessão fora do limite permitido.")
