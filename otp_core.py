@@ -6,6 +6,7 @@ The caller owns and commits the database transaction.
 """
 import hashlib
 import hmac
+import ipaddress
 import re
 import secrets
 import uuid
@@ -255,5 +256,18 @@ def hash_otp_rate_limit_dimension(dimension_type, dimension_value, pepper):
         or len(dimension_value) > 512
     ):
         raise ValueError("Valor da dimensão OTP inválido.")
-    message = f"{dimension_type}:{dimension_value.strip()}".encode("utf-8")
+    normalized_value = dimension_value.strip()
+    if dimension_type == "ip":
+        if "%" in normalized_value:
+            raise ValueError("IP com identificador de escopo não é permitido.")
+        try:
+            address = ipaddress.ip_address(normalized_value)
+        except ValueError as error:
+            raise ValueError("Endereço IP inválido para limitação OTP.") from error
+        # Treat IPv4-mapped IPv6 as the same client address as its IPv4 form.
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        normalized_value = address.compressed
+
+    message = f"{dimension_type}:{normalized_value}".encode("utf-8")
     return hmac.new(pepper, message, hashlib.sha256).digest()
