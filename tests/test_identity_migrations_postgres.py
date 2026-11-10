@@ -218,13 +218,31 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             self.assertEqual(len(payload["tenants"]), 1)
             self.assertEqual(payload["tenants"][0]["id"], str(self.tenant_id))
 
+            rotation = client.post(
+                "/api/v1/session/rotate",
+                headers={"Authorization": "Bearer " + token},
+            )
+            self.assertEqual(rotation.status_code, 200)
+            new_token = rotation.get_json()["access_token"]
+            self.assertNotEqual(new_token, token)
+
+            old_session = client.get(
+                "/api/v1/me", headers={"Authorization": "Bearer " + token}
+            )
+            self.assertEqual(old_session.status_code, 401)
+
+            renewed_profile = client.get(
+                "/api/v1/me", headers={"Authorization": "Bearer " + new_token}
+            )
+            self.assertEqual(renewed_profile.status_code, 200)
+
             logout = client.post(
-                "/api/v1/logout", headers={"Authorization": "Bearer " + token}
+                "/api/v1/logout", headers={"Authorization": "Bearer " + new_token}
             )
             self.assertEqual(logout.status_code, 200)
 
             after_logout = client.get(
-                "/api/v1/me", headers={"Authorization": "Bearer " + token}
+                "/api/v1/me", headers={"Authorization": "Bearer " + new_token}
             )
             self.assertEqual(after_logout.status_code, 401)
 
