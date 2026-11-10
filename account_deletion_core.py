@@ -63,7 +63,7 @@ def request_account_deletion(conn, user_id):
                        NOW() + (%s * INTERVAL '1 day'))""",
             (request_id, user_id, receipt_hash, RECEIPT_TTL_DAYS),
         )
-        cur.execute(
+        cur.executemany(
             """INSERT INTO account_deletion_steps (request_id, system_key)
                VALUES (%s, %s)""",
             [(request_id, system) for system in DELETION_SYSTEMS],
