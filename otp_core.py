@@ -27,7 +27,7 @@ def _validate_pepper(pepper):
 
 def _validate_identity_hash(identity_lookup_hash):
     if not isinstance(identity_lookup_hash, bytes) or len(identity_lookup_hash) != 32:
-        raise ValueError("Hash de identidade deve ser SHA-256 em bytes.")
+        raise ValueError("Digest de identidade deve conter 32 bytes.")
     return identity_lookup_hash
 
 
