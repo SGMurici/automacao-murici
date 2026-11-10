@@ -81,7 +81,7 @@ class DriveBackupOAuthTests(unittest.TestCase):
             )
 
     def test_consume_flow_is_atomic_single_use_and_returns_pkce_context(self):
-        row = ("user-1", "tenant-1", b"cipher:" + b"v" * 50, "https://redirect.test/callback")
+        row = ("user-1", "tenant-1", self.encrypt("v" * 50), "https://redirect.test/callback")
         conn = FakeConnection(one=row)
         state = "s" * 43
         result = oauth.consume_flow(conn, state=state, decrypt=self.decrypt)
