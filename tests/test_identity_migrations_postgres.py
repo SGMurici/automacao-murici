@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = (
     ROOT / "migrations" / "0001_oauth_states.sql",
     ROOT / "migrations" / "0002_identity_core.sql",
+    ROOT / "migrations" / "0003_account_deletion.sql",
 )
 
 
@@ -255,6 +256,82 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             self.conn, self.user_id, self.tenant_id
         )
         self.assertIsNone(role)
+
+    def test_account_deletion_request_locks_account_and_tracks_all_systems(self):
+        token = identity_core.issue_session(
+            self.conn, self.user_id, ttl_seconds=600, device_label="deletion-test"
+        )
+        self.conn.commit()
+        client = application.app.test_client()
+
+        with patch.object(
+            application, "get_db_connection", side_effect=self._application_db_connection
+        ):
+            response = client.post(
+                "/api/v1/account/deletion-request",
+                headers={"Authorization": "Bearer " + token},
+                json={"confirmacao": "EXCLUIR MINHA CONTA"},
+            )
+            self.assertEqual(response.status_code, 202)
+            payload = response.get_json()
+            receipt = payload["comprovante_exclusao"]
+            self.assertTrue(receipt)
+            self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+
+            # Account access is revoked immediately after the request is committed.
+            profile = client.get(
+                "/api/v1/me", headers={"Authorization": "Bearer " + token}
+            )
+            self.assertEqual(profile.status_code, 401)
+
+            status = client.get(
+                "/api/v1/account/deletion-status",
+                headers={"X-Deletion-Receipt": receipt},
+            )
+            self.assertEqual(status.status_code, 200)
+            status_payload = status.get_json()
+            self.assertEqual(status_payload["status"], "requested")
+            self.assertEqual(len(status_payload["steps"]), 5)
+            self.assertTrue(all(step["status"] == "pending" for step in status_payload["steps"]))
+
+        user_status = self.conn.execute(
+            "SELECT status FROM app_users WHERE id = %s", (self.user_id,)
+        ).fetchone()[0]
+        self.assertEqual(user_status, "deletion_pending")
+        stored_hash = self.conn.execute(
+            "SELECT receipt_hash FROM account_deletion_requests WHERE id = %s",
+            (payload["request_id"],),
+        ).fetchone()[0]
+        self.assertNotEqual(stored_hash.strip(), receipt)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM account_deletion_steps WHERE request_id = %s",
+                (payload["request_id"],),
+            ).fetchone()[0],
+            5,
+        )
+
+    def test_account_deletion_rejects_wrong_confirmation(self):
+        token = identity_core.issue_session(
+            self.conn, self.user_id, ttl_seconds=600, device_label="deletion-test"
+        )
+        self.conn.commit()
+        client = application.app.test_client()
+        with patch.object(
+            application, "get_db_connection", side_effect=self._application_db_connection
+        ):
+            response = client.post(
+                "/api/v1/account/deletion-request",
+                headers={"Authorization": "Bearer " + token},
+                json={"confirmacao": "DELETE"},
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status FROM app_users WHERE id = %s", (self.user_id,)
+            ).fetchone()[0],
+            "active",
+        )
 
     def test_duplicate_identity_lookup_is_rejected(self):
         values = (self.user_id, b"same-hash", b"ciphertext")
