@@ -129,3 +129,131 @@ def get_deletion_status(conn, receipt):
             for row in steps
         ],
     }
+
+
+def complete_deletion_step(
+    conn, request_id, system_key, evidence_reference=None, not_applicable=False
+):
+    """Record an independently verified external deletion step.
+
+    This is an internal worker primitive, not a public client endpoint.
+    Evidence references must be opaque IDs, never personal data or credentials.
+    """
+    if system_key not in DELETION_SYSTEMS or system_key == "primary_database":
+        raise ValueError("Etapa de exclusão inválida para confirmação externa.")
+    if evidence_reference is not None and (
+        not isinstance(evidence_reference, str) or len(evidence_reference) > 160
+    ):
+        raise ValueError("Referência de evidência inválida.")
+    status = "not_applicable" if not_applicable else "completed"
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE account_deletion_steps
+               SET status = %s, completed_at = NOW(),
+                   evidence_reference = %s, failure_code = NULL
+               WHERE request_id = %s AND system_key = %s
+               RETURNING id""",
+            (status, evidence_reference, request_id, system_key),
+        )
+        if not cur.fetchone():
+            raise ValueError("Solicitação ou etapa de exclusão não encontrada.")
+        cur.execute(
+            """UPDATE account_deletion_requests
+               SET status = 'processing', started_at = COALESCE(started_at, NOW())
+               WHERE id = %s AND status IN ('requested', 'blocked')""",
+            (request_id,),
+        )
+    return True
+
+
+def process_primary_database_deletion(conn, request_id):
+    """Purge known user-linked PostgreSQL identity data after external steps finish.
+
+    The request receipt and minimal progress record remain as a non-identifying
+    proof of execution. Shared tenants are preserved for their other members.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT user_id, status
+               FROM account_deletion_requests
+               WHERE id = %s
+               FOR UPDATE""",
+            (request_id,),
+        )
+        request_row = cur.fetchone()
+        if not request_row:
+            raise ValueError("Solicitação de exclusão não encontrada.")
+        user_id, request_status = request_row
+        if request_status == "completed":
+            return True
+        if not user_id:
+            raise ValueError("Solicitação sem vínculo de usuário antes da conclusão.")
+
+        cur.execute(
+            """SELECT system_key, status
+               FROM account_deletion_steps
+               WHERE request_id = %s""",
+            (request_id,),
+        )
+        step_statuses = {row[0]: row[1] for row in cur.fetchall()}
+        required_external = set(DELETION_SYSTEMS) - {"primary_database"}
+        if any(
+            step_statuses.get(system) not in {"completed", "not_applicable"}
+            for system in required_external
+        ):
+            return False
+
+        cur.execute(
+            """SELECT identity_type, identity_lookup_hash
+               FROM user_identities
+               WHERE user_id = %s""",
+            (user_id,),
+        )
+        identities = cur.fetchall()
+        if identities:
+            cur.executemany(
+                """DELETE FROM otp_challenges
+                   WHERE identity_type = %s AND identity_lookup_hash = %s""",
+                identities,
+            )
+
+        cur.execute(
+            "SELECT id FROM tenants WHERE tenant_type = 'personal' AND id IN "
+            "(SELECT tenant_id FROM tenant_memberships WHERE user_id = %s)",
+            (user_id,),
+        )
+        personal_tenant_ids = [row[0] for row in cur.fetchall()]
+
+        # Remove user-attributed audit records rather than retaining metadata
+        # that could identify the deleted account.
+        cur.execute("DELETE FROM audit_events WHERE actor_user_id = %s", (user_id,))
+        cur.execute("DELETE FROM app_users WHERE id = %s", (user_id,))
+        if cur.rowcount != 1:
+            raise ValueError("Registro de usuário não encontrado durante a exclusão.")
+
+        if personal_tenant_ids:
+            cur.execute(
+                """DELETE FROM tenants AS t
+                   WHERE t.id = ANY(%s)
+                     AND t.tenant_type = 'personal'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM tenant_memberships AS m
+                         WHERE m.tenant_id = t.id
+                     )""",
+                (personal_tenant_ids,),
+            )
+
+        cur.execute(
+            """UPDATE account_deletion_steps
+               SET status = 'completed', completed_at = NOW(), failure_code = NULL
+               WHERE request_id = %s AND system_key = 'primary_database'""",
+            (request_id,),
+        )
+        cur.execute(
+            """UPDATE account_deletion_requests
+               SET status = 'completed', completed_at = NOW(), user_id = NULL,
+                   failure_code = NULL
+               WHERE id = %s""",
+            (request_id,),
+        )
+    return True
