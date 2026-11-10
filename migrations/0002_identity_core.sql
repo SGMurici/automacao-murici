@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS user_identities (
 CREATE INDEX IF NOT EXISTS idx_user_identities_user
     ON user_identities (user_id, identity_type);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_identities_single_primary
+    ON user_identities (user_id, identity_type)
+    WHERE is_primary = TRUE;
+
 CREATE TABLE IF NOT EXISTS tenants (
     id UUID PRIMARY KEY,
     tenant_type VARCHAR(20) NOT NULL DEFAULT 'personal'
@@ -125,7 +129,11 @@ CREATE TABLE IF NOT EXISTS external_connections (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     revoked_at TIMESTAMPTZ,
-    UNIQUE (tenant_id, provider, external_account_id)
+    UNIQUE (tenant_id, provider, external_account_id),
+    CONSTRAINT external_connections_owner_membership
+        FOREIGN KEY (tenant_id, user_id)
+        REFERENCES tenant_memberships (tenant_id, user_id)
+        ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_external_connections_owner
