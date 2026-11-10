@@ -2559,6 +2559,9 @@ def scheduler_run():
         if result["status"] == "busy":
             return jsonify(result), 409
 
+        if result["status"] == "incerto":
+            return jsonify(result), 202
+
         return jsonify(result), 500
 
     except Exception:
