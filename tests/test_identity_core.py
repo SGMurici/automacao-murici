@@ -74,6 +74,20 @@ class IdentitySessionTests(unittest.TestCase):
         self.assertIn("s.expires_at > NOW()", query)
         self.assertEqual(params, (hashlib.sha256(token.encode()).hexdigest(),))
 
+    def test_recent_session_requires_recent_creation_and_active_user(self):
+        conn = FakeConnection(one=(1,))
+        self.assertTrue(identity_core.is_recent_session(conn, "r" * 48, 900))
+        query, params = conn.fake_cursor.calls[0]
+        self.assertIn("s.created_at >=", query)
+        self.assertIn("u.status = 'active'", query)
+        self.assertEqual(params, (hashlib.sha256(("r" * 48).encode()).hexdigest(), 900))
+
+    def test_recent_session_rejects_invalid_window(self):
+        conn = FakeConnection()
+        with self.assertRaises(ValueError):
+            identity_core.is_recent_session(conn, "r" * 48, 30)
+        self.assertEqual(conn.fake_cursor.calls, [])
+
     def test_rotate_session_revokes_old_and_creates_new(self):
         conn = FakeConnection(one=("user-123",))
         old_token = "o" * 48
