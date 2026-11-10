@@ -53,6 +53,8 @@ def run_ready_deletions(connection_factory, batch_size=DEFAULT_BATCH_SIZE):
                        WHERE s.request_id = r.id
                          AND s.system_key <> 'primary_database'
                          AND s.status IN ('completed', 'not_applicable')
+                       AND s.evidence_reference IS NOT NULL
+                       AND BTRIM(s.evidence_reference) <> ''
                      ) = %s
                    ORDER BY r.requested_at ASC
                    LIMIT %s""",
