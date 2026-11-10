@@ -1,7 +1,7 @@
 # automacao-murici
 Automação de publicações e análise de desempenho no LinkedIn
 
-Gmail triage: a rota interna retorna somente totais agregados por padrão. Detalhes individuais exigem `summary_only=false` explícito.
+Gmail triage: a rota interna retorna exclusivamente totais e classificações agregadas. Mensagens individuais, remetentes, assuntos, snippets e corpos nunca são incluídos na resposta HTTP, independentemente dos parâmetros enviados.
 
 <!-- [run-gmail-triage] -->
 <!-- Verificação agregada pós-ajuste de regras. -->
