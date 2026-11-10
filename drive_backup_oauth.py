@@ -68,6 +68,7 @@ def create_flow(conn, *, user_id, tenant_id, redirect_uri, client_id, encrypt):
         "response_type": "code",
         "scope": f"openid email {GOOGLE_DRIVE_SCOPE}",
         "access_type": "offline",
+        "prompt": "consent",
         "include_granted_scopes": "false",
         "state": state,
         "code_challenge": challenge,
