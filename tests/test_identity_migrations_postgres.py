@@ -19,6 +19,7 @@ import authorization_core
 import account_deletion_core
 import drive_backup_oauth
 import drive_backup_connections
+import otp_core
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -28,6 +29,7 @@ MIGRATIONS = (
     ROOT / "migrations" / "0002_identity_core.sql",
     ROOT / "migrations" / "0003_account_deletion.sql",
     ROOT / "migrations" / "0004_customer_drive_oauth.sql",
+    ROOT / "migrations" / "0005_otp_request_limits.sql",
 )
 
 
@@ -575,6 +577,62 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             (connection_id,),
         ).fetchone()
         self.assertEqual(revoked, ("revoked", None, None))
+
+
+    def test_otp_rate_limits_are_atomic_and_scoped_to_pseudonymous_dimensions(self):
+        digest = hashlib.sha256(b"identity-rate-limit-fixture").digest()
+        self.assertTrue(
+            otp_core.reserve_otp_request_slot(
+                self.conn, "identity", digest, "login",
+                cooldown_seconds=60, window_seconds=3600, max_requests=2,
+            )
+        )
+        self.assertFalse(
+            otp_core.reserve_otp_request_slot(
+                self.conn, "identity", digest, "login",
+                cooldown_seconds=60, window_seconds=3600, max_requests=2,
+            )
+        )
+        self.conn.execute(
+            """UPDATE otp_request_limits
+               SET last_requested_at = NOW() - INTERVAL '61 seconds'
+               WHERE dimension_type = 'identity' AND dimension_hash = %s
+                 AND purpose = 'login'""",
+            (digest,),
+        )
+        self.conn.commit()
+        self.assertTrue(
+            otp_core.reserve_otp_request_slot(
+                self.conn, "identity", digest, "login",
+                cooldown_seconds=60, window_seconds=3600, max_requests=2,
+            )
+        )
+        self.conn.execute(
+            """UPDATE otp_request_limits
+               SET last_requested_at = NOW() - INTERVAL '61 seconds'
+               WHERE dimension_type = 'identity' AND dimension_hash = %s
+                 AND purpose = 'login'""",
+            (digest,),
+        )
+        self.conn.commit()
+        self.assertFalse(
+            otp_core.reserve_otp_request_slot(
+                self.conn, "identity", digest, "login",
+                cooldown_seconds=60, window_seconds=3600, max_requests=2,
+            )
+        )
+        self.assertTrue(
+            otp_core.reserve_otp_request_slot(
+                self.conn, "identity", digest, "recovery",
+                cooldown_seconds=60, window_seconds=3600, max_requests=2,
+            )
+        )
+        self.assertTrue(
+            otp_core.reserve_otp_request_slot(
+                self.conn, "ip", digest, "login",
+                cooldown_seconds=60, window_seconds=3600, max_requests=2,
+            )
+        )
 
     def test_invalid_otp_attempt_limits_and_audit_result_are_rejected(self):
         with self.assertRaises(psycopg.errors.CheckViolation):
