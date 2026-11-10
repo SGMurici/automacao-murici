@@ -30,6 +30,7 @@ MIGRATIONS = (
     ROOT / "migrations" / "0003_account_deletion.sql",
     ROOT / "migrations" / "0004_customer_drive_oauth.sql",
     ROOT / "migrations" / "0005_otp_request_limits.sql",
+    ROOT / "migrations" / "0006_session_authentication_freshness.sql",
 )
 
 
@@ -255,6 +256,52 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
                 "/api/v1/me", headers={"Authorization": "Bearer " + new_token}
             )
             self.assertEqual(after_logout.status_code, 401)
+
+    def test_session_rotation_preserves_authentication_age_for_deletion_gate(self):
+        token = identity_core.issue_session(
+            self.conn, self.user_id, ttl_seconds=600, device_label="rotation-age-test"
+        )
+        old_hash = identity_core.hash_session_token(token)
+        self.conn.execute(
+            """UPDATE auth_sessions
+               SET authenticated_at = NOW() - INTERVAL '20 minutes'
+               WHERE token_hash = %s""",
+            (old_hash,),
+        )
+        self.conn.commit()
+        client = application.app.test_client()
+
+        with patch.object(
+            application, "get_db_connection", side_effect=self._application_db_connection
+        ):
+            rotation = client.post(
+                "/api/v1/session/rotate",
+                headers={"Authorization": "Bearer " + token},
+            )
+            self.assertEqual(rotation.status_code, 200)
+            new_token = rotation.get_json()["access_token"]
+
+            deletion = client.post(
+                "/api/v1/account/deletion-request",
+                headers={"Authorization": "Bearer " + new_token},
+                json={"confirmacao": "EXCLUIR MINHA CONTA"},
+            )
+            self.assertEqual(deletion.status_code, 401)
+
+        new_hash = identity_core.hash_session_token(new_token)
+        created_at, authenticated_at = self.conn.execute(
+            """SELECT created_at, authenticated_at
+               FROM auth_sessions WHERE token_hash = %s""",
+            (new_hash,),
+        ).fetchone()
+        self.assertGreater(created_at, authenticated_at)
+        self.assertFalse(identity_core.is_recent_session(self.conn, new_token, 900))
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status FROM app_users WHERE id = %s", (self.user_id,)
+            ).fetchone()[0],
+            "active",
+        )
 
     def test_suspended_user_cannot_use_active_tenant_membership(self):
         self.conn.execute(
