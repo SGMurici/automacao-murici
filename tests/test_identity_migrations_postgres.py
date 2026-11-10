@@ -16,6 +16,7 @@ from unittest.mock import patch
 import app as application
 import identity_core
 import authorization_core
+import account_deletion_core
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -310,6 +311,106 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             ).fetchone()[0],
             5,
         )
+
+    def test_primary_database_purge_waits_for_other_systems_and_is_auditable(self):
+        identity_hash = b"deletion-identity-hash"
+        self.conn.execute(
+            """INSERT INTO user_identities
+               (id, user_id, identity_type, identity_lookup_hash,
+                identity_value_ciphertext, verified_at, is_primary)
+               VALUES (%s, %s, 'email', %s, %s, NOW(), TRUE)""",
+            (uuid.uuid4(), self.user_id, identity_hash, b"encrypted-email"),
+        )
+        self.conn.execute(
+            """INSERT INTO otp_challenges
+               (id, identity_type, identity_lookup_hash, purpose, code_hash, expires_at)
+               VALUES (%s, 'email', %s, 'recovery', %s, NOW() + INTERVAL '5 minutes')""",
+            (uuid.uuid4(), identity_hash, b"otp-hash"),
+        )
+        self.conn.execute(
+            """INSERT INTO consent_events
+               (id, user_id, tenant_id, purpose, policy_version, decision, source)
+               VALUES (%s, %s, %s, 'profile', 'v1', 'granted', 'android')""",
+            (uuid.uuid4(), self.user_id, self.tenant_id),
+        )
+        self.conn.execute(
+            """INSERT INTO audit_events (id, actor_user_id, action, result)
+               VALUES (%s, %s, 'profile.updated', 'success')""",
+            (uuid.uuid4(), self.user_id),
+        )
+        identity_core.issue_session(self.conn, self.user_id, ttl_seconds=600)
+        self.conn.commit()
+
+        deletion = account_deletion_core.request_account_deletion(self.conn, self.user_id)
+        request_id = deletion["request_id"]
+        receipt = deletion["receipt"]
+        self.conn.commit()
+
+        self.assertFalse(
+            account_deletion_core.process_primary_database_deletion(self.conn, request_id)
+        )
+        self.assertIsNotNone(
+            self.conn.execute("SELECT id FROM app_users WHERE id = %s", (self.user_id,)).fetchone()
+        )
+
+        for system in (
+            "connected_providers",
+            "app_storage",
+            "backups",
+            "legal_retention",
+        ):
+            account_deletion_core.complete_deletion_step(
+                self.conn, request_id, system, not_applicable=True
+            )
+
+        self.assertTrue(
+            account_deletion_core.process_primary_database_deletion(self.conn, request_id)
+        )
+        self.conn.commit()
+
+        self.assertIsNone(
+            self.conn.execute("SELECT id FROM app_users WHERE id = %s", (self.user_id,)).fetchone()
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM user_identities WHERE user_id = %s", (self.user_id,)
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM auth_sessions WHERE user_id = %s", (self.user_id,)
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM consent_events WHERE user_id = %s", (self.user_id,)
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM otp_challenges WHERE identity_lookup_hash = %s",
+                (identity_hash,),
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM audit_events WHERE actor_user_id = %s", (self.user_id,)
+            ).fetchone()[0],
+            0,
+        )
+        self.assertIsNone(
+            self.conn.execute("SELECT id FROM tenants WHERE id = %s", (self.tenant_id,)).fetchone()
+        )
+        status = account_deletion_core.get_deletion_status(self.conn, receipt)
+        self.assertEqual(status["status"], "completed")
+        self.assertTrue(all(
+            step["status"] in {"completed", "not_applicable"}
+            for step in status["steps"]
+        ))
 
     def test_account_deletion_rejects_wrong_confirmation(self):
         token = identity_core.issue_session(
