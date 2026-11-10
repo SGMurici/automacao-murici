@@ -93,7 +93,7 @@ A migration `migrations/0002_identity_core.sql` já cria `external_connections`,
 A implementação de backup ainda depende de localizar o repositório Android correto. No GitHub conectado, o único repositório acessível atualmente é `SGMurici/automacao-murici`, que contém o backend Python; não foi encontrado um projeto Android/Kotlin/Flutter nesse acesso. Não criar um app paralelo nem presumir stack enquanto o repositório real não estiver identificado.
 
 
-## Implementação backend — persistência isolada de conexão (lote 11/11/2026)
+## Implementação backend — persistência isolada de conexão (lote 10/11/2026)
 
 Foi criado `drive_backup_connections.py` para reutilizar `external_connections` sem duplicar tabela. A camada oferece salvar/atualizar, recuperar credenciais para o titular, atualizar tokens, revogar apagando ciphertext e listar apenas metadados. Toda leitura/escrita é restrita por user_id + tenant_id + provider. O upsert exige usuário ativo e membership ativa e não permite sobrescrever conexão do mesmo tenant pertencente a outro usuário.
 
@@ -106,7 +106,7 @@ Foi criado `drive_backup_connections.py` para reutilizar `external_connections` 
 **Limite importante:** esta camada é persistência e controle de propriedade, não o fluxo OAuth completo. Só pode ser chamada depois de validar state + PKCE, trocar o código e validar o Google subject e os escopos. O fluxo mobile/Android ainda não foi implementado porque o repositório Android não foi localizado. O backend não deve aceitar tokens arbitrários enviados por um cliente sem prova verificável de origem.
 
 
-## Preparação OAuth do cliente — state + PKCE (lote 11/11/2026)
+## Preparação OAuth do cliente — state + PKCE (lote 10/11/2026)
 
 - Migration `0004_customer_drive_oauth.sql` amplia `oauth_states` sem alterar a semântica das linhas legadas: adiciona purpose, user_id, tenant_id, ciphertext do PKCE verifier e redirect URI; fluxo de cliente exige vínculo tenant/user e verifier cifrado.
 - `drive_backup_oauth.py` cria state aleatório com TTL de 10 minutos, calcula PKCE S256, guarda apenas SHA-256 do state e verifier criptografado, exige usuário e membership ativos e monta URL com escopo mínimo `drive.file`.
@@ -116,7 +116,7 @@ Foi criado `drive_backup_connections.py` para reutilizar `external_connections` 
 **Ainda não é um OAuth funcional ponta a ponta:** faltam rota autenticada de início, callback server-side, troca do authorization code com PKCE, validação do Google subject/userinfo, persistência dos tokens com `drive_backup_connections.py`, renovação/revogação remota e deep-link/UX Android. A migration não foi aplicada em banco algum; PR continua Draft.
 
 
-## Estado do lote de implementação — 11/11/2026
+## Estado do lote de implementação — 10/11/2026
 
 ### Arquivos adicionados
 - `migrations/0004_customer_drive_oauth.sql`: vincula estados OAuth temporários ao user/tenant e guarda PKCE verifier criptografado; mantém estados legados isolados com purpose `legacy`.
@@ -141,7 +141,7 @@ Foi criado `drive_backup_connections.py` para reutilizar `external_connections` 
 - Não aplicar migration 0004 nem habilitar cliente real até revisão do callback e testes de integração.
 
 
-## Adaptador de troca OAuth e revogação Google (lote 11/11/2026)
+## Adaptador de troca OAuth e revogação Google (lote 10/11/2026)
 
 - `google_oauth_exchange.py` troca authorization code com PKCE verifier e redirect URI exata, usando adaptadores HTTP injetados.
 - Consulta OpenID userinfo e exige `sub` estável; o e-mail é somente rótulo opcional, nunca chave de propriedade.
