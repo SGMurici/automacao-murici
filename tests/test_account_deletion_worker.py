@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 import account_deletion_worker as worker
+import account_deletion_core
 
 
 class FakeCursor:
@@ -104,6 +105,92 @@ class DeletionWorkerTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     worker.run_ready_deletions(lambda: self.fail("connection opened"), value)
+
+
+
+class StepCursor:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.executed = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, query, params=None):
+        self.executed.append((query, params))
+
+    def fetchone(self):
+        return self.rows.pop(0) if self.rows else None
+
+
+class StepConnection:
+    def __init__(self, rows):
+        self.step_cursor = StepCursor(rows)
+
+    def cursor(self):
+        return self.step_cursor
+
+
+class DeletionStepEvidenceTests(unittest.TestCase):
+    def test_external_step_requires_opaque_evidence_reference(self):
+        conn = StepConnection([])
+        with self.assertRaises(ValueError):
+            account_deletion_core.complete_deletion_step(
+                conn, "request-1", "connected_providers"
+            )
+        self.assertEqual(conn.step_cursor.executed, [])
+
+    def test_same_terminal_confirmation_is_idempotent(self):
+        conn = StepConnection([("completed", "provider-revocation-123", "processing")])
+        self.assertTrue(
+            account_deletion_core.complete_deletion_step(
+                conn,
+                "request-1",
+                "connected_providers",
+                evidence_reference="provider-revocation-123",
+            )
+        )
+        self.assertEqual(len(conn.step_cursor.executed), 1)
+
+    def test_terminal_step_cannot_be_reclassified(self):
+        conn = StepConnection([("completed", "provider-revocation-123", "processing")])
+        with self.assertRaises(ValueError):
+            account_deletion_core.complete_deletion_step(
+                conn,
+                "request-1",
+                "connected_providers",
+                evidence_reference="different-evidence",
+                not_applicable=True,
+            )
+        self.assertEqual(len(conn.step_cursor.executed), 1)
+
+    def test_completed_request_rejects_new_step_confirmation(self):
+        conn = StepConnection([("pending", None, "completed")])
+        with self.assertRaises(ValueError):
+            account_deletion_core.complete_deletion_step(
+                conn,
+                "request-1",
+                "backups",
+                evidence_reference="backup-tombstone-456",
+            )
+        self.assertEqual(len(conn.step_cursor.executed), 1)
+
+    def test_pending_step_requires_matching_transition(self):
+        conn = StepConnection([("pending", None, "requested"), (123,)])
+        self.assertTrue(
+            account_deletion_core.complete_deletion_step(
+                conn,
+                "request-1",
+                "backups",
+                evidence_reference="backup-tombstone-456",
+            )
+        )
+        update_sql, params = conn.step_cursor.executed[1]
+        self.assertIn("status IN ('pending', 'in_progress', 'blocked', 'failed')", update_sql)
+        self.assertEqual(params, ("completed", "backup-tombstone-456", "request-1", "backups"))
 
 
 if __name__ == "__main__":
