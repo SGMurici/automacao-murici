@@ -18,26 +18,61 @@ class InternalRouteAuthenticationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"status": "ok"})
 
-    def test_database_diagnostic_rejects_missing_secret(self):
-        response = self.client.get("/db-test")
-        self.assertEqual(response.status_code, 401)
+    def test_internal_diagnostic_routes_reject_missing_secret(self):
+        for method, path in (
+            ("get", "/db-test"),
+            ("get", "/crypto-test"),
+        ):
+            with self.subTest(method=method, path=path):
+                response = getattr(self.client, method)(path)
+                self.assertEqual(response.status_code, 401)
 
-    def test_crypto_diagnostic_rejects_missing_secret(self):
-        response = self.client.get("/crypto-test")
-        self.assertEqual(response.status_code, 401)
+    def test_operational_routes_reject_missing_secret(self):
+        protected_routes = (
+            ("get", "/google-drive/accounts"),
+            ("get", "/google-drive/check"),
+            ("get", "/google-drive/art-folder"),
+            ("post", "/google-drive/test"),
+            ("get", "/google-drive/health"),
+            ("get", "/google-drive/router"),
+            ("post", "/storage-test"),
+            ("post", "/linkedin/publish"),
+            ("post", "/scheduler/queue"),
+            ("get", "/scheduler/status"),
+            ("post", "/scheduler/run"),
+            ("get", "/analytics/prepare"),
+            ("post", "/analytics/record"),
+        )
 
-    def test_scheduler_rejects_missing_secret(self):
-        response = self.client.post("/scheduler/run")
-        self.assertEqual(response.status_code, 401)
+        for method, path in protected_routes:
+            with self.subTest(method=method, path=path):
+                response = getattr(self.client, method)(path)
+                self.assertEqual(response.status_code, 401)
 
-    def test_internal_routes_reject_incorrect_secret(self):
+    def test_operational_routes_reject_incorrect_secret(self):
         headers = {"X-Publish-Secret": "incorrect"}
-        responses = [
-            self.client.get("/db-test", headers=headers),
-            self.client.get("/crypto-test", headers=headers),
-            self.client.post("/scheduler/run", headers=headers),
-        ]
-        self.assertEqual([response.status_code for response in responses], [403, 403, 403])
+        protected_routes = (
+            ("get", "/db-test"),
+            ("get", "/crypto-test"),
+            ("get", "/google-drive/accounts"),
+            ("get", "/google-drive/check"),
+            ("get", "/google-drive/art-folder"),
+            ("post", "/google-drive/test"),
+            ("get", "/google-drive/health"),
+            ("get", "/google-drive/router"),
+            ("post", "/storage-test"),
+            ("post", "/linkedin/publish"),
+            ("post", "/scheduler/queue"),
+            ("get", "/scheduler/status"),
+            ("post", "/scheduler/run"),
+            ("get", "/analytics/prepare"),
+            ("post", "/analytics/record"),
+        )
+
+        for method, path in protected_routes:
+            with self.subTest(method=method, path=path):
+                response = getattr(self.client, method)(path, headers=headers)
+                self.assertEqual(response.status_code, 403)
 
 
 if __name__ == "__main__":
