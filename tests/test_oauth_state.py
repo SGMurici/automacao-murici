@@ -1,16 +1,14 @@
 import unittest
-from unittest.mock import patch
-
 import app as application
 
 
 class OAuthStateConsumptionTests(unittest.TestCase):
     def setUp(self):
-        self.secret_key_patch = patch.object(
-            application.app, "secret_key", "unit-test-only-secret"
-        )
-        self.secret_key_patch.start()
-        self.addCleanup(self.secret_key_patch.stop)
+        self.original_secret_key = application.app.secret_key
+        application.app.secret_key = "unit-test-only-secret"
+
+    def tearDown(self):
+        application.app.secret_key = self.original_secret_key
 
     def test_valid_state_is_removed_from_current_session(self):
         with application.app.test_request_context("/"):
