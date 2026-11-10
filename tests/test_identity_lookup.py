@@ -24,7 +24,7 @@ class IdentityLookupTests(unittest.TestCase):
                     identity_lookup.normalize_identity("phone", value)
 
     def test_invalid_email_and_identity_type_are_rejected(self):
-        for value in ("missing-at.example", "a..b@example.com", "user@-bad.example", "user @example.com"):
+        for value in ("missing-at.example", "a..b@example.com", "user@-bad.example", "user @example.com", "user\\\\name@example.com"):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     identity_lookup.normalize_identity("email", value)
