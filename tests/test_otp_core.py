@@ -135,5 +135,47 @@ class OtpCoreTests(unittest.TestCase):
         self.assertEqual(conn.cursor_instance.executed, [])
 
 
+    def test_rate_limit_reserves_first_slot_and_uses_pseudonymous_dimensions(self):
+        conn = FakeConnection([(1,)])
+        self.assertTrue(
+            otp_core.reserve_otp_request_slot(
+                conn, "identity", self.identity_hash, "login"
+            )
+        )
+        query, params = conn.cursor_instance.executed[0]
+        self.assertIn("ON CONFLICT (dimension_type, dimension_hash, purpose)", query)
+        self.assertIn("last_requested_at", query)
+        self.assertEqual(params[:3], ("identity", self.identity_hash, "login"))
+        self.assertEqual(params[-1], 5)
+
+    def test_rate_limit_rejects_when_cooldown_or_quota_blocks_upsert(self):
+        conn = FakeConnection([])
+        self.assertFalse(
+            otp_core.reserve_otp_request_slot(
+                conn, "ip", self.identity_hash, "signup"
+            )
+        )
+        self.assertEqual(len(conn.cursor_instance.executed), 1)
+
+    def test_rate_limit_rejects_invalid_dimensions_and_policy_before_database(self):
+        conn = FakeConnection([(1,)])
+        invalid = [
+            ("email", self.identity_hash, "login"),
+            ("identity", b"short", "login"),
+            ("device", self.identity_hash, "unknown"),
+        ]
+        for dimension, digest, purpose in invalid:
+            with self.subTest(dimension=dimension, purpose=purpose):
+                with self.assertRaises(ValueError):
+                    otp_core.reserve_otp_request_slot(
+                        conn, dimension, digest, purpose
+                    )
+        with self.assertRaises(ValueError):
+            otp_core.reserve_otp_request_slot(
+                conn, "identity", self.identity_hash, "login", cooldown_seconds=0
+            )
+        self.assertEqual(conn.cursor_instance.executed, [])
+
+
 if __name__ == "__main__":
     unittest.main()
