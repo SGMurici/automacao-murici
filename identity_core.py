@@ -26,10 +26,15 @@ def issue_session(conn, user_id, ttl_seconds=60 * 60 * 24 * 7, device_label=None
         cur.execute(
             """INSERT INTO auth_sessions
                (token_hash, user_id, created_at, expires_at, last_seen_at, device_label)
-               VALUES (%s, %s, NOW(),
-                       NOW() + (%s * INTERVAL '1 second'), NOW(), %s)""",
-            (token_hash, user_id, int(ttl_seconds), device_label),
+               SELECT %s, id, NOW(),
+                      NOW() + (%s * INTERVAL '1 second'), NOW(), %s
+               FROM app_users
+               WHERE id = %s AND status = 'active'
+               RETURNING token_hash""",
+            (token_hash, int(ttl_seconds), device_label, user_id),
         )
+        if not cur.fetchone():
+            raise ValueError("Usuário inexistente ou inativo.")
     return raw_token
 
 
@@ -66,12 +71,15 @@ def rotate_session(conn, raw_token, ttl_seconds=60 * 60 * 24 * 7, device_label=N
     new_hash = hash_session_token(new_token)
     with conn.cursor() as cur:
         cur.execute(
-            """UPDATE auth_sessions
+            """UPDATE auth_sessions AS s
                SET revoked_at = NOW(), replaced_by_token_hash = %s
-               WHERE token_hash = %s
-                 AND revoked_at IS NULL
-                 AND expires_at > NOW()
-               RETURNING user_id""",
+               FROM app_users AS u
+               WHERE s.token_hash = %s
+                 AND s.user_id = u.id
+                 AND u.status = 'active'
+                 AND s.revoked_at IS NULL
+                 AND s.expires_at > NOW()
+               RETURNING s.user_id""",
             (new_hash, old_hash),
         )
         row = cur.fetchone()
