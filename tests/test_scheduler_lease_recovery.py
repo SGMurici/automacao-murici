@@ -34,6 +34,9 @@ class SchedulerLeaseRecoveryIntegrationTests(unittest.TestCase):
                 id BIGSERIAL PRIMARY KEY,
                 status VARCHAR(30) NOT NULL,
                 post_number INTEGER,
+                title TEXT,
+                scheduled_for TIMESTAMPTZ,
+                attempts INTEGER NOT NULL DEFAULT 0,
                 locked_at TIMESTAMPTZ,
                 linkedin_post_id TEXT,
                 reconciliation_required_at TIMESTAMPTZ,
@@ -134,6 +137,40 @@ class SchedulerLeaseRecoveryIntegrationTests(unittest.TestCase):
                 "INSERT INTO linkedin_publish_queue (post_number, status) VALUES (42, 'agendado')"
             )
         self.conn.rollback()
+
+    def test_reconciliation_endpoint_lists_only_uncertain_metadata(self):
+        queue_id = self.conn.execute(
+            """INSERT INTO linkedin_publish_queue
+               (status, post_number, title, scheduled_for, attempts,
+                linkedin_post_id, reconciliation_required_at, error_message)
+               VALUES ('incerto', 73, 'Post pendente', NOW() - INTERVAL '1 hour',
+                       2, 'urn:li:share:uncertain', NOW(), 'Verificar externamente')
+               RETURNING id"""
+        ).fetchone()[0]
+        self.conn.execute(
+            """INSERT INTO linkedin_publish_queue
+               (status, post_number, title, scheduled_for)
+               VALUES ('agendado', 74, 'Post futuro', NOW() + INTERVAL '1 hour')"""
+        )
+        self.conn.commit()
+
+        with (
+            patch.object(application, "require_publish_secret", return_value=None),
+            patch.object(application, "ensure_scheduler_tables"),
+            patch.object(
+                application, "get_db_connection", side_effect=self._application_db_connection
+            ),
+        ):
+            response = application.app.test_client().get("/scheduler/reconciliation")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(len(payload["itens"]), 1)
+        item = payload["itens"][0]
+        self.assertEqual(item["queue_id"], queue_id)
+        self.assertEqual(item["linkedin_post_id"], "urn:li:share:uncertain")
+        self.assertEqual(item["attempts"], 2)
+        self.assertNotIn("content", item)
 
     def test_recovery_rejects_invalid_lease_duration(self):
         for value in (0, -1, True, 1.5, "15"):
