@@ -405,7 +405,8 @@ def ensure_scheduler_tables():
                   AND status IN (
                       'agendado',
                       'processando',
-                      'publicado'
+                      'publicado',
+                      'incerto'
                   );
                 """
             )
@@ -1191,6 +1192,7 @@ def scheduler_publish_one():
                     return {
                         "status": "idle",
                         "mensagem": "Nenhuma publicacao vencida na fila.",
+                        "recuperadas_para_reconciliacao": recovered_count,
                     }
 
                 (
@@ -1264,6 +1266,7 @@ def scheduler_publish_one():
                 "post_number": post_number,
                 "linkedin_post_id": post_id,
                 "editorial_post_id": editorial_post_id,
+                "recuperadas_para_reconciliacao": recovered_count,
             }
 
         except Exception as error:
@@ -1322,7 +1325,8 @@ def scheduler_publish_one():
                 "mensagem": safe_message,
                 "queue_id": queue_id,
                 "post_number": post_number,
-                "reconciliacao_manual": bool(locals().get("post_id")),
+                "reconciliacao_manual": True,
+                "recuperadas_para_reconciliacao": recovered_count,
             }
 
     finally:
