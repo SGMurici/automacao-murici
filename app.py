@@ -399,20 +399,6 @@ def ensure_scheduler_tables():
             cur.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS
-                    uq_linkedin_publish_queue_active_post_number
-                ON linkedin_publish_queue(post_number)
-                WHERE post_number IS NOT NULL
-                  AND status IN (
-                      'agendado',
-                      'processando',
-                      'publicado'
-                  );
-                """
-            )
-
-            cur.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS
                     uq_linkedin_publish_queue_reserved_post_number
                 ON linkedin_publish_queue(post_number)
                 WHERE post_number IS NOT NULL
