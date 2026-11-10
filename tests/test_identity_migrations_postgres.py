@@ -363,7 +363,11 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             "legal_retention",
         ):
             account_deletion_core.complete_deletion_step(
-                self.conn, request_id, system, not_applicable=True
+                self.conn,
+                request_id,
+                system,
+                evidence_reference=f"test-{system}-review",
+                not_applicable=True,
             )
 
         self.assertTrue(
