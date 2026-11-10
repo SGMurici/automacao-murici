@@ -151,3 +151,10 @@ Foi criado `drive_backup_connections.py` para reutilizar `external_connections` 
 - Testes unitários simulam troca, PKCE, escopos, subject, ausência de refresh token e revogação; nenhuma chamada real ao Google é feita pela suíte.
 
 **Limite:** adaptador protocolar pronto e testável, mas ainda não conectado a rotas Flask nem ao fluxo Android. A implementação de callback deve consumir o state antes da troca, persistir tokens somente após validar subject/tenant e tratar erros sem expor payloads OAuth.
+
+
+## Renovação e rotação de refresh token
+
+`google_oauth_exchange.refresh_google_access_token` foi adicionado. O adaptador valida que a conexão já possui `drive.file`, renova o access token, valida token type/expiração e preserva o refresh token anterior quando o Google não envia um novo. Se o Google rotacionar o refresh token, o novo valor é devolvido para persistência cifrada imediata. Falhas como `invalid_grant`, escopo ausente/ampliado ou resposta inválida não devem apagar credenciais; a conexão deve ficar em `reauthorization_required` e solicitar nova autorização. Testes cobrem renovação, rotação, expansão de escopo e refresh revogado.
+
+**Regra operacional:** atualizar os dois ciphertexts e `token_expires_at` na mesma transação PostgreSQL. Nunca sobrescrever o refresh token válido com valor nulo ou persistir apenas o access token novo.
