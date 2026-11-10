@@ -12,6 +12,8 @@ from flask import Flask, jsonify, redirect, request, session
 import psycopg
 from cryptography.fernet import Fernet
 
+import identity_core
+
 
 app = Flask(__name__)
 
@@ -1303,6 +1305,84 @@ def health():
             "status": "ok"
         }
     )
+
+
+def bearer_session_token():
+    """Lê token opaco somente do cabeçalho Authorization: Bearer."""
+    authorization = request.headers.get("Authorization", "")
+    scheme, separator, token = authorization.partition(" ")
+    if (
+        not separator
+        or scheme.lower() != "bearer"
+        or not token
+        or token.strip() != token
+        or len(token) > 512
+    ):
+        return None
+    return token
+
+
+@app.get("/api/v1/me")
+def api_current_user():
+    """Retorna somente o usuário autenticado e seus tenants ativos."""
+    token = bearer_session_token()
+    if not token:
+        return jsonify({"status": "erro", "mensagem": "Autenticação necessária."}), 401
+
+    try:
+        with get_db_connection() as conn:
+            user_id = identity_core.validate_session(conn, token)
+            if not user_id:
+                return jsonify({"status": "erro", "mensagem": "Sessão inválida ou expirada."}), 401
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT t.id, t.tenant_type, t.display_name, m.role
+                       FROM tenant_memberships AS m
+                       JOIN tenants AS t ON t.id = m.tenant_id
+                       WHERE m.user_id = %s
+                         AND m.status = 'active'
+                       ORDER BY t.created_at, t.id""",
+                    (user_id,),
+                )
+                memberships = cur.fetchall()
+
+        return jsonify({
+            "status": "ok",
+            "usuario": {"id": str(user_id)},
+            "tenants": [
+                {
+                    "id": str(row[0]),
+                    "tipo": row[1],
+                    "nome": row[2],
+                    "papel": row[3],
+                }
+                for row in memberships
+            ],
+        })
+    except Exception:
+        app.logger.exception("Falha ao consultar identidade autenticada")
+        return safe_error_response("Não foi possível validar a sessão.")
+
+
+@app.post("/api/v1/logout")
+def api_logout():
+    """Revoga a sessão apresentada no cabeçalho Bearer."""
+    token = bearer_session_token()
+    if not token:
+        return jsonify({"status": "erro", "mensagem": "Autenticação necessária."}), 401
+
+    try:
+        with get_db_connection() as conn:
+            user_id = identity_core.validate_session(conn, token)
+            if not user_id:
+                return jsonify({"status": "erro", "mensagem": "Sessão inválida ou expirada."}), 401
+            identity_core.revoke_session(conn, token)
+
+        return jsonify({"status": "ok", "mensagem": "Sessão encerrada."})
+    except Exception:
+        app.logger.exception("Falha ao encerrar sessão autenticada")
+        return safe_error_response("Não foi possível encerrar a sessão.")
 
 
 @app.get("/db-test")
