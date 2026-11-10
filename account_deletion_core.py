@@ -216,15 +216,20 @@ def process_primary_database_deletion(conn, request_id):
             raise ValueError("Solicitação sem vínculo de usuário antes da conclusão.")
 
         cur.execute(
-            """SELECT system_key, status
+            """SELECT system_key, status, evidence_reference
                FROM account_deletion_steps
                WHERE request_id = %s""",
             (request_id,),
         )
-        step_statuses = {row[0]: row[1] for row in cur.fetchall()}
+        step_statuses = {
+            row[0]: (row[1], row[2]) for row in cur.fetchall()
+        }
         required_external = set(DELETION_SYSTEMS) - {"primary_database"}
         if any(
-            step_statuses.get(system) not in {"completed", "not_applicable"}
+            step_statuses.get(system, (None, None))[0]
+            not in {"completed", "not_applicable"}
+            or not isinstance(step_statuses.get(system, (None, None))[1], str)
+            or not step_statuses[system][1].strip()
             for system in required_external
         ):
             return False
