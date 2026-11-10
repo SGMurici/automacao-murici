@@ -18,6 +18,11 @@ def hash_session_token(raw_token):
 
 
 def issue_session(conn, user_id, ttl_seconds=60 * 60 * 24 * 7, device_label=None):
+    """Issue a session after successful identity authentication.
+
+    authenticated_at records the authentication event and is deliberately
+    independent from created_at so token rotation cannot refresh it.
+    """
     if not MIN_SESSION_TTL_SECONDS <= int(ttl_seconds) <= MAX_SESSION_TTL_SECONDS:
         raise ValueError("Prazo de sessão fora do limite permitido.")
     raw_token = secrets.token_urlsafe(48)
@@ -25,8 +30,8 @@ def issue_session(conn, user_id, ttl_seconds=60 * 60 * 24 * 7, device_label=None
     with conn.cursor() as cur:
         cur.execute(
             """INSERT INTO auth_sessions
-               (token_hash, user_id, created_at, expires_at, last_seen_at, device_label)
-               SELECT %s, id, NOW(),
+               (token_hash, user_id, created_at, authenticated_at, expires_at, last_seen_at, device_label)
+               SELECT %s, id, NOW(), NOW(),
                       NOW() + (%s * INTERVAL '1 second'), NOW(), %s
                FROM app_users
                WHERE id = %s AND status = 'active'
@@ -62,7 +67,7 @@ def validate_session(conn, raw_token):
 
 
 def is_recent_session(conn, raw_token, max_age_seconds=900):
-    """Require a recently issued session for sensitive, irreversible actions."""
+    """Require a recent successful authentication for sensitive actions."""
     if isinstance(max_age_seconds, bool) or not 60 <= int(max_age_seconds) <= 3600:
         raise ValueError("Janela de reautenticação fora do limite permitido.")
     try:
@@ -78,7 +83,7 @@ def is_recent_session(conn, raw_token, max_age_seconds=900):
                  AND u.status = 'active'
                  AND s.revoked_at IS NULL
                  AND s.expires_at > NOW()
-                 AND s.created_at >= NOW() - (%s * INTERVAL '1 second')
+                 AND s.authenticated_at >= NOW() - (%s * INTERVAL '1 second')
                LIMIT 1""",
             (token_hash, int(max_age_seconds)),
         )
@@ -104,19 +109,20 @@ def rotate_session(conn, raw_token, ttl_seconds=60 * 60 * 24 * 7, device_label=N
                  AND u.status = 'active'
                  AND s.revoked_at IS NULL
                  AND s.expires_at > NOW()
-               RETURNING s.user_id""",
+               RETURNING s.user_id, s.authenticated_at""",
             (new_hash, old_hash),
         )
         row = cur.fetchone()
         if not row:
             return None
-        user_id = row[0]
+        user_id, authenticated_at = row
         cur.execute(
             """INSERT INTO auth_sessions
-               (token_hash, user_id, created_at, expires_at, last_seen_at, device_label)
-               VALUES (%s, %s, NOW(),
+               (token_hash, user_id, created_at, authenticated_at,
+                expires_at, last_seen_at, device_label)
+               VALUES (%s, %s, NOW(), %s,
                        NOW() + (%s * INTERVAL '1 second'), NOW(), %s)""",
-            (new_hash, user_id, int(ttl_seconds), device_label),
+            (new_hash, user_id, authenticated_at, int(ttl_seconds), device_label),
         )
     return new_token
 
