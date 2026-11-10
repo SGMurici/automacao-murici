@@ -143,20 +143,22 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
 
     def test_invalid_otp_attempt_limits_and_audit_result_are_rejected(self):
         with self.assertRaises(psycopg.errors.CheckViolation):
-            self.conn.execute(
-                """INSERT INTO otp_challenges
-                   (id, identity_type, identity_lookup_hash, purpose, code_hash,
-                    expires_at, max_attempts)
-                   VALUES (%s, 'email', %s, 'login', %s,
-                           NOW() + INTERVAL '5 minutes', 11)""",
-                (uuid.uuid4(), b"lookup", b"code-hash"),
-            )
+            with self.conn.transaction():
+                self.conn.execute(
+                    """INSERT INTO otp_challenges
+                       (id, identity_type, identity_lookup_hash, purpose, code_hash,
+                        expires_at, max_attempts)
+                       VALUES (%s, 'email', %s, 'login', %s,
+                               NOW() + INTERVAL '5 minutes', 11)""",
+                    (uuid.uuid4(), b"lookup", b"code-hash"),
+                )
         with self.assertRaises(psycopg.errors.CheckViolation):
-            self.conn.execute(
-                """INSERT INTO audit_events (id, action, result)
-                   VALUES (%s, 'profile.read', 'maybe')""",
-                (uuid.uuid4(),),
-            )
+            with self.conn.transaction():
+                self.conn.execute(
+                    """INSERT INTO audit_events (id, action, result)
+                       VALUES (%s, 'profile.read', 'maybe')""",
+                    (uuid.uuid4(),),
+                )
 
 
 if __name__ == "__main__":
