@@ -185,7 +185,7 @@ class OtpCoreTests(unittest.TestCase):
             "identity", "person@example.test", self.pepper
         )
         ip = otp_core.hash_otp_rate_limit_dimension(
-            "ip", "person@example.test", self.pepper
+            "ip", "192.0.2.1", self.pepper
         )
         other_key = otp_core.hash_otp_rate_limit_dimension(
             "identity", "person@example.test", b"q" * 32
