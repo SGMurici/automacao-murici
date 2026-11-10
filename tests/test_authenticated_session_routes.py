@@ -73,6 +73,7 @@ class AuthenticatedSessionRouteTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
         payload = response.get_json()
         self.assertEqual(payload["usuario"]["id"], "user-1")
         self.assertEqual(len(payload["tenants"]), 2)
