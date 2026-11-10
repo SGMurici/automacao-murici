@@ -83,6 +83,36 @@ class AuthenticatedSessionRouteTests(unittest.TestCase):
         self.assertIn("m.status = 'active'", query)
         self.assertEqual(params, ("user-1",))
 
+    def test_session_rotation_returns_new_token_without_caching(self):
+        connection = FakeConnection()
+        with (
+            patch.object(application, "get_db_connection", return_value=connection),
+            patch.object(
+                application.identity_core, "rotate_session", return_value="n" * 64
+            ) as rotate,
+        ):
+            response = self.client.post(
+                "/api/v1/session/rotate",
+                headers={"Authorization": "Bearer " + "o" * 48},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        self.assertEqual(response.get_json()["access_token"], "n" * 64)
+        rotate.assert_called_once_with(connection, "o" * 48)
+
+    def test_session_rotation_rejects_invalid_or_expired_token(self):
+        connection = FakeConnection()
+        with (
+            patch.object(application, "get_db_connection", return_value=connection),
+            patch.object(application.identity_core, "rotate_session", return_value=None),
+        ):
+            response = self.client.post(
+                "/api/v1/session/rotate",
+                headers={"Authorization": "Bearer " + "o" * 48},
+            )
+        self.assertEqual(response.status_code, 401)
+
     def test_logout_validates_then_revokes_presented_session(self):
         connection = FakeConnection()
         with (
