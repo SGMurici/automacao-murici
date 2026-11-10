@@ -106,6 +106,69 @@ def exchange_authorization_code(
     }
 
 
+def refresh_google_access_token(
+    *,
+    refresh_token,
+    client_id,
+    client_secret,
+    granted_scopes,
+    post_form,
+    now=None,
+):
+    """Refresh an access token while preserving the durable refresh credential."""
+    if not isinstance(refresh_token, str) or not refresh_token:
+        raise ValueError("Refresh token Google ausente.")
+    if not isinstance(client_id, str) or not client_id.strip():
+        raise ValueError("Client ID Google obrigatório.")
+    if not isinstance(client_secret, str) or not client_secret.strip():
+        raise ValueError("Client secret Google obrigatório.")
+    if not callable(post_form):
+        raise ValueError("Adaptador HTTP indisponível.")
+
+    from drive_backup_connections import validate_granted_scopes
+
+    previous_scopes = validate_granted_scopes(granted_scopes)
+    status, token_data = post_form(
+        TOKEN_URL,
+        {
+            "client_id": client_id.strip(),
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        },
+    )
+    if status != 200 or not isinstance(token_data, dict):
+        raise GoogleOAuthExchangeError("Google não renovou a autorização do backup.")
+
+    access_token = token_data.get("access_token")
+    token_type = token_data.get("token_type")
+    expires_in = token_data.get("expires_in")
+    if not isinstance(access_token, str) or not access_token:
+        raise GoogleOAuthExchangeError("Google não retornou access token renovado.")
+    if not isinstance(token_type, str) or token_type.lower() != "bearer":
+        raise GoogleOAuthExchangeError("Tipo de token Google inesperado.")
+    if isinstance(expires_in, bool) or not isinstance(expires_in, int) or expires_in <= 0:
+        raise GoogleOAuthExchangeError("Expiração do token Google inválida.")
+
+    returned_scope = token_data.get("scope")
+    scopes = returned_scope.split() if isinstance(returned_scope, str) and returned_scope.strip() else previous_scopes
+    scopes = validate_granted_scopes(scopes)
+    rotated_refresh = token_data.get("refresh_token")
+    if not isinstance(rotated_refresh, str) or not rotated_refresh:
+        rotated_refresh = refresh_token
+
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+
+    return {
+        "access_token": access_token,
+        "refresh_token": rotated_refresh,
+        "token_expires_at": current_time + timedelta(seconds=expires_in),
+        "granted_scopes": scopes,
+    }
+
+
 def revoke_google_token(*, token, post_form):
     """Ask Google to revoke a token; caller must retain local credentials on failure."""
     if not isinstance(token, str) or not token:
