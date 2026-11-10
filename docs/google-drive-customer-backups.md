@@ -104,3 +104,13 @@ Foi criado `drive_backup_connections.py` para reutilizar `external_connections` 
 - Testes unitários cobrem escopos, associação a usuário/tenant, confidencialidade, atualização, revogação e listagem.
 
 **Limite importante:** esta camada é persistência e controle de propriedade, não o fluxo OAuth completo. Só pode ser chamada depois de validar state + PKCE, trocar o código e validar o Google subject e os escopos. O fluxo mobile/Android ainda não foi implementado porque o repositório Android não foi localizado. O backend não deve aceitar tokens arbitrários enviados por um cliente sem prova verificável de origem.
+
+
+## Preparação OAuth do cliente — state + PKCE (lote 11/11/2026)
+
+- Migration `0004_customer_drive_oauth.sql` amplia `oauth_states` sem alterar a semântica das linhas legadas: adiciona purpose, user_id, tenant_id, ciphertext do PKCE verifier e redirect URI; fluxo de cliente exige vínculo tenant/user e verifier cifrado.
+- `drive_backup_oauth.py` cria state aleatório com TTL de 10 minutos, calcula PKCE S256, guarda apenas SHA-256 do state e verifier criptografado, exige usuário e membership ativos e monta URL com escopo mínimo `drive.file`.
+- O consumo usa `DELETE ... RETURNING`, validando provider/purpose/expiração e tornando o state de uso único. Retorna contexto do titular e verifier para a futura troca server-side.
+- Testes unitários cobrem PKCE, escopo, membership, HTTPS redirect, state de uso único, expiração e falha de descriptografia.
+
+**Ainda não é um OAuth funcional ponta a ponta:** faltam rota autenticada de início, callback server-side, troca do authorization code com PKCE, validação do Google subject/userinfo, persistência dos tokens com `drive_backup_connections.py`, renovação/revogação remota e deep-link/UX Android. A migration não foi aplicada em banco algum; PR continua Draft.
