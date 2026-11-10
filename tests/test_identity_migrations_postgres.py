@@ -14,6 +14,7 @@ from psycopg import sql
 from unittest.mock import patch
 
 import app as application
+import identity_core
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -192,6 +193,35 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
         self.assertEqual(
             self.conn.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0], 1
         )
+
+    def test_authenticated_identity_and_logout_routes_against_postgres(self):
+        token = identity_core.issue_session(
+            self.conn, self.user_id, ttl_seconds=600, device_label="integration-test"
+        )
+        self.conn.commit()
+        client = application.app.test_client()
+
+        with patch.object(
+            application, "get_db_connection", side_effect=self._application_db_connection
+        ):
+            profile = client.get(
+                "/api/v1/me", headers={"Authorization": "Bearer " + token}
+            )
+            self.assertEqual(profile.status_code, 200)
+            payload = profile.get_json()
+            self.assertEqual(payload["usuario"]["id"], str(self.user_id))
+            self.assertEqual(len(payload["tenants"]), 1)
+            self.assertEqual(payload["tenants"][0]["id"], str(self.tenant_id))
+
+            logout = client.post(
+                "/api/v1/logout", headers={"Authorization": "Bearer " + token}
+            )
+            self.assertEqual(logout.status_code, 200)
+
+            after_logout = client.get(
+                "/api/v1/me", headers={"Authorization": "Bearer " + token}
+            )
+            self.assertEqual(after_logout.status_code, 401)
 
     def test_duplicate_identity_lookup_is_rejected(self):
         values = (self.user_id, b"same-hash", b"ciphertext")
