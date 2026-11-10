@@ -405,8 +405,7 @@ def ensure_scheduler_tables():
                   AND status IN (
                       'agendado',
                       'processando',
-                      'publicado',
-                      'incerto'
+                      'publicado'
                   );
                 """
             )
