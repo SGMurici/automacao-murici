@@ -17,6 +17,8 @@ import app as application
 import identity_core
 import authorization_core
 import account_deletion_core
+import drive_backup_oauth
+import drive_backup_connections
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -25,6 +27,7 @@ MIGRATIONS = (
     ROOT / "migrations" / "0001_oauth_states.sql",
     ROOT / "migrations" / "0002_identity_core.sql",
     ROOT / "migrations" / "0003_account_deletion.sql",
+    ROOT / "migrations" / "0004_customer_drive_oauth.sql",
 )
 
 
@@ -459,6 +462,101 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
                    VALUES (%s, %s, %s, 'google', 'account-1')""",
                 (uuid.uuid4(), self.user_id, uuid.uuid4()),
             )
+
+
+    def test_customer_drive_oauth_flow_is_bound_to_real_tenant_and_single_use(self):
+        encrypt = lambda value: ("cipher:" + value).encode("utf-8")
+        decrypt = lambda value: value.decode("utf-8").removeprefix("cipher:")
+        result = drive_backup_oauth.create_flow(
+            self.conn,
+            user_id=self.user_id,
+            tenant_id=self.tenant_id,
+            redirect_uri="https://api.example.test/api/v1/integrations/google-drive/callback",
+            client_id="test-client-id",
+            encrypt=encrypt,
+        )
+        self.conn.commit()
+
+        stored = self.conn.execute(
+            """SELECT state_hash, user_id, tenant_id, code_verifier_ciphertext,
+                      purpose, expires_at
+               FROM oauth_states WHERE purpose = 'drive_backup'"""
+        ).fetchone()
+        self.assertEqual(stored[0].strip(), hashlib.sha256(result["state"].encode()).hexdigest())
+        self.assertEqual(stored[1], self.user_id)
+        self.assertEqual(stored[2], self.tenant_id)
+        self.assertTrue(bytes(stored[3]).startswith(b"cipher:"))
+        self.assertEqual(stored[4], "drive_backup")
+
+        context = drive_backup_oauth.consume_flow(
+            self.conn, state=result["state"], decrypt=decrypt
+        )
+        self.conn.commit()
+        self.assertEqual(context["user_id"], self.user_id)
+        self.assertEqual(context["tenant_id"], self.tenant_id)
+        self.assertTrue(context["code_verifier"])
+        self.assertIsNone(
+            drive_backup_oauth.consume_flow(
+                self.conn, state=result["state"], decrypt=decrypt
+            )
+        )
+
+    def test_customer_drive_connection_persists_encrypted_tokens_per_owner(self):
+        encrypt = lambda value: ("cipher:" + value).encode("utf-8")
+        decrypt = lambda value: value.decode("utf-8").removeprefix("cipher:")
+        connection_id = drive_backup_connections.save_connection(
+            self.conn,
+            user_id=self.user_id,
+            tenant_id=self.tenant_id,
+            google_subject="google-subject-integration",
+            account_label="backup@example.test",
+            granted_scopes=[drive_backup_connections.REQUIRED_SCOPE, "openid", "email"],
+            access_token="access-secret-integration",
+            refresh_token="refresh-secret-integration",
+            token_expires_at=None,
+            encrypt=encrypt,
+        )
+        self.conn.commit()
+
+        stored = self.conn.execute(
+            """SELECT provider, user_id, tenant_id, access_token_ciphertext,
+                      refresh_token_ciphertext, status
+               FROM external_connections WHERE id = %s""",
+            (connection_id,),
+        ).fetchone()
+        self.assertEqual(stored[0], drive_backup_connections.PROVIDER)
+        self.assertEqual(stored[1], self.user_id)
+        self.assertEqual(stored[2], self.tenant_id)
+        self.assertEqual(bytes(stored[3]), b"cipher:access-secret-integration")
+        self.assertEqual(bytes(stored[4]), b"cipher:refresh-secret-integration")
+        self.assertEqual(stored[5], "active")
+
+        connection = drive_backup_connections.get_connection(
+            self.conn, user_id=self.user_id, tenant_id=self.tenant_id,
+            connection_id=connection_id, decrypt=decrypt,
+        )
+        self.assertEqual(connection["access_token"], "access-secret-integration")
+        self.assertEqual(connection["refresh_token"], "refresh-secret-integration")
+        self.assertIsNone(
+            drive_backup_connections.get_connection(
+                self.conn, user_id=uuid.uuid4(), tenant_id=self.tenant_id,
+                connection_id=connection_id, decrypt=decrypt,
+            )
+        )
+
+        self.assertTrue(
+            drive_backup_connections.revoke_connection(
+                self.conn, user_id=self.user_id, tenant_id=self.tenant_id,
+                connection_id=connection_id,
+            )
+        )
+        self.conn.commit()
+        revoked = self.conn.execute(
+            """SELECT status, access_token_ciphertext, refresh_token_ciphertext
+               FROM external_connections WHERE id = %s""",
+            (connection_id,),
+        ).fetchone()
+        self.assertEqual(revoked, ("revoked", None, None))
 
     def test_invalid_otp_attempt_limits_and_audit_result_are_rejected(self):
         with self.assertRaises(psycopg.errors.CheckViolation):
