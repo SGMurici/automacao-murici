@@ -1415,6 +1415,11 @@ def api_request_account_deletion():
             user_id = identity_core.validate_session(conn, token)
             if not user_id:
                 return jsonify({"status": "erro", "mensagem": "Sessão inválida ou expirada."}), 401
+            if not identity_core.is_recent_session(conn, token, max_age_seconds=900):
+                return jsonify({
+                    "status": "erro",
+                    "mensagem": "Por segurança, confirme novamente sua identidade e tente excluir a conta em até 15 minutos.",
+                }), 401
             deletion = account_deletion_core.request_account_deletion(conn, user_id)
 
         response = jsonify({
