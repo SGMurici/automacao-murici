@@ -1,3 +1,4 @@
+import hashlib
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -32,8 +33,13 @@ class FakeConnection:
 class DriveBackupConnectionTests(unittest.TestCase):
     def setUp(self):
         self.scopes = [drive.REQUIRED_SCOPE, "openid", "email"]
-        self.encrypt = lambda value: ("cipher:" + value).encode()
-        self.decrypt = lambda value: value.decode().removeprefix("cipher:")
+        self.vault = {}
+        def encrypt(value):
+            ciphertext = b"cipher:" + hashlib.sha256(value.encode()).digest()
+            self.vault[ciphertext] = value
+            return ciphertext
+        self.encrypt = encrypt
+        self.decrypt = lambda value: self.vault[value]
 
     def test_accepts_minimal_drive_file_scope(self):
         self.assertEqual(
