@@ -114,6 +114,24 @@ def require_session_secret():
     return None
 
 
+def consume_oauth_state(state_key, received_state):
+    """Valida e consome o state OAuth uma unica vez."""
+    expected_state = session.pop(state_key, None)
+
+    if not isinstance(received_state, str) or not received_state:
+        return False
+    if not isinstance(expected_state, str) or not expected_state:
+        return False
+
+    try:
+        received_bytes = received_state.encode("ascii")
+        expected_bytes = expected_state.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+
+    return secrets.compare_digest(received_bytes, expected_bytes)
+
+
 def safe_error_response(message="Falha interna. Consulte os logs do servidor.", status=500):
     """Resposta externa sem expor SQL, tokens ou detalhes internos."""
     return jsonify({"status": "erro", "mensagem": message}), status
@@ -1462,9 +1480,8 @@ def linkedin_callback():
     code = request.args.get("code")
     state = request.args.get("state")
 
-    expected_state = session.get("linkedin_oauth_state")
-
     if not code:
+        session.pop("linkedin_oauth_state", None)
         return jsonify(
             {
                 "status": "erro",
@@ -1472,19 +1489,11 @@ def linkedin_callback():
             }
         ), 400
 
-    if not state or not expected_state:
+    if not consume_oauth_state("linkedin_oauth_state", state):
         return jsonify(
             {
                 "status": "erro",
-                "mensagem": "Estado OAuth ausente.",
-            }
-        ), 400
-
-    if not secrets.compare_digest(state, expected_state):
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Estado OAuth invalido.",
+                "mensagem": "Estado OAuth ausente ou invalido.",
             }
         ), 403
 
@@ -1686,9 +1695,9 @@ def google_callback():
     code = request.args.get("code")
     state = request.args.get("state")
 
-    expected_state = session.get("google_oauth_state")
-
     if not code:
+        session.pop("google_oauth_state", None)
+        session.pop("google_oauth_account", None)
         return jsonify(
             {
                 "status": "erro",
@@ -1696,24 +1705,17 @@ def google_callback():
             }
         ), 400
 
-    if not state or not expected_state:
+    if not consume_oauth_state("google_oauth_state", state):
+        session.pop("google_oauth_account", None)
         return jsonify(
             {
                 "status": "erro",
-                "mensagem": "Estado OAuth do Google ausente.",
-            }
-        ), 400
-
-    if not secrets.compare_digest(state, expected_state):
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Estado OAuth do Google invalido.",
+                "mensagem": "Estado OAuth do Google ausente ou invalido.",
             }
         ), 403
 
     try:
-        account_name = normalize_google_account_name(session.get("google_oauth_account", "Drive5"))
+        account_name = normalize_google_account_name(session.pop("google_oauth_account", "Drive5"))
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
 
