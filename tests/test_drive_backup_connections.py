@@ -72,8 +72,8 @@ class DriveBackupConnectionTests(unittest.TestCase):
         self.assertIn("m.status = 'active'", query)
         self.assertIn("WHERE external_connections.user_id = EXCLUDED.user_id", query)
         self.assertEqual(params[0], drive.PROVIDER)
-        self.assertEqual(params[4], b"cipher:access-secret")
-        self.assertEqual(params[5], b"cipher:refresh-secret")
+        self.assertEqual(params[4], self.encrypt("access-secret"))
+        self.assertEqual(params[5], self.encrypt("refresh-secret"))
         self.assertNotIn("access-secret", repr(params))
         self.assertNotIn("refresh-secret", repr(params))
 
@@ -90,7 +90,7 @@ class DriveBackupConnectionTests(unittest.TestCase):
     def test_get_connection_is_scoped_and_decrypts_only_after_match(self):
         row = (
             "connection-1", "subject-1", "account@example.test",
-            self.scopes, b"cipher:a", b"cipher:r", None,
+            self.scopes, self.encrypt("a"), self.encrypt("r"), None,
         )
         conn = FakeConnection(one=row)
         result = drive.get_connection(
@@ -123,7 +123,7 @@ class DriveBackupConnectionTests(unittest.TestCase):
         query, params = conn.fake_cursor.calls[0]
         self.assertTrue(updated)
         self.assertIn("user_id = %s AND tenant_id = %s", query)
-        self.assertEqual(params[0:2], (b"cipher:new-a", b"cipher:new-r"))
+        self.assertEqual(params[0:2], (self.encrypt("new-a"), self.encrypt("new-r")))
 
     def test_revoke_erases_token_ciphertext_and_is_owner_scoped(self):
         conn = FakeConnection(one=("connection-1",))
