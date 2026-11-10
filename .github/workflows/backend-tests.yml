@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - main
+      - fix/foundation-batch-2026-11-10
   push:
     branches:
       - fix/foundation-batch-2026-11-10
