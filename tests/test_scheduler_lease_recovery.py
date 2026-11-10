@@ -33,6 +33,7 @@ class SchedulerLeaseRecoveryIntegrationTests(unittest.TestCase):
             """CREATE TABLE linkedin_publish_queue (
                 id BIGSERIAL PRIMARY KEY,
                 status VARCHAR(30) NOT NULL,
+                post_number INTEGER,
                 locked_at TIMESTAMPTZ,
                 linkedin_post_id TEXT,
                 reconciliation_required_at TIMESTAMPTZ,
@@ -121,6 +122,16 @@ class SchedulerLeaseRecoveryIntegrationTests(unittest.TestCase):
                 scheduled_id: "agendado",
             },
         )
+
+    def test_uncertain_state_keeps_editorial_number_reserved(self):
+        self.conn.execute(
+            "INSERT INTO linkedin_publish_queue (post_number, status) VALUES (42, 'incerto')"
+        )
+        with self.assertRaises(psycopg.errors.UniqueViolation):
+            self.conn.execute(
+                "INSERT INTO linkedin_publish_queue (post_number, status) VALUES (42, 'agendado')"
+            )
+        self.conn.rollback()
 
     def test_recovery_rejects_invalid_lease_duration(self):
         for value in (0, -1, True, 1.5, "15"):
