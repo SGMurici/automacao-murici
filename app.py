@@ -13,6 +13,7 @@ import psycopg
 from cryptography.fernet import Fernet
 
 import identity_core
+import account_deletion_core
 
 
 app = Flask(__name__)
@@ -1391,6 +1392,77 @@ def api_rotate_session():
     except Exception:
         app.logger.exception("Falha ao rotacionar sessão autenticada")
         return safe_error_response("Não foi possível renovar a sessão.")
+
+
+@app.post("/api/v1/account/deletion-request")
+def api_request_account_deletion():
+    """Queue deletion after explicit confirmation and immediately lock account access."""
+    token = bearer_session_token()
+    if not token:
+        return jsonify({"status": "erro", "mensagem": "Autenticação necessária."}), 401
+    if not request.is_json:
+        return jsonify({"status": "erro", "mensagem": "Envie a confirmação em JSON."}), 400
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or data.get("confirmacao") != account_deletion_core.CONFIRMATION_PHRASE:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Confirmação inválida. Digite EXCLUIR MINHA CONTA para continuar.",
+        }), 400
+
+    try:
+        with get_db_connection() as conn:
+            user_id = identity_core.validate_session(conn, token)
+            if not user_id:
+                return jsonify({"status": "erro", "mensagem": "Sessão inválida ou expirada."}), 401
+            deletion = account_deletion_core.request_account_deletion(conn, user_id)
+
+        response = jsonify({
+            "status": "requested",
+            "mensagem": (
+                "Solicitação registrada. O acesso à conta foi bloqueado e as sessões "
+                "foram revogadas. A exclusão só será considerada concluída após a "
+                "confirmação de todos os sistemas e etapas de retenção aplicáveis."
+            ),
+            "request_id": deletion["request_id"],
+            "comprovante_exclusao": deletion["receipt"],
+            "aviso": "Guarde este comprovante; ele será exibido somente nesta resposta.",
+        })
+        response.status_code = 202
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except account_deletion_core.DeletionAlreadyRequested:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Já existe uma solicitação de exclusão em andamento.",
+        }), 409
+    except account_deletion_core.AccountNotEligibleForDeletion:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "A conta não está em situação que permita iniciar uma nova exclusão.",
+        }), 409
+    except Exception:
+        app.logger.exception("Falha ao registrar solicitação de exclusão de conta")
+        return safe_error_response("Não foi possível registrar a solicitação de exclusão.")
+
+
+@app.get("/api/v1/account/deletion-status")
+def api_account_deletion_status():
+    """Expose only deletion progress to a holder of the one-time receipt."""
+    receipt = request.headers.get("X-Deletion-Receipt", "")
+    if not receipt:
+        return jsonify({"status": "erro", "mensagem": "Comprovante de exclusão necessário."}), 401
+    try:
+        with get_db_connection() as conn:
+            deletion_status = account_deletion_core.get_deletion_status(conn, receipt)
+        if not deletion_status:
+            return jsonify({"status": "erro", "mensagem": "Comprovante inválido ou expirado."}), 404
+        response = jsonify(deletion_status)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception:
+        app.logger.exception("Falha ao consultar status de exclusão de conta")
+        return safe_error_response("Não foi possível consultar o status da exclusão.")
 
 
 @app.post("/api/v1/logout")
