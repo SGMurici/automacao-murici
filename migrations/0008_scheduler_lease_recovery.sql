@@ -9,7 +9,7 @@ CREATE INDEX IF NOT EXISTS idx_linkedin_publish_queue_expired_processing
 
 -- Uncertain posts must continue reserving their editorial number.
 -- Rebuild the partial unique index with the new non-retryable state included.
-CREATE UNIQUE INDEX uq_linkedin_publish_queue_reserved_post_number
+CREATE UNIQUE INDEX IF NOT EXISTS uq_linkedin_publish_queue_reserved_post_number
     ON linkedin_publish_queue(post_number)
     WHERE post_number IS NOT NULL
       AND status IN ('agendado', 'processando', 'publicado', 'incerto');
