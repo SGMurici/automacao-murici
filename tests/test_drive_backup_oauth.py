@@ -47,6 +47,8 @@ class DriveBackupOAuthTests(unittest.TestCase):
         params = parse_qs(urlparse(result["authorization_url"]).query)
         self.assertEqual(params["code_challenge_method"], ["S256"])
         self.assertEqual(params["response_type"], ["code"])
+        self.assertEqual(params["access_type"], ["offline"])
+        self.assertEqual(params["prompt"], ["consent"])
         self.assertIn(oauth.GOOGLE_DRIVE_SCOPE, params["scope"][0])
         self.assertNotIn("https://www.googleapis.com/auth/drive ", params["scope"][0])
         self.assertEqual(params["state"], [result["state"]])
