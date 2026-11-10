@@ -139,3 +139,15 @@ Foi criado `drive_backup_connections.py` para reutilizar `external_connections` 
 - Persistir tokens com Fernet/`TOKEN_ENCRYPTION_KEY`; implementar refresh, revogação remota e reconciliação de falhas.
 - Criar UI Android e deep-link de retorno, testar app Android e fluxo de consentimento OAuth/verificação Google.
 - Não aplicar migration 0004 nem habilitar cliente real até revisão do callback e testes de integração.
+
+
+## Adaptador de troca OAuth e revogação Google (lote 11/11/2026)
+
+- `google_oauth_exchange.py` troca authorization code com PKCE verifier e redirect URI exata, usando adaptadores HTTP injetados.
+- Consulta OpenID userinfo e exige `sub` estável; o e-mail é somente rótulo opcional, nunca chave de propriedade.
+- Exige access token, refresh token, token type Bearer, expiração válida e escopo `drive.file`; rejeita escopos globais `drive` e `drive.readonly`.
+- A autorização inicial solicita `access_type=offline` e `prompt=consent` para obter refresh token durável. Consentimento é explícito no início da integração; reautorização deve ser uma ação clara do usuário.
+- Adaptador de revogação chama o endpoint oficial e retorna sucesso somente com HTTP 200. Se falhar, o chamador deve manter o ciphertext local e sinalizar pendência, sem declarar revogação concluída.
+- Testes unitários simulam troca, PKCE, escopos, subject, ausência de refresh token e revogação; nenhuma chamada real ao Google é feita pela suíte.
+
+**Limite:** adaptador protocolar pronto e testável, mas ainda não conectado a rotas Flask nem ao fluxo Android. A implementação de callback deve consumir o state antes da troca, persistir tokens somente após validar subject/tenant e tratar erros sem expor payloads OAuth.
