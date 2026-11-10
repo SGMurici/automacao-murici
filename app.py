@@ -1469,6 +1469,7 @@ def linkedin_callback():
     error = request.args.get("error")
 
     if error:
+        session.pop("linkedin_oauth_state", None)
         return jsonify(
             {
                 "status": "erro",
@@ -1684,6 +1685,8 @@ def google_callback():
     error = request.args.get("error")
 
     if error:
+        session.pop("google_oauth_state", None)
+        session.pop("google_oauth_account", None)
         return jsonify(
             {
                 "status": "erro",
