@@ -65,15 +65,8 @@ def normalize_identity(identity_type, value):
 
     # Validate display syntax before stripping separators. Without this check,
     # malformed strings can collapse into a valid-looking E.164 number.
-    if not re.fullmatch(r"\+[0-9][0-9 .()-]*[0-9]", value):
-        raise ValueError("Telefone deve estar em formato internacional E.164.")
-    if value.count("(") != value.count(")") or value.count("(") > 1:
+    if not re.fullmatch(r"\+[1-9][0-9]*(?: ?\([0-9]+\))?(?:[ .-]?[0-9]+)*", value):
         raise ValueError("Formatação de telefone inválida.")
-    if "(" in value:
-        opening = value.index("(")
-        closing = value.index(")")
-        if closing < opening or not re.search(r"[0-9]", value[opening + 1:closing]):
-            raise ValueError("Formatação de telefone inválida.")
     compact = re.sub(r"[ .()-]", "", value)
     if not _PHONE_E164.fullmatch(compact):
         raise ValueError("Telefone deve estar em formato internacional E.164.")
