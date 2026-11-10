@@ -96,8 +96,10 @@ class SchedulerLeaseRecoveryIntegrationTests(unittest.TestCase):
             application, "get_db_connection", side_effect=self._application_db_connection
         ):
             recovered = application.scheduler_recover_expired_processing(lease_minutes=15)
+            recovered_again = application.scheduler_recover_expired_processing(lease_minutes=15)
 
         self.assertEqual(recovered, 1)
+        self.assertEqual(recovered_again, 0)
         stale = self.conn.execute(
             """SELECT status, linkedin_post_id, reconciliation_required_at,
                       locked_at, error_message
