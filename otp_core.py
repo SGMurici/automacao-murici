@@ -166,3 +166,74 @@ def verify_otp_challenge(conn, challenge_id, code, pepper):
             (challenge_id,),
         )
         return False
+
+
+def reserve_otp_request_slot(
+    conn,
+    dimension_type,
+    dimension_hash,
+    purpose,
+    cooldown_seconds=60,
+    window_seconds=3600,
+    max_requests=5,
+):
+    """Atomically reserve an OTP send slot for a pseudonymous abuse dimension.
+
+    Call once for each available dimension (identity, IP and device) before
+    generating/sending a code. Only keyed SHA-256 digests are stored.
+    Returns False when cooldown or window quota is exhausted.
+    """
+    valid_dimensions = {"identity", "ip", "device"}
+    if dimension_type not in valid_dimensions:
+        raise ValueError("Dimensão de limitação OTP inválida.")
+    if not isinstance(dimension_hash, bytes) or len(dimension_hash) != 32:
+        raise ValueError("Hash da dimensão deve conter 32 bytes.")
+    if purpose not in VALID_PURPOSES:
+        raise ValueError("Finalidade do OTP inválida.")
+    for value, name, minimum, maximum in (
+        (cooldown_seconds, "cooldown", 1, 3600),
+        (window_seconds, "janela", 60, 86400),
+        (max_requests, "limite", 1, 100),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"Parâmetro de {name} OTP deve ser inteiro.")
+        if not minimum <= value <= maximum:
+            raise ValueError(f"Parâmetro de {name} OTP fora do intervalo permitido.")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO otp_request_limits (
+                   dimension_type, dimension_hash, purpose,
+                   window_started_at, request_count, last_requested_at
+               )
+               VALUES (%s, %s, %s, NOW(), 1, NOW())
+               ON CONFLICT (dimension_type, dimension_hash, purpose)
+               DO UPDATE SET
+                   window_started_at = CASE
+                       WHEN otp_request_limits.window_started_at
+                            <= NOW() - (%s * INTERVAL '1 second')
+                       THEN NOW()
+                       ELSE otp_request_limits.window_started_at
+                   END,
+                   request_count = CASE
+                       WHEN otp_request_limits.window_started_at
+                            <= NOW() - (%s * INTERVAL '1 second')
+                       THEN 1
+                       ELSE otp_request_limits.request_count + 1
+                   END,
+                   last_requested_at = NOW()
+               WHERE otp_request_limits.last_requested_at
+                     <= NOW() - (%s * INTERVAL '1 second')
+                 AND (
+                     otp_request_limits.window_started_at
+                     <= NOW() - (%s * INTERVAL '1 second')
+                     OR otp_request_limits.request_count < %s
+                 )
+               RETURNING request_count""",
+            (
+                dimension_type, dimension_hash, purpose,
+                window_seconds, window_seconds, cooldown_seconds,
+                window_seconds, max_requests,
+            ),
+        )
+        return cur.fetchone() is not None
