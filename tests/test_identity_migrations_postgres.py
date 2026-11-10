@@ -465,8 +465,12 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
 
 
     def test_customer_drive_oauth_flow_is_bound_to_real_tenant_and_single_use(self):
-        encrypt = lambda value: ("cipher:" + value).encode("utf-8")
-        decrypt = lambda value: value.decode("utf-8").removeprefix("cipher:")
+        vault = {}
+        def encrypt(value):
+            ciphertext = b"cipher:" + hashlib.sha256(value.encode("utf-8")).digest()
+            vault[ciphertext] = value
+            return ciphertext
+        decrypt = lambda value: vault[value]
         result = drive_backup_oauth.create_flow(
             self.conn,
             user_id=self.user_id,
@@ -486,6 +490,7 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
         self.assertEqual(stored[1], self.user_id)
         self.assertEqual(stored[2], self.tenant_id)
         self.assertTrue(bytes(stored[3]).startswith(b"cipher:"))
+        self.assertNotIn(result["state"].encode(), bytes(stored[3]))
         self.assertEqual(stored[4], "drive_backup")
 
         context = drive_backup_oauth.consume_flow(
@@ -502,8 +507,12 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
         )
 
     def test_customer_drive_connection_persists_encrypted_tokens_per_owner(self):
-        encrypt = lambda value: ("cipher:" + value).encode("utf-8")
-        decrypt = lambda value: value.decode("utf-8").removeprefix("cipher:")
+        vault = {}
+        def encrypt(value):
+            ciphertext = b"cipher:" + hashlib.sha256(value.encode("utf-8")).digest()
+            vault[ciphertext] = value
+            return ciphertext
+        decrypt = lambda value: vault[value]
         connection_id = drive_backup_connections.save_connection(
             self.conn,
             user_id=self.user_id,
@@ -527,8 +536,10 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
         self.assertEqual(stored[0], drive_backup_connections.PROVIDER)
         self.assertEqual(stored[1], self.user_id)
         self.assertEqual(stored[2], self.tenant_id)
-        self.assertEqual(bytes(stored[3]), b"cipher:access-secret-integration")
-        self.assertEqual(bytes(stored[4]), b"cipher:refresh-secret-integration")
+        self.assertNotEqual(bytes(stored[3]), b"access-secret-integration")
+        self.assertNotEqual(bytes(stored[4]), b"refresh-secret-integration")
+        self.assertTrue(bytes(stored[3]).startswith(b"cipher:"))
+        self.assertTrue(bytes(stored[4]).startswith(b"cipher:"))
         self.assertEqual(stored[5], "active")
 
         connection = drive_backup_connections.get_connection(
