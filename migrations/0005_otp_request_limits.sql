@@ -1,5 +1,5 @@
 -- Atomic OTP resend throttling by pseudonymous identity, IP or device dimensions.
--- Stores only keyed dimension hashes; never raw email, phone, IP or device identifiers.
+-- Stores only keyed dimension hashes, never raw email, phone, IP or device identifiers.
 
 CREATE TABLE IF NOT EXISTS otp_request_limits (
     dimension_type VARCHAR(12) NOT NULL
