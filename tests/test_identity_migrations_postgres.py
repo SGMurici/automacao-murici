@@ -710,6 +710,43 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             )
         )
 
+    def test_concurrent_otp_rate_limit_reservations_never_exceed_window_quota(self):
+        digest = hashlib.sha256(uuid.uuid4().bytes).digest()
+        self.conn.execute(
+            """INSERT INTO otp_request_limits (
+                   dimension_type, dimension_hash, purpose,
+                   window_started_at, request_count, last_requested_at
+               )
+               VALUES ('identity', %s, 'signup', NOW(), 1,
+                       NOW() - INTERVAL '2 seconds')""",
+            (digest,),
+        )
+        self.conn.commit()
+
+        def reserve_slot():
+            connection = self._application_db_connection()
+            try:
+                allowed = otp_core.reserve_otp_request_slot(
+                    connection, "identity", digest, "signup",
+                    cooldown_seconds=1, window_seconds=3600, max_requests=3,
+                )
+                connection.commit()
+                return allowed
+            finally:
+                connection.close()
+
+        with ThreadPoolExecutor(max_workers=12) as executor:
+            results = list(executor.map(lambda _: reserve_slot(), range(12)))
+
+        self.assertEqual(sum(results), 2)
+        final_count = self.conn.execute(
+            """SELECT request_count FROM otp_request_limits
+               WHERE dimension_type = 'identity' AND dimension_hash = %s
+                 AND purpose = 'signup'""",
+            (digest,),
+        ).fetchone()[0]
+        self.assertEqual(final_count, 3)
+
     def test_invalid_otp_attempt_limits_and_audit_result_are_rejected(self):
         with self.assertRaises(psycopg.errors.CheckViolation):
             with self.conn.transaction():
