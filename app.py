@@ -1417,10 +1417,11 @@ def internal_gmail_triage_run():
         report["accounts"] = {
             name: report["accounts"][name] for name in GMAIL_MONITORED_ACCOUNTS
         }
-        summary_only = summary_only_requested(request.args.get("summary_only"))
-        if summary_only:
-            for account_result in report["accounts"].values():
-                account_result.pop("messages", None)
+        # Privacy boundary: never expose individual email content from this endpoint.
+        # The summary_only query parameter is intentionally ignored; aggregate-only
+        # output is enforced server-side and cannot be opted out by the caller.
+        for account_result in report["accounts"].values():
+            account_result.pop("messages", None)
         report["summary"] = merge_triage_summaries(
             account_result.get("summary", {})
             for account_result in report["accounts"].values()
