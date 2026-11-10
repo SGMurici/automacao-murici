@@ -350,6 +350,8 @@ def ensure_scheduler_tables():
 
                     locked_at TIMESTAMPTZ,
 
+                    reconciliation_required_at TIMESTAMPTZ,
+
                     published_at TIMESTAMPTZ,
 
                     linkedin_post_id TEXT,
@@ -397,13 +399,14 @@ def ensure_scheduler_tables():
             cur.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS
-                    uq_linkedin_publish_queue_active_post_number
+                    uq_linkedin_publish_queue_reserved_post_number
                 ON linkedin_publish_queue(post_number)
                 WHERE post_number IS NOT NULL
                   AND status IN (
                       'agendado',
                       'processando',
-                      'publicado'
+                      'publicado',
+                      'incerto'
                   );
                 """
             )
@@ -1095,6 +1098,46 @@ def parse_scheduled_for(value):
     return parsed.astimezone(timezone.utc)
 
 
+def scheduler_recover_expired_processing(lease_minutes=15):
+    """Move abandoned processing rows to an explicit, non-retryable state.
+
+    A worker crash can happen after the provider accepted a post but before
+    the local transaction records its ID. Therefore expiry is always treated
+    as uncertain and never as permission to publish again.
+    """
+    if isinstance(lease_minutes, bool) or not isinstance(lease_minutes, int) or lease_minutes <= 0:
+        raise ValueError("lease_minutes deve ser um inteiro positivo.")
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE linkedin_publish_queue
+                SET
+                    status = 'incerto',
+                    reconciliation_required_at = COALESCE(
+                        reconciliation_required_at, NOW()
+                    ),
+                    error_message = CASE
+                        WHEN linkedin_post_id IS NOT NULL
+                            THEN 'RECONCILIACAO NECESSARIA: existe identificador do LinkedIn; confirme o resultado externo antes de qualquer nova tentativa.'
+                        ELSE 'RESULTADO INCERTO: o lease expirou durante o processamento. Verifique o LinkedIn antes de qualquer nova tentativa.'
+                    END,
+                    locked_at = NULL,
+                    updated_at = NOW()
+                WHERE status = 'processando'
+                  AND locked_at IS NOT NULL
+                  AND locked_at <= NOW() - (%s * INTERVAL '1 minute')
+                RETURNING id;
+                """,
+                (lease_minutes,),
+            )
+            recovered_ids = [row[0] for row in cur.fetchall()]
+        conn.commit()
+
+    return len(recovered_ids)
+
+
 def scheduler_publish_one():
     """
     Localiza e processa no maximo uma publicacao vencida.
@@ -1122,6 +1165,8 @@ def scheduler_publish_one():
                 "mensagem": "Outra execucao do scheduler ja esta em andamento.",
             }
 
+        recovered_count = scheduler_recover_expired_processing()
+
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -1147,6 +1192,7 @@ def scheduler_publish_one():
                     return {
                         "status": "idle",
                         "mensagem": "Nenhuma publicacao vencida na fila.",
+                        "recuperadas_para_reconciliacao": recovered_count,
                     }
 
                 (
@@ -1220,6 +1266,7 @@ def scheduler_publish_one():
                 "post_number": post_number,
                 "linkedin_post_id": post_id,
                 "editorial_post_id": editorial_post_id,
+                "recuperadas_para_reconciliacao": recovered_count,
             }
 
         except Exception as error:
@@ -1243,12 +1290,12 @@ def scheduler_publish_one():
                 )
             else:
                 safe_message = (
-                    "A publicacao falhou e nao sera repetida automaticamente. "
-                    "Consulte os logs para identificar a causa."
+                    "Nao foi possivel confirmar o resultado da publicacao. "
+                    "Verifique o LinkedIn antes de qualquer nova tentativa."
                 )
                 stored_error = (
-                    "Falha antes da confirmacao da publicacao no LinkedIn. "
-                    "Consulte os logs do servidor para detalhes."
+                    "RESULTADO INCERTO: a chamada ao LinkedIn terminou sem confirmacao. "
+                    "Verifique a publicacao externamente antes de qualquer nova tentativa."
                 )
             try:
                 with get_db_connection() as conn:
@@ -1257,13 +1304,15 @@ def scheduler_publish_one():
                             """
                             UPDATE linkedin_publish_queue
                             SET
-                                status = 'erro',
+                                status = 'incerto',
                                 error_message = %s,
+                                linkedin_post_id = COALESCE(%s, linkedin_post_id),
+                                reconciliation_required_at = NOW(),
                                 updated_at = NOW(),
                                 locked_at = NULL
                             WHERE id = %s;
                             """,
-                            (stored_error, queue_id),
+                            (stored_error, locals().get("post_id"), queue_id),
                         )
                     conn.commit()
             except Exception:
@@ -1272,11 +1321,12 @@ def scheduler_publish_one():
                 )
 
             return {
-                "status": "erro",
+                "status": "incerto",
                 "mensagem": safe_message,
                 "queue_id": queue_id,
                 "post_number": post_number,
-                "reconciliacao_manual": bool(locals().get("post_id")),
+                "reconciliacao_manual": True,
+                "recuperadas_para_reconciliacao": recovered_count,
             }
 
     finally:
@@ -2382,6 +2432,109 @@ def scheduler_queue():
         return safe_error_response("Falha ao adicionar a publicacao na fila. Consulte os logs do servidor.")
 
 
+@app.post("/scheduler/recover")
+def scheduler_recover():
+    """Watchdog endpoint for abandoned publication leases.
+
+    Uses the same session-level advisory lock as the dispatcher so it cannot
+    classify a still-running provider call as abandoned.
+    """
+    auth_error = require_publish_secret()
+
+    if auth_error:
+        return auth_error
+
+    lock_conn = None
+    lock_acquired = False
+    try:
+        ensure_scheduler_tables()
+        lock_conn = get_db_connection()
+        with lock_conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s);", (SCHEDULER_LOCK_KEY,))
+            lock_row = cur.fetchone()
+            lock_acquired = bool(lock_row and lock_row[0])
+
+        if not lock_acquired:
+            return jsonify({
+                "status": "busy",
+                "mensagem": "O dispatcher esta em execucao; tente novamente depois.",
+            }), 409
+
+        recovered_count = scheduler_recover_expired_processing()
+        return jsonify({
+            "status": "ok",
+            "recuperadas_para_reconciliacao": recovered_count,
+            "mensagem": "Watchdog concluido; resultados incertos exigem reconciliacao antes de retry.",
+        }), 200
+
+    except Exception:
+        app.logger.exception("Falha na recuperacao de leases do scheduler")
+        return safe_error_response("Falha na recuperacao da fila. Consulte os logs do servidor.")
+
+    finally:
+        if lock_conn is not None:
+            if lock_acquired:
+                try:
+                    with lock_conn.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_unlock(%s);", (SCHEDULER_LOCK_KEY,))
+                except Exception:
+                    app.logger.exception("Falha ao liberar bloqueio do watchdog")
+            lock_conn.close()
+
+
+@app.get("/scheduler/reconciliation")
+def scheduler_reconciliation():
+    """List uncertain queue items for controlled external reconciliation."""
+    auth_error = require_publish_secret()
+
+    if auth_error:
+        return auth_error
+
+    try:
+        ensure_scheduler_tables()
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        id,
+                        post_number,
+                        title,
+                        scheduled_for,
+                        attempts,
+                        linkedin_post_id,
+                        reconciliation_required_at,
+                        error_message
+                    FROM linkedin_publish_queue
+                    WHERE status = 'incerto'
+                    ORDER BY reconciliation_required_at ASC NULLS FIRST,
+                             scheduled_for ASC,
+                             id ASC
+                    LIMIT 100;
+                    """
+                )
+                rows = cur.fetchall()
+
+        items = [
+            {
+                "queue_id": row[0],
+                "post_number": row[1],
+                "title": row[2],
+                "scheduled_for": row[3].isoformat() if row[3] else None,
+                "attempts": row[4],
+                "linkedin_post_id": row[5],
+                "reconciliation_required_at": row[6].isoformat() if row[6] else None,
+                "error_message": row[7],
+            }
+            for row in rows
+        ]
+        return jsonify({"status": "ok", "itens": items, "limite": 100}), 200
+
+    except Exception:
+        app.logger.exception("Falha ao consultar publicacoes incertas")
+        return safe_error_response("Falha ao consultar itens para reconciliacao. Consulte os logs do servidor.")
+
+
 @app.get("/scheduler/status")
 def scheduler_status():
     """
@@ -2493,6 +2646,9 @@ def scheduler_run():
 
         if result["status"] == "busy":
             return jsonify(result), 409
+
+        if result["status"] == "incerto":
+            return jsonify(result), 202
 
         return jsonify(result), 500
 
