@@ -42,6 +42,7 @@ class AccountDeletionRouteTests(unittest.TestCase):
         with (
             patch.object(application, "get_db_connection", return_value=connection),
             patch.object(application.identity_core, "validate_session", return_value="user-123"),
+            patch.object(application.identity_core, "is_recent_session", return_value=True),
             patch.object(
                 application.account_deletion_core,
                 "request_account_deletion",
@@ -58,6 +59,22 @@ class AccountDeletionRouteTests(unittest.TestCase):
         self.assertEqual(response.headers.get("Cache-Control"), "no-store")
         self.assertEqual(response.get_json()["comprovante_exclusao"], "r" * 48)
         request_deletion.assert_called_once_with(connection, "user-123")
+
+    def test_deletion_request_requires_recent_reauthentication(self):
+        connection = FakeConnection()
+        with (
+            patch.object(application, "get_db_connection", return_value=connection),
+            patch.object(application.identity_core, "validate_session", return_value="user-123"),
+            patch.object(application.identity_core, "is_recent_session", return_value=False),
+            patch.object(application.account_deletion_core, "request_account_deletion") as request_deletion,
+        ):
+            response = self.client.post(
+                "/api/v1/account/deletion-request",
+                headers={"Authorization": "Bearer " + "x" * 48},
+                json={"confirmacao": "EXCLUIR MINHA CONTA"},
+            )
+        self.assertEqual(response.status_code, 401)
+        request_deletion.assert_not_called()
 
     def test_deletion_status_requires_receipt(self):
         with patch.object(application, "get_db_connection") as get_db:
