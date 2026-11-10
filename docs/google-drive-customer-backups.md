@@ -91,3 +91,16 @@ Os números acima são proposta técnica inicial, não compromisso comercial fin
 A migration `migrations/0002_identity_core.sql` já cria `external_connections`, com `user_id`, `tenant_id`, `provider`, `external_account_id`, `granted_scopes`, campos de access/refresh token criptografados, expiração, estado e revogação. Portanto, não criar uma segunda tabela genérica de integrações para o Drive do cliente sem necessidade comprovada. Se o desenho final exigir tokens no backend, reutilizar essa estrutura após implementar e testar OAuth por usuário/tenant, criptografia, refresh, rotação, revogação e auditoria. A integração operacional legada (`google_accounts`/Drive5) permanece separada e nunca deve ser associada automaticamente a clientes.
 
 A implementação de backup ainda depende de localizar o repositório Android correto. No GitHub conectado, o único repositório acessível atualmente é `SGMurici/automacao-murici`, que contém o backend Python; não foi encontrado um projeto Android/Kotlin/Flutter nesse acesso. Não criar um app paralelo nem presumir stack enquanto o repositório real não estiver identificado.
+
+
+## Implementação backend — persistência isolada de conexão (lote 11/11/2026)
+
+Foi criado `drive_backup_connections.py` para reutilizar `external_connections` sem duplicar tabela. A camada oferece salvar/atualizar, recuperar credenciais para o titular, atualizar tokens, revogar apagando ciphertext e listar apenas metadados. Toda leitura/escrita é restrita por user_id + tenant_id + provider. O upsert exige usuário ativo e membership ativa e não permite sobrescrever conexão do mesmo tenant pertencente a outro usuário.
+
+- Provider interno: `google_drive_backup`, separado do Drive operacional.
+- Exige o escopo `https://www.googleapis.com/auth/drive.file` e rejeita `drive`/`drive.readonly` amplos.
+- Access/refresh tokens são criptografados por função injetada antes de persistir em BYTEA; não são retornados em listagens.
+- A revogação marca estado `revoked` e remove os ciphertexts locais; a revogação remota no Google ainda precisa ser chamada pelo adaptador OAuth antes/de forma coordenada.
+- Testes unitários cobrem escopos, associação a usuário/tenant, confidencialidade, atualização, revogação e listagem.
+
+**Limite importante:** esta camada é persistência e controle de propriedade, não o fluxo OAuth completo. Só pode ser chamada depois de validar state + PKCE, trocar o código e validar o Google subject e os escopos. O fluxo mobile/Android ainda não foi implementado porque o repositório Android não foi localizado. O backend não deve aceitar tokens arbitrários enviados por um cliente sem prova verificável de origem.
