@@ -2447,6 +2447,56 @@ def scheduler_queue():
         return safe_error_response("Falha ao adicionar a publicacao na fila. Consulte os logs do servidor.")
 
 
+@app.post("/scheduler/recover")
+def scheduler_recover():
+    """Watchdog endpoint for abandoned publication leases.
+
+    Uses the same session-level advisory lock as the dispatcher so it cannot
+    classify a still-running provider call as abandoned.
+    """
+    auth_error = require_publish_secret()
+
+    if auth_error:
+        return auth_error
+
+    lock_conn = None
+    lock_acquired = False
+    try:
+        ensure_scheduler_tables()
+        lock_conn = get_db_connection()
+        with lock_conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s);", (SCHEDULER_LOCK_KEY,))
+            lock_row = cur.fetchone()
+            lock_acquired = bool(lock_row and lock_row[0])
+
+        if not lock_acquired:
+            return jsonify({
+                "status": "busy",
+                "mensagem": "O dispatcher esta em execucao; tente novamente depois.",
+            }), 409
+
+        recovered_count = scheduler_recover_expired_processing()
+        return jsonify({
+            "status": "ok",
+            "recuperadas_para_reconciliacao": recovered_count,
+            "mensagem": "Watchdog concluido; resultados incertos exigem reconciliacao antes de retry.",
+        }), 200
+
+    except Exception:
+        app.logger.exception("Falha na recuperacao de leases do scheduler")
+        return safe_error_response("Falha na recuperacao da fila. Consulte os logs do servidor.")
+
+    finally:
+        if lock_conn is not None:
+            if lock_acquired:
+                try:
+                    with lock_conn.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_unlock(%s);", (SCHEDULER_LOCK_KEY,))
+                except Exception:
+                    app.logger.exception("Falha ao liberar bloqueio do watchdog")
+            lock_conn.close()
+
+
 @app.get("/scheduler/status")
 def scheduler_status():
     """
