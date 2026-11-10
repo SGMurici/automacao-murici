@@ -192,7 +192,11 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             self.conn.execute("SELECT COUNT(*) FROM user_identities").fetchone()[0], 1
         )
         self.assertEqual(
-            self.conn.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0], 1
+            self.conn.execute(
+                "SELECT COUNT(*) FROM auth_sessions WHERE user_id = %s",
+                (self.user_id,),
+            ).fetchone()[0],
+            1
         )
 
     def test_authenticated_identity_and_logout_routes_against_postgres(self):
