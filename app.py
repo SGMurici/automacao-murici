@@ -350,6 +350,8 @@ def ensure_scheduler_tables():
 
                     locked_at TIMESTAMPTZ,
 
+                    reconciliation_required_at TIMESTAMPTZ,
+
                     published_at TIMESTAMPTZ,
 
                     linkedin_post_id TEXT,
@@ -1095,6 +1097,46 @@ def parse_scheduled_for(value):
     return parsed.astimezone(timezone.utc)
 
 
+def scheduler_recover_expired_processing(lease_minutes=15):
+    """Move abandoned processing rows to an explicit, non-retryable state.
+
+    A worker crash can happen after the provider accepted a post but before
+    the local transaction records its ID. Therefore expiry is always treated
+    as uncertain and never as permission to publish again.
+    """
+    if isinstance(lease_minutes, bool) or not isinstance(lease_minutes, int) or lease_minutes <= 0:
+        raise ValueError("lease_minutes deve ser um inteiro positivo.")
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE linkedin_publish_queue
+                SET
+                    status = 'incerto',
+                    reconciliation_required_at = COALESCE(
+                        reconciliation_required_at, NOW()
+                    ),
+                    error_message = CASE
+                        WHEN linkedin_post_id IS NOT NULL
+                            THEN 'RECONCILIACAO NECESSARIA: existe identificador do LinkedIn; confirme o resultado externo antes de qualquer nova tentativa.'
+                        ELSE 'RESULTADO INCERTO: o lease expirou durante o processamento. Verifique o LinkedIn antes de qualquer nova tentativa.'
+                    END,
+                    locked_at = NULL,
+                    updated_at = NOW()
+                WHERE status = 'processando'
+                  AND locked_at IS NOT NULL
+                  AND locked_at <= NOW() - (%s * INTERVAL '1 minute')
+                RETURNING id;
+                """,
+                (lease_minutes,),
+            )
+            recovered_ids = [row[0] for row in cur.fetchall()]
+        conn.commit()
+
+    return len(recovered_ids)
+
+
 def scheduler_publish_one():
     """
     Localiza e processa no maximo uma publicacao vencida.
@@ -1121,6 +1163,8 @@ def scheduler_publish_one():
                 "status": "busy",
                 "mensagem": "Outra execucao do scheduler ja esta em andamento.",
             }
+
+        recovered_count = scheduler_recover_expired_processing()
 
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -1257,13 +1301,15 @@ def scheduler_publish_one():
                             """
                             UPDATE linkedin_publish_queue
                             SET
-                                status = 'erro',
+                                status = 'incerto',
                                 error_message = %s,
+                                linkedin_post_id = COALESCE(%s, linkedin_post_id),
+                                reconciliation_required_at = NOW(),
                                 updated_at = NOW(),
                                 locked_at = NULL
                             WHERE id = %s;
                             """,
-                            (stored_error, queue_id),
+                            (stored_error, locals().get("post_id"), queue_id),
                         )
                     conn.commit()
             except Exception:
