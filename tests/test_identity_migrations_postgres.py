@@ -143,6 +143,7 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
                        NOW() - INTERVAL '10 minutes')""",
             (state_hash, browser_id),
         )
+        self.conn.commit()
 
         with patch.object(
             application, "get_db_connection", side_effect=self._application_db_connection
