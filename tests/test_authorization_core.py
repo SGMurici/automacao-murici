@@ -40,7 +40,9 @@ class TenantAuthorizationTests(unittest.TestCase):
         query, params = conn.fake_cursor.calls[0]
         self.assertIn("tenant_id = %s", query)
         self.assertIn("user_id = %s", query)
-        self.assertIn("status = 'active'", query)
+        self.assertIn("m.status = 'active'", query)
+        self.assertIn("u.status = 'active'", query)
+        self.assertIn("JOIN app_users", query)
         self.assertEqual(params, ("tenant-a", "user-a"))
 
     def test_missing_or_disallowed_membership_is_denied(self):
