@@ -237,3 +237,23 @@ def reserve_otp_request_slot(
             ),
         )
         return cur.fetchone() is not None
+
+
+def hash_otp_rate_limit_dimension(dimension_type, dimension_value, pepper):
+    """Return a keyed pseudonymous digest for an OTP abuse-limit dimension.
+
+    Normalize the value according to its type before calling this helper.
+    The same backend-only pepper should be shared by all app instances.
+    """
+    valid_dimensions = {"identity", "ip", "device"}
+    if dimension_type not in valid_dimensions:
+        raise ValueError("Dimensão de limitação OTP inválida.")
+    pepper = _validate_pepper(pepper)
+    if (
+        not isinstance(dimension_value, str)
+        or not dimension_value.strip()
+        or len(dimension_value) > 512
+    ):
+        raise ValueError("Valor da dimensão OTP inválido.")
+    message = f"{dimension_type}:{dimension_value.strip()}".encode("utf-8")
+    return hmac.new(pepper, message, hashlib.sha256).digest()
