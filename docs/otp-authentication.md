@@ -41,7 +41,7 @@ No provider account, credential, route, production setting or external message w
 
 ## OTP resend and abuse throttling
 
-Migration `0005_otp_request_limits.sql` adds an atomic quota ledger keyed by a dimension type, a pseudonymous 32-byte dimension digest and OTP purpose. The core exposes `reserve_otp_request_slot`, which enforces a resend cooldown and a rolling fixed-window request quota in one PostgreSQL UPSERT. Concurrent requests for the same dimension cannot both bypass the quota.
+Migration `0005_otp_request_limits.sql` adds an atomic quota ledger keyed by a dimension type, a pseudonymous 32-byte dimension digest and OTP purpose. The core exposes `reserve_otp_request_slot`, which enforces a resend cooldown and a fixed-window request quota in one PostgreSQL UPSERT. Concurrent requests for the same dimension cannot both bypass the quota.
 
 The caller should reserve all dimensions available for a request (identity, IP and device) before creating or delivering a challenge. The dimension digest must be an HMAC-SHA-256 using a backend-only secret key, not a plain hash of an email, phone number, IP address or device identifier. Keep the HMAC key in the secret manager and rotate it only with a deliberate migration/expiry plan. Do not store raw dimensions in this table or logs.
 
