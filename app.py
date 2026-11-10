@@ -1367,6 +1367,32 @@ def api_current_user():
         return safe_error_response("Não foi possível validar a sessão.")
 
 
+@app.post("/api/v1/session/rotate")
+def api_rotate_session():
+    """Troca um token válido por outro token opaco, revogando o anterior."""
+    token = bearer_session_token()
+    if not token:
+        return jsonify({"status": "erro", "mensagem": "Autenticação necessária."}), 401
+
+    try:
+        with get_db_connection() as conn:
+            new_token = identity_core.rotate_session(conn, token)
+            if not new_token:
+                return jsonify({"status": "erro", "mensagem": "Sessão inválida ou expirada."}), 401
+
+        response = jsonify({
+            "status": "ok",
+            "token_type": "Bearer",
+            "access_token": new_token,
+            "expires_in": 604800,
+        })
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception:
+        app.logger.exception("Falha ao rotacionar sessão autenticada")
+        return safe_error_response("Não foi possível renovar a sessão.")
+
+
 @app.post("/api/v1/logout")
 def api_logout():
     """Revoga a sessão apresentada no cabeçalho Bearer."""
