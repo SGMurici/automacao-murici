@@ -75,3 +75,12 @@ Os números acima são proposta técnica inicial, não compromisso comercial fin
 - Fechar formato e estratégia de chaves/recuperação.
 - Definir política final de retenção e limites de versão.
 - Testar em aparelhos reais, incluindo troca de aparelho, offline, bateria otimizada, pouco espaço, rede interrompida, revogação e exclusão.
+
+
+## Refinamentos confirmados na documentação oficial do Android e Google Drive
+
+- OAuth scope preferencial: `https://www.googleapis.com/auth/drive.file` (não sensível), porque o KAPPA cria e gerencia seus próprios arquivos/pasta; evitar `drive` e `drive.readonly` de acesso amplo. A pasta visível KAPPA/Backups deve ser criada pelo próprio app para permanecer dentro do escopo por arquivo. Se o produto exigir acesso a arquivos existentes escolhidos pelo usuário, avaliar Google Picker e consentimento explícito.
+- Não usar `appDataFolder` como destino principal se a exigência é o cliente localizar e gerir os arquivos na interface normal do Drive: é uma área oculta da aplicação.
+- Upload de backup móvel deve preferir `uploadType=resumable` quando o arquivo for grande ou houver risco de interrupção. A API permite consultar o estado e retomar o upload; o URI de sessão expira após uma semana e deve ser tratado como dado sensível/capacidade temporária.
+- WorkManager periódico respeita restrições de rede, bateria e carregamento, mas não garante horário exato. A periodicidade mínima técnica é 15 minutos; a experiência do KAPPA oferecerá opções mais úteis (diária/semanal/mensal), não esse intervalo mínimo.
+- Com Wi-Fi e carregamento configurados como restrições simultâneas, o trabalho só executa quando ambas forem atendidas; se não ocorrerem, o backup pode atrasar. A tela deve mostrar última execução e próxima tentativa estimada sem prometer horário fixo.
