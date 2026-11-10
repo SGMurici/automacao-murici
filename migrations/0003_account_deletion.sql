@@ -1,5 +1,5 @@
 -- Account deletion requests and auditable per-system deletion tracking.
--- This migration only creates the workflow; it does not delete production data.
+-- This migration only creates the workflow and does not delete production data.
 
 ALTER TABLE app_users
     DROP CONSTRAINT IF EXISTS app_users_status_check;
