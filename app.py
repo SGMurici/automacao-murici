@@ -2497,6 +2497,59 @@ def scheduler_recover():
             lock_conn.close()
 
 
+@app.get("/scheduler/reconciliation")
+def scheduler_reconciliation():
+    """List uncertain queue items for controlled external reconciliation."""
+    auth_error = require_publish_secret()
+
+    if auth_error:
+        return auth_error
+
+    try:
+        ensure_scheduler_tables()
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        id,
+                        post_number,
+                        title,
+                        scheduled_for,
+                        attempts,
+                        linkedin_post_id,
+                        reconciliation_required_at,
+                        error_message
+                    FROM linkedin_publish_queue
+                    WHERE status = 'incerto'
+                    ORDER BY reconciliation_required_at ASC NULLS FIRST,
+                             scheduled_for ASC,
+                             id ASC
+                    LIMIT 100;
+                    """
+                )
+                rows = cur.fetchall()
+
+        items = [
+            {
+                "queue_id": row[0],
+                "post_number": row[1],
+                "title": row[2],
+                "scheduled_for": row[3].isoformat() if row[3] else None,
+                "attempts": row[4],
+                "linkedin_post_id": row[5],
+                "reconciliation_required_at": row[6].isoformat() if row[6] else None,
+                "error_message": row[7],
+            }
+            for row in rows
+        ]
+        return jsonify({"status": "ok", "itens": items, "limite": 100}), 200
+
+    except Exception:
+        app.logger.exception("Falha ao consultar publicacoes incertas")
+        return safe_error_response("Falha ao consultar itens para reconciliacao. Consulte os logs do servidor.")
+
+
 @app.get("/scheduler/status")
 def scheduler_status():
     """
