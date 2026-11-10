@@ -1305,12 +1305,12 @@ def scheduler_publish_one():
                 )
             else:
                 safe_message = (
-                    "A publicacao falhou e nao sera repetida automaticamente. "
-                    "Consulte os logs para identificar a causa."
+                    "Nao foi possivel confirmar o resultado da publicacao. "
+                    "Verifique o LinkedIn antes de qualquer nova tentativa."
                 )
                 stored_error = (
-                    "Falha antes da confirmacao da publicacao no LinkedIn. "
-                    "Consulte os logs do servidor para detalhes."
+                    "RESULTADO INCERTO: a chamada ao LinkedIn terminou sem confirmacao. "
+                    "Verifique a publicacao externamente antes de qualquer nova tentativa."
                 )
             try:
                 with get_db_connection() as conn:
@@ -1336,7 +1336,7 @@ def scheduler_publish_one():
                 )
 
             return {
-                "status": "erro",
+                "status": "incerto",
                 "mensagem": safe_message,
                 "queue_id": queue_id,
                 "post_number": post_number,
