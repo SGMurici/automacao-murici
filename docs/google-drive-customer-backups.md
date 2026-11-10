@@ -84,3 +84,10 @@ Os números acima são proposta técnica inicial, não compromisso comercial fin
 - Upload de backup móvel deve preferir `uploadType=resumable` quando o arquivo for grande ou houver risco de interrupção. A API permite consultar o estado e retomar o upload; o URI de sessão expira após uma semana e deve ser tratado como dado sensível/capacidade temporária.
 - WorkManager periódico respeita restrições de rede, bateria e carregamento, mas não garante horário exato. A periodicidade mínima técnica é 15 minutos; a experiência do KAPPA oferecerá opções mais úteis (diária/semanal/mensal), não esse intervalo mínimo.
 - Com Wi-Fi e carregamento configurados como restrições simultâneas, o trabalho só executa quando ambas forem atendidas; se não ocorrerem, o backup pode atrasar. A tela deve mostrar última execução e próxima tentativa estimada sem prometer horário fixo.
+
+
+## Reuso da fundação de identidade já existente
+
+A migration `migrations/0002_identity_core.sql` já cria `external_connections`, com `user_id`, `tenant_id`, `provider`, `external_account_id`, `granted_scopes`, campos de access/refresh token criptografados, expiração, estado e revogação. Portanto, não criar uma segunda tabela genérica de integrações para o Drive do cliente sem necessidade comprovada. Se o desenho final exigir tokens no backend, reutilizar essa estrutura após implementar e testar OAuth por usuário/tenant, criptografia, refresh, rotação, revogação e auditoria. A integração operacional legada (`google_accounts`/Drive5) permanece separada e nunca deve ser associada automaticamente a clientes.
+
+A implementação de backup ainda depende de localizar o repositório Android correto. No GitHub conectado, o único repositório acessível atualmente é `SGMurici/automacao-murici`, que contém o backend Python; não foi encontrado um projeto Android/Kotlin/Flutter nesse acesso. Não criar um app paralelo nem presumir stack enquanto o repositório real não estiver identificado.
