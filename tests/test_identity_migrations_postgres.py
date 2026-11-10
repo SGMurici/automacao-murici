@@ -6,6 +6,7 @@ Set TEST_DATABASE_URL to enable it; local runs without PostgreSQL skip cleanly.
 import hashlib
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 import uuid
 from pathlib import Path
 
@@ -301,6 +302,34 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
                 "SELECT status FROM app_users WHERE id = %s", (self.user_id,)
             ).fetchone()[0],
             "active",
+        )
+
+    def test_concurrent_session_rotation_only_issues_one_replacement(self):
+        token = identity_core.issue_session(
+            self.conn, self.user_id, ttl_seconds=600, device_label="concurrent-rotation-test"
+        )
+        self.conn.commit()
+
+        def rotate_once(_):
+            with self._application_db_connection() as connection:
+                return identity_core.rotate_session(connection, token)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(rotate_once, range(2)))
+
+        replacements = [value for value in results if value]
+        self.assertEqual(len(replacements), 1)
+        self.assertIsNone(identity_core.validate_session(self.conn, token))
+        self.assertEqual(
+            self.conn.execute(
+                """SELECT COUNT(*) FROM auth_sessions
+                   WHERE user_id = %s AND revoked_at IS NULL AND expires_at > NOW()""",
+                (self.user_id,),
+            ).fetchone()[0],
+            1,
+        )
+        self.assertTrue(
+            identity_core.is_recent_session(self.conn, replacements[0], 900)
         )
 
     def test_suspended_user_cannot_use_active_tenant_membership(self):
