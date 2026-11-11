@@ -1376,25 +1376,46 @@ def auth_routes_ready():
                 return False
         Fernet(os.environ["IDENTITY_ENCRYPTION_KEY"].encode("ascii"))
         hops = int(os.environ.get("TRUSTED_PROXY_HOPS", ""))
-        return 1 <= hops <= 5
+        cidrs = [
+            ipaddress.ip_network(item.strip(), strict=False)
+            for item in os.environ.get("TRUSTED_PROXY_CIDRS", "").split(",")
+            if item.strip()
+        ]
+        return 1 <= hops <= 5 and bool(cidrs)
     except (KeyError, TypeError, ValueError):
         return False
 
 
 def trusted_auth_client_ip():
-    """Resolve the client IP from a configured, right-to-left trusted proxy chain."""
+    """Resolve the client IP only through an explicitly allowlisted proxy chain."""
     try:
         hops = int(os.environ.get("TRUSTED_PROXY_HOPS", ""))
         if not 1 <= hops <= 5:
             return None
-        peer = str(ipaddress.ip_address(request.remote_addr or ""))
+        networks = [
+            ipaddress.ip_network(item.strip(), strict=False)
+            for item in os.environ.get("TRUSTED_PROXY_CIDRS", "").split(",")
+            if item.strip()
+        ]
+        if not networks:
+            return None
+        peer = ipaddress.ip_address(request.remote_addr or "")
+        if not any(peer.version == network.version and peer in network for network in networks):
+            return None
         forwarded = request.headers.get("X-Forwarded-For", "")
         values = [item.strip() for item in forwarded.split(",") if item.strip()]
         if len(values) < hops:
             return None
-        chain = values + [peer]
-        candidate = chain[-hops - 1]
-        return str(ipaddress.ip_address(candidate))
+        # The rightmost N-1 forwarded values are the intermediate trusted proxies.
+        for proxy_value in values[-(hops - 1):] if hops > 1 else []:
+            proxy_ip = ipaddress.ip_address(proxy_value)
+            if not any(
+                proxy_ip.version == network.version and proxy_ip in network
+                for network in networks
+            ):
+                return None
+        candidate = ipaddress.ip_address(values[-hops])
+        return str(candidate)
     except (ValueError, TypeError):
         return None
 
