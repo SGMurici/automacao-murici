@@ -1569,25 +1569,17 @@ def request_auth_otp(purpose):
                         ),
                     )
                     response_challenge_id = challenge["challenge_id"]
+                    # The challenge and encrypted delivery intent commit atomically.
+                    otp_email_outbox.enqueue(
+                        conn, challenge["challenge_id"], normalized_email,
+                        challenge["code"], purpose, expires_minutes=10,
+                    )
             conn.commit()
     except Exception:
         app.logger.exception("Falha interna ao preparar desafio de autenticação")
         return safe_error_response("Não foi possível iniciar a autenticação.")
 
-    if challenge:
-        try:
-            # Challenge and encrypted delivery intent share this transaction.
-            # No SMTP/network operation is allowed in the request path.
-            with get_db_connection() as conn:
-                otp_email_outbox.enqueue(
-                    conn, challenge["challenge_id"], normalized_email,
-                    challenge["code"], purpose, expires_minutes=10,
-                )
-                conn.commit()
-        except Exception:
-            app.logger.exception("Falha interna ao enfileirar entrega OTP")
-            return safe_error_response("Não foi possível iniciar a autenticação.")
-
+    # Delivery is asynchronous. The outbox row was committed with the challenge.
     return _auth_accepted_response(response_challenge_id)
 
 
