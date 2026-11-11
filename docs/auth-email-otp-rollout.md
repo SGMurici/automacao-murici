@@ -43,6 +43,10 @@ Endpoint SMTP: \`email-smtp.sa-east-1.amazonaws.com\`.
 
 Usar porta 587 com STARTTLS. O SES exige TLS. As credenciais SMTP são regionais e diferentes das credenciais normais de acesso à AWS.
 
+**Plano de preço recomendado: à la carte.** A tabela oficial atual mostra USD 0,10 por 1.000 e-mails enviados, sem taxa mínima ou mensalidade fixa para o envio básico. O plano Essentials custa USD 0,16 por 1.000; Pro e Enterprise acrescentam taxas fixas por conta/região (USD 105 e USD 500/mês, respectivamente). Novas contas e regiões sem atividade tarifada desde 01/06/2025 passam a iniciar no Essentials a partir de 21/07/2026; portanto, durante a criação da conta, selecionar explicitamente à la carte se disponível/adequado, em vez de aceitar o plano padrão. Não contratar Pro/Enterprise para o volume inicial.
+
+Estimativa do envio básico, sem anexos, impostos ou outros recursos: 10.000 mensagens/mês ≈ USD 1,00 no à la carte; 50.000 ≈ USD 5,00. No Essentials, seriam aproximadamente USD 1,60 e USD 8,00. A AWS também oferece créditos de nível gratuito para novas contas elegíveis, mas a decisão financeira não deve depender de créditos promocionais.
+
 Sequência operacional, ainda não executada:
 
 1. Acessar o console AWS com conta corporativa controlada pela empresa e MFA.
