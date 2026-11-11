@@ -249,7 +249,11 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
         ):
             missing_proxy = client.post(
                 "/api/v1/auth/signup/request",
-                json={"email": "person@example.com"},
+                json={
+                    "email": "person@example.com",
+                    "terms_accepted": True,
+                    "privacy_notice_acknowledged": True,
+                },
                 environ_overrides={"REMOTE_ADDR": "10.0.0.1"},
             )
         self.assertEqual(missing_proxy.status_code, 503)
