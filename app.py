@@ -2,7 +2,6 @@ import os
 import json
 import secrets
 import hashlib
-import uuid
 import ipaddress
 import urllib.parse
 import urllib.request
@@ -16,6 +15,8 @@ import psycopg
 from cryptography.fernet import Fernet
 
 import identity_core
+import identity_auth_core
+import authorization_core
 import identity_lookup
 import otp_core
 import email_delivery
