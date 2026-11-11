@@ -42,8 +42,8 @@ def _bool_env(name, default):
 
 def _smtp_config():
     host = _required_env("SMTP_HOST")
-    sender = normalize_email(_required_env("SMTP_FROM"))
     try:
+        sender = normalize_email(_required_env("SMTP_FROM"))
         port = int(os.getenv("SMTP_PORT", "587"))
         timeout = float(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
     except (TypeError, ValueError):
@@ -89,20 +89,22 @@ def build_otp_message(to_email, code, purpose, expires_minutes=10, sender=None):
     message["Subject"] = f"KAPPA — {PURPOSE_SUBJECTS[purpose]}"
     message["Message-ID"] = make_msgid()
     message.set_content(
-        "Olá,\\n\\n"
-        f"Seu código de verificação do KAPPA é: {code}\\n\\n"
+        "Olá,\n\n"
+        f"Seu código de verificação do KAPPA é: {code}\n\n"
         f"Ele expira em {expires_minutes} minutos. Se você não solicitou este código, "
-        "ignore esta mensagem. Não compartilhe o código com ninguém.\\n\\n"
-        "Esta mensagem é exclusivamente operacional e não contém publicidade.\\n"
+        "ignore esta mensagem. Não compartilhe o código com ninguém.\n\n"
+        "Esta mensagem é exclusivamente operacional e não contém publicidade.\n"
         "KAPPA"
     )
     return message
 
+
 def send_otp_email(to_email, code, purpose, expires_minutes=10):
     """Send one OTP email over mandatory TLS; return a non-secret message ID."""
     config = _smtp_config()
+    recipient = normalize_email(to_email)
     message = build_otp_message(
-        to_email, code, purpose, expires_minutes, sender=config["sender"]
+        recipient, code, purpose, expires_minutes, sender=config["sender"]
     )
 
     client = None
