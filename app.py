@@ -1394,11 +1394,14 @@ def auth_routes_ready(require_email_delivery=True):
         peppers = [identity_auth_core.required_pepper(name, os.environ) for name in pepper_names]
         if len(set(peppers)) != len(peppers):
             return False
-        identity_key = os.environ.get("IDENTITY_ENCRYPTION_KEY", "").encode("ascii")
+        identity_key = (IDENTITY_ENCRYPTION_KEY or "").encode("ascii")
         if not identity_key or identity_key in peppers:
             return False
         Fernet(identity_key)
         if not TOKEN_ENCRYPTION_KEY:
+            return False
+        token_key = TOKEN_ENCRYPTION_KEY.encode("ascii")
+        if token_key == identity_key or token_key in peppers:
             return False
         get_fernet()
         if not os.environ.get("TERMS_POLICY_VERSION", "").strip():
