@@ -1,6 +1,7 @@
 """End-to-end identity OTP route tests on an isolated PostgreSQL schema."""
 import os
 import unittest
+import time
 import uuid
 from pathlib import Path
 from unittest.mock import patch
@@ -83,6 +84,10 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             application, "TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii")
         )
         self.key_patch.start()
+        self.identity_key_patch = patch.object(
+            application, "IDENTITY_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii")
+        )
+        self.identity_key_patch.start()
         self.db_patch = patch.object(
             application, "get_db_connection", side_effect=self._application_db_connection
         )
@@ -99,6 +104,7 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         self.testing_patch.stop()
         self.mail_patch.stop()
         self.db_patch.stop()
+        self.identity_key_patch.stop()
         self.key_patch.stop()
         self.env_patch.stop()
 
@@ -187,6 +193,7 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
 
         wrong = self._verify_signup(email, wrong_code)
         self.assertEqual(wrong.status_code, 400)
+        time.sleep(1.05)
         verified = self._verify_signup(email, code)
         self.assertEqual(verified.status_code, 200)
 
