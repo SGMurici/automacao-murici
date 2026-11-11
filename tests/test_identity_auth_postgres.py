@@ -24,6 +24,7 @@ MIGRATIONS = (
     ROOT / "migrations" / "0006_session_authentication_freshness.sql",
     ROOT / "migrations" / "0009_identity_otp_hardening.sql",
     ROOT / "migrations" / "0010_otp_signup_policy_versions.sql",
+    ROOT / "migrations" / "0011_otp_email_transactional_outbox.sql",
 )
 
 
@@ -73,6 +74,7 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             "OTP_RATE_LIMIT_PEPPER": "otp-rate-limit-test-pepper-32-bytes",
             "IDENTITY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
             "TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
+            "OTP_DELIVERY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
             "TRUSTED_PROXY_HOPS": "2",
             "TRUSTED_PROXY_CIDRS": "127.0.0.0/8,10.0.0.0/8",
             "SMTP_HOST": "email-smtp.sa-east-1.amazonaws.com",
@@ -121,7 +123,7 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         return connection
 
     def _request_signup(self, email):
-        return self.client.post(
+        response = self.client.post(
             "/api/v1/auth/signup/request",
             json={
                 "email": email,
@@ -130,6 +132,10 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             },
             headers=self.client_ip_headers,
         )
+        if response.status_code == 202:
+            import otp_email_outbox_worker
+            otp_email_outbox_worker.run_once(self._application_db_connection)
+        return response
 
     def _verify_signup(self, email, code):
         return self.client.post(
@@ -281,6 +287,8 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             json={"email": email},
             headers=self.client_ip_headers,
         )
+        import otp_email_outbox_worker
+        otp_email_outbox_worker.run_once(self._application_db_connection)
         self.assertEqual(login_request.status_code, 202)
         self.challenge_id = login_request.json["challenge_id"]
         self.send_mail.assert_called_once()
@@ -322,6 +330,15 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         requested = self._request_signup(email)
         self.assertEqual(requested.status_code, 202)
         challenge_id = requested.json["challenge_id"]
+        import otp_email_outbox_worker
+        for _ in range(7):
+            with self._application_db_connection() as conn:
+                conn.execute(
+                    "UPDATE otp_email_outbox SET available_at = NOW() WHERE challenge_id = %s",
+                    (challenge_id,),
+                )
+                conn.commit()
+            otp_email_outbox_worker.run_once(self._application_db_connection)
         with self._application_db_connection() as conn:
             state = conn.execute(
                 "SELECT delivery_status, consumed_at FROM otp_challenges WHERE id = %s",

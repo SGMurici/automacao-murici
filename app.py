@@ -20,6 +20,7 @@ import authorization_core
 import identity_lookup
 import otp_core
 import email_delivery
+import otp_email_outbox
 import account_deletion_core
 
 
@@ -1402,14 +1403,15 @@ def auth_routes_ready(require_email_delivery=True):
         Fernet(identity_key)
         token_key_value = os.environ.get("TOKEN_ENCRYPTION_KEY") or TOKEN_ENCRYPTION_KEY
         token_key = token_key_value.encode("ascii") if token_key_value else b""
-        if not token_key or identity_key == token_key:
+        if not token_key or identity_key == token_key or token_key in peppers:
             return False
+        otp_email_outbox.validate_key_configuration()
         if not os.environ.get("TERMS_POLICY_VERSION", "").strip():
             return False
         if not os.environ.get("PRIVACY_NOTICE_VERSION", "").strip():
             return False
-        if require_email_delivery:
-            email_delivery.validate_email_config()
+        # SMTP configuration belongs to the isolated worker, not the HTTP API.
+        # The API only needs the independent outbox encryption key validated above.
         hops = int(os.environ.get("TRUSTED_PROXY_HOPS", ""))
         networks = identity_auth_core.trusted_proxy_networks(os.environ)
         return 1 <= hops <= 5 and bool(networks)
@@ -1567,32 +1569,17 @@ def request_auth_otp(purpose):
                         ),
                     )
                     response_challenge_id = challenge["challenge_id"]
+                    # The challenge and encrypted delivery intent commit atomically.
+                    otp_email_outbox.enqueue(
+                        conn, challenge["challenge_id"], normalized_email,
+                        challenge["code"], purpose, expires_minutes=10,
+                    )
             conn.commit()
     except Exception:
         app.logger.exception("Falha interna ao preparar desafio de autenticação")
         return safe_error_response("Não foi possível iniciar a autenticação.")
 
-    if challenge:
-        try:
-            delivery = email_delivery.send_otp_email(
-                normalized_email, challenge["code"], purpose, expires_minutes=10
-            )
-            with get_db_connection() as conn:
-                if not otp_core.mark_otp_delivery(
-                    conn, challenge["challenge_id"], "sent",
-                    delivery.get("message_id"),
-                ):
-                    raise RuntimeError("Estado de entrega OTP não foi atualizado.")
-        except Exception:
-            try:
-                with get_db_connection() as conn:
-                    otp_core.mark_otp_delivery(
-                        conn, challenge["challenge_id"], "failed"
-                    )
-            except Exception:
-                app.logger.error("Falha ao finalizar estado de entrega OTP.")
-            app.logger.warning("Entrega OTP indisponível para finalidade %s.", purpose)
-
+    # Delivery is asynchronous. The outbox row was committed with the challenge.
     return _auth_accepted_response(response_challenge_id)
 
 

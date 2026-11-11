@@ -2,6 +2,7 @@
 import os
 import unittest
 import uuid
+from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import psycopg
 from psycopg import sql
 
 import otp_core
+import otp_email_outbox
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -19,6 +21,7 @@ MIGRATIONS = (
     ROOT / "migrations" / "0006_session_authentication_freshness.sql",
     ROOT / "migrations" / "0009_identity_otp_hardening.sql",
     ROOT / "migrations" / "0010_otp_signup_policy_versions.sql",
+    ROOT / "migrations" / "0011_otp_email_transactional_outbox.sql",
 )
 
 
@@ -335,6 +338,133 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
             self.conn, challenge["challenge_id"], "signup", challenge["code"], self.OTP_PEPPER
         ))
         self.conn.commit()
+
+
+    def test_outbox_constraints_and_lease_recovery(self):
+        challenge_id = self._create_challenge()
+        self.conn.execute(
+            """INSERT INTO otp_email_outbox (challenge_id, payload_ciphertext)
+               VALUES (%s, 'encrypted-payload')""",
+            (challenge_id,),
+        )
+        self.conn.commit()
+
+        first = otp_email_outbox.claim_batch(self.conn, 1)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0]["challenge_id"], str(challenge_id))
+        self.conn.commit()
+
+        second = self._connection()
+        try:
+            self.assertEqual(otp_email_outbox.claim_batch(second, 1), [])
+            second.commit()
+            second.execute(
+                """UPDATE otp_email_outbox
+                   SET lease_expires_at = NOW() - INTERVAL '1 second'
+                   WHERE challenge_id = %s""",
+                (challenge_id,),
+            )
+            second.commit()
+            reclaimed = otp_email_outbox.claim_batch(second, 1)
+            self.assertEqual(len(reclaimed), 1)
+            self.assertNotEqual(reclaimed[0]["lease_token"], first[0]["lease_token"])
+            second.commit()
+        finally:
+            second.close()
+
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            with self.conn.transaction():
+                self.conn.execute(
+                    """UPDATE otp_email_outbox
+                       SET status = 'processing', lease_token = NULL,
+                           lease_expires_at = NULL
+                       WHERE challenge_id = %s""",
+                    (challenge_id,),
+                )
+
+    def test_expired_outbox_payload_is_erased_and_challenge_invalidated(self):
+        challenge_id = uuid.uuid4()
+        self.conn.execute(
+            """INSERT INTO otp_challenges
+               (id, user_id, identity_type, identity_lookup_hash, purpose,
+                code_hash, created_at, expires_at, max_attempts, delivery_status,
+                terms_policy_version, privacy_notice_version)
+               VALUES (%s, %s, 'email', %s, 'signup', %s,
+                       NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute',
+                       5, 'pending', 'terms-test-v1', 'privacy-test-v1')""",
+            (challenge_id, self.user_id, b"e" * 32, b"d" * 32),
+        )
+        self.conn.execute(
+            """INSERT INTO otp_email_outbox (challenge_id, payload_ciphertext)
+               VALUES (%s, 'encrypted-payload')""",
+            (challenge_id,),
+        )
+        self.conn.commit()
+
+        self.assertEqual(otp_email_outbox.expire_due(self.conn), 1)
+        self.conn.commit()
+        outbox = self.conn.execute(
+            "SELECT status, payload_ciphertext, last_error_code FROM otp_email_outbox WHERE challenge_id = %s",
+            (challenge_id,),
+        ).fetchone()
+        challenge = self.conn.execute(
+            "SELECT delivery_status, consumed_at FROM otp_challenges WHERE id = %s",
+            (challenge_id,),
+        ).fetchone()
+        self.assertEqual(outbox, ("failed", None, "expired"))
+        self.assertEqual(challenge[0], "failed")
+        self.assertIsNotNone(challenge[1])
+
+    def test_challenge_and_encrypted_outbox_can_rollback_together(self):
+        from cryptography.fernet import Fernet
+        environment = {
+            "OTP_DELIVERY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
+            "IDENTITY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
+            "TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
+            "IDENTITY_LOOKUP_PEPPER": "i" * 40,
+            "OTP_PEPPER": "o" * 40,
+            "OTP_RATE_LIMIT_PEPPER": "r" * 40,
+        }
+        challenge_id = uuid.uuid4()
+        with patch.dict("os.environ", environment):
+            self.conn.execute(
+                """INSERT INTO otp_challenges
+                   (id, user_id, identity_type, identity_lookup_hash, purpose,
+                    code_hash, expires_at, max_attempts, delivery_status,
+                    terms_policy_version, privacy_notice_version)
+                   VALUES (%s, %s, 'email', %s, 'signup', %s,
+                           NOW() + INTERVAL '10 minutes', 5, 'pending',
+                           'terms-test-v1', 'privacy-test-v1')""",
+                (challenge_id, self.user_id, b"a" * 32, b"b" * 32),
+            )
+            otp_email_outbox.enqueue(
+                self.conn, str(challenge_id), "person@example.test",
+                "12345678", "signup",
+            )
+            self.assertEqual(
+                self.conn.execute(
+                    "SELECT count(*) FROM otp_email_outbox WHERE challenge_id = %s",
+                    (challenge_id,),
+                ).fetchone()[0],
+                1,
+            )
+            self.conn.rollback()
+
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM otp_challenges WHERE id = %s",
+                (challenge_id,),
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT count(*) FROM otp_email_outbox WHERE challenge_id = %s",
+                (challenge_id,),
+            ).fetchone()[0],
+            0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
