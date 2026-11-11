@@ -20,40 +20,6 @@ def required_pepper(name, environ):
     return value.encode("utf-8")
 
 
-def trusted_client_ip(access_route, environ):
-    """Resolve the client IP from an explicitly configured trusted proxy chain.
-
-    access_route is Werkzeug's parsed X-Forwarded-For chain. The configured
-    count is the number of trusted proxies that append to its right side.
-    """
-    raw_hops = environ.get("OTP_TRUSTED_PROXY_HOPS", "")
-    try:
-        hops = int(raw_hops)
-    except (TypeError, ValueError):
-        raise IdentityAuthConfigurationError(
-            "Cadeia de proxies confiáveis não configurada."
-        ) from None
-    if not 1 <= hops <= 8:
-        raise IdentityAuthConfigurationError(
-            "Quantidade de proxies confiáveis fora do limite."
-        )
-    route = list(access_route or [])
-    if len(route) < hops:
-        raise IdentityAuthConfigurationError(
-            "Cadeia de IP encaminhado incompleta."
-        )
-    candidate = route[-hops]
-    try:
-        address = ipaddress.ip_address(candidate)
-    except ValueError:
-        raise IdentityAuthConfigurationError(
-            "IP do cliente inválido na cadeia confiável."
-        ) from None
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-        address = address.ipv4_mapped
-    return address.compressed
-
-
 def reserve_request_limits(
     conn, normalized_identity, client_ip, device_id, purpose, rate_limit_pepper
 ):
