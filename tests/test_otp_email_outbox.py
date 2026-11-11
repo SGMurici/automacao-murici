@@ -109,6 +109,7 @@ class OtpEmailOutboxTests(unittest.TestCase):
         ))
         query, params = conn.cursor_value.executed[0]
         self.assertIn("lease_token = %s", query)
+        self.assertIn("lease_expires_at > NOW()", query)
         self.assertEqual(params[0], False)
 
     def test_configuration_key_must_be_independent(self):
