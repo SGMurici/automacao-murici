@@ -29,7 +29,7 @@ The backend has one provider-agnostic OTP lifecycle in \`otp_core.py\`. Email si
 
 ## Schema evolution
 
-Migration \`0009_identity_otp_hardening.sql\` is additive to migration 0002. It adds optional user ownership, delivery timestamps, resend cooldown and provider reference to \`otp_challenges\`, plus indexes and consistency constraints. It does not create a second rate-limit ledger: migration 0005 and \`otp_request_limits\` remain the single shared quota mechanism.
+Migration \`0009_identity_otp_hardening.sql\` is additive to migration 0002. It adds optional user ownership, delivery timestamps, resend cooldown and provider reference to \`otp_challenges\`, plus indexes and consistency constraints. Migration \`0010_otp_signup_policy_versions.sql\` stores the exact terms and privacy-notice versions on signup challenges. The versions are recorded in consent/audit events only after successful e-mail verification, not merely when an unverified address requests a code. The migrations do not create a second rate-limit ledger: migration 0005 and \`otp_request_limits\` remain the single shared quota mechanism.
 
 ## Operational requirements before public routes
 
