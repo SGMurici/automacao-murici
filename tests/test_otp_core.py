@@ -89,7 +89,7 @@ class OtpCoreTests(unittest.TestCase):
             (challenge_id,),
         ])
         self.assertTrue(
-            otp_core.verify_otp_challenge(conn, challenge_id, "00000042", self.pepper)
+            otp_core.verify_otp_challenge(conn, challenge_id, "login", "00000042", self.pepper)
         )
         self.assertEqual(len(conn.cursor_instance.executed), 2)
         self.assertIn("SET consumed_at = NOW()", conn.cursor_instance.executed[1][0])
@@ -102,7 +102,7 @@ class OtpCoreTests(unittest.TestCase):
             (1,),
         ])
         self.assertFalse(
-            otp_core.verify_otp_challenge(conn, challenge_id, "00000043", self.pepper)
+            otp_core.verify_otp_challenge(conn, challenge_id, "login", "00000043", self.pepper)
         )
         self.assertIn(
             "failed_attempts = failed_attempts + 1",
@@ -121,16 +121,27 @@ class OtpCoreTests(unittest.TestCase):
                 conn = FakeConnection([(b"x" * 32, *row)])
                 self.assertFalse(
                     otp_core.verify_otp_challenge(
-                        conn, "challenge-1", "00000042", self.pepper
+                        conn, "challenge-1", "login", "00000042", self.pepper
                     )
                 )
                 self.assertEqual(len(conn.cursor_instance.executed), 1)
+
+    def test_code_cannot_be_verified_for_a_different_purpose(self):
+        conn = FakeConnection([
+            (b"x" * 32, "signup", True, None, 0, 5, "sent"),
+        ])
+        self.assertFalse(
+            otp_core.verify_otp_challenge(
+                conn, "challenge-1", "login", "00000042", self.pepper
+            )
+        )
+        self.assertEqual(len(conn.cursor_instance.executed), 1)
 
     def test_malformed_code_is_rejected_before_database_access(self):
         conn = FakeConnection()
         self.assertFalse(
             otp_core.verify_otp_challenge(
-                conn, "challenge-1", "42", self.pepper
+                conn, "challenge-1", "login", "42", self.pepper
             )
         )
         self.assertEqual(conn.cursor_instance.executed, [])
