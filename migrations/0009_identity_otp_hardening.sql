@@ -15,6 +15,17 @@ CREATE INDEX IF NOT EXISTS idx_otp_challenges_active_lookup
     ON otp_challenges (identity_type, identity_lookup_hash, purpose, expires_at)
     WHERE consumed_at IS NULL AND delivery_status IN ('pending', 'sent');
 
+-- Preserve legacy challenge semantics when this additive migration follows 0002.
+UPDATE otp_challenges
+SET delivery_attempted_at = COALESCE(delivery_attempted_at, created_at),
+    sent_at = COALESCE(sent_at, created_at),
+    resend_after = COALESCE(resend_after, created_at + INTERVAL '60 seconds')
+WHERE delivery_status = 'sent';
+
+UPDATE otp_challenges
+SET consumed_at = COALESCE(consumed_at, created_at)
+WHERE delivery_status = 'failed' AND consumed_at IS NULL;
+
 ALTER TABLE otp_challenges
     ADD CONSTRAINT otp_challenges_failed_attempts_within_limit
     CHECK (failed_attempts <= max_attempts);
