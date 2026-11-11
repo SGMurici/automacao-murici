@@ -24,10 +24,13 @@ class EmailDeliveryTests(unittest.TestCase):
 
     def test_builds_operational_message(self):
         message = email_delivery.build_otp_message("User@example.test", "00123456", "signup")
+        body = message.get_content()
         self.assertEqual(message["To"], "user@example.test")
         self.assertIn("KAPPA", message["Subject"])
-        self.assertIn("00123456", message.get_content())
-        self.assertIn("não contém publicidade", message.get_content())
+        self.assertIn("00123456", body)
+        self.assertIn("não contém publicidade", body)
+        self.assertIn("\n\n", body)
+        self.assertNotIn("\\n", body)
 
     def test_rejects_invalid_code_and_purpose(self):
         with self.assertRaises(ValueError):
@@ -56,12 +59,13 @@ class EmailDeliveryTests(unittest.TestCase):
         client.send_message.return_value = {}
         smtp_cls.return_value = client
 
-        result = email_delivery.send_otp_email("user@example.test", "00123456", "signup")
+        result = email_delivery.send_otp_email("User@example.test", "00123456", "signup")
 
         client.ehlo.assert_called()
         client.starttls.assert_called_once()
         client.login.assert_called_once_with("user", "secret")
         client.send_message.assert_called_once()
+        self.assertEqual(client.send_message.call_args.kwargs["to_addrs"], ["user@example.test"])
         client.quit.assert_called_once()
         self.assertTrue(result["message_id"].startswith("<"))
 
@@ -77,6 +81,15 @@ class EmailDeliveryTests(unittest.TestCase):
 
         smtp_ssl_cls.assert_called_once()
         client.starttls.assert_not_called()
+
+    @patch("email_delivery.smtplib.SMTP")
+    def test_rejects_refused_recipient(self, smtp_cls):
+        client = MagicMock()
+        client.send_message.return_value = {"user@example.test": (550, b"rejected")}
+        smtp_cls.return_value = client
+
+        with self.assertRaisesRegex(email_delivery.EmailDeliveryError, "recusou"):
+            email_delivery.send_otp_email("user@example.test", "00123456", "signup")
 
     @patch("email_delivery.smtplib.SMTP")
     def test_sanitizes_provider_errors(self, smtp_cls):
