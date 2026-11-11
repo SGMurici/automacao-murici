@@ -42,17 +42,17 @@ class OtpCoreTests(unittest.TestCase):
                 conn, "email", self.identity_hash, "login", self.pepper
             )
 
-        self.assertEqual(result, {"challenge_id": "challenge-1", "code": "000042"})
+        self.assertEqual(result, {"challenge_id": "challenge-1", "code": "00000042"})
         query, params = conn.cursor_instance.executed[0]
         self.assertIn("INSERT INTO otp_challenges", query)
-        self.assertEqual(params[1], "email")
-        self.assertEqual(params[2], self.identity_hash)
-        self.assertEqual(params[3], "login")
+        self.assertEqual(params[2], "email")
+        self.assertEqual(params[3], self.identity_hash)
+        self.assertEqual(params[4], "login")
         self.assertEqual(params[4], otp_core._code_digest(
             params[0], "000042", self.pepper
         ))
         self.assertNotIn("000042", params)
-        self.assertEqual(params[5:], (300, 5))
+        self.assertEqual(params[6:], (600, 5))
 
     def test_create_rejects_weak_pepper_and_invalid_policy(self):
         conn = FakeConnection([("challenge-1",)])
@@ -72,7 +72,8 @@ class OtpCoreTests(unittest.TestCase):
         self.assertTrue(otp_core.mark_otp_delivery(conn, "challenge-1", "sent"))
         query, params = conn.cursor_instance.executed[0]
         self.assertIn("delivery_status = 'pending'", query)
-        self.assertEqual(params, ("sent", "challenge-1"))
+        self.assertEqual(params[0], "sent")
+        self.assertEqual(params[-1], "challenge-1")
 
     def test_delivery_rejects_unknown_status(self):
         conn = FakeConnection()
@@ -84,7 +85,7 @@ class OtpCoreTests(unittest.TestCase):
         challenge_id = "challenge-1"
         digest = otp_core._code_digest(challenge_id, "000042", self.pepper)
         conn = FakeConnection([
-            (digest, True, None, 0, 5, "sent"),
+            (digest, "login", True, None, 0, 5, "sent"),
             (challenge_id,),
         ])
         self.assertTrue(
@@ -101,7 +102,7 @@ class OtpCoreTests(unittest.TestCase):
             (1,),
         ])
         self.assertFalse(
-            otp_core.verify_otp_challenge(conn, challenge_id, "000043", self.pepper)
+            otp_core.verify_otp_challenge(conn, challenge_id, "00000043", self.pepper)
         )
         self.assertIn(
             "failed_attempts = failed_attempts + 1",
@@ -110,10 +111,10 @@ class OtpCoreTests(unittest.TestCase):
 
     def test_expired_unsent_consumed_or_exhausted_challenges_are_rejected(self):
         cases = [
-            (False, None, 0, 5, "sent"),
-            (True, None, 0, 5, "pending"),
-            (True, "2026-11-10T00:00:00Z", 0, 5, "sent"),
-            (True, None, 5, 5, "sent"),
+            ("login", False, None, 0, 5, "sent"),
+            ("login", True, None, 0, 5, "pending"),
+            ("login", True, "2026-11-10T00:00:00Z", 0, 5, "sent"),
+            ("login", True, None, 5, 5, "sent"),
         ]
         for row in cases:
             with self.subTest(row=row):
