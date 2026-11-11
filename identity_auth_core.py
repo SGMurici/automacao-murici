@@ -70,7 +70,7 @@ def reserve_request_limits(
         return False
     if not otp_core.reserve_otp_request_slot(
         conn, "ip", ip_hash, purpose,
-        cooldown_seconds=1, window_seconds=3600, max_requests=30,
+        cooldown_seconds=1, window_seconds=3600, max_requests=120,
     ):
         return False
     if device_id:
@@ -80,6 +80,38 @@ def reserve_request_limits(
         if not otp_core.reserve_otp_request_slot(
             conn, "device", device_hash, purpose,
             cooldown_seconds=60, window_seconds=3600, max_requests=10,
+        ):
+            return False
+    return True
+
+
+def reserve_verification_limits(
+    conn, normalized_identity, client_ip, device_id, purpose, rate_limit_pepper
+):
+    """Use the same quota ledger with domain-separated verification buckets."""
+    identity_hash = otp_core.hash_otp_rate_limit_dimension(
+        "identity", f"verify:{normalized_identity}", rate_limit_pepper
+    )
+    ip_hash = otp_core.hash_otp_rate_limit_dimension(
+        "ip", client_ip, rate_limit_pepper
+    )
+    if not otp_core.reserve_otp_request_slot(
+        conn, "identity", identity_hash, purpose,
+        cooldown_seconds=1, window_seconds=3600, max_requests=10,
+    ):
+        return False
+    if not otp_core.reserve_otp_request_slot(
+        conn, "ip", ip_hash, purpose,
+        cooldown_seconds=1, window_seconds=3600, max_requests=120,
+    ):
+        return False
+    if device_id:
+        device_hash = otp_core.hash_otp_rate_limit_dimension(
+            "device", f"verify:{device_id}", rate_limit_pepper
+        )
+        if not otp_core.reserve_otp_request_slot(
+            conn, "device", device_hash, purpose,
+            cooldown_seconds=1, window_seconds=3600, max_requests=20,
         ):
             return False
     return True
