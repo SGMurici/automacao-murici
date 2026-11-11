@@ -1,4 +1,4 @@
--- Harden email OTP challenges and add shared, privacy-preserving rate-limit buckets.
+-- Harden OTP challenge ownership and delivery metadata.
 -- Additive only. Apply to an isolated PostgreSQL branch before any production review.
 
 ALTER TABLE otp_challenges
@@ -14,23 +14,6 @@ CREATE INDEX IF NOT EXISTS idx_otp_challenges_user_purpose
 CREATE INDEX IF NOT EXISTS idx_otp_challenges_active_lookup
     ON otp_challenges (identity_type, identity_lookup_hash, purpose, expires_at)
     WHERE consumed_at IS NULL AND delivery_status IN ('pending', 'sent');
-
-CREATE TABLE IF NOT EXISTS auth_rate_limit_buckets (
-    scope VARCHAR(24) NOT NULL
-        CHECK (scope IN ('otp_identity', 'otp_ip')),
-    key_hash BYTEA NOT NULL,
-    window_started_at TIMESTAMPTZ NOT NULL,
-    hit_count INTEGER NOT NULL DEFAULT 0
-        CHECK (hit_count >= 0),
-    expires_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (scope, key_hash, window_started_at),
-    CONSTRAINT auth_rate_limit_expiry_after_window
-        CHECK (expires_at > window_started_at)
-);
-
-CREATE INDEX IF NOT EXISTS idx_auth_rate_limit_expiry
-    ON auth_rate_limit_buckets (expires_at);
 
 ALTER TABLE otp_challenges
     ADD CONSTRAINT otp_challenges_failed_attempts_within_limit
