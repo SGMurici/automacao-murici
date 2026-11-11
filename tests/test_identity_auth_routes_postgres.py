@@ -113,6 +113,16 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
             self.assertEqual(len(sent), 1)
             self.assertEqual(sent[0][0], "new.user@example.com")
             self.assertEqual(sent[0][2], "signup")
+            with self._connection() as conn:
+                pending_user_id = conn.execute(
+                    "SELECT user_id FROM otp_challenges WHERE id = %s",
+                    (requested.get_json()["challenge_id"],),
+                ).fetchone()[0]
+                preverification_consent_count = conn.execute(
+                    "SELECT COUNT(*) FROM consent_events WHERE user_id = %s",
+                    (pending_user_id,),
+                ).fetchone()[0]
+            self.assertEqual(preverification_consent_count, 0)
             signup_verified = self._post(
                 client,
                 "/api/v1/auth/signup/verify",
