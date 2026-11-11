@@ -70,7 +70,7 @@ def reserve_request_limits(
         return False
     if not otp_core.reserve_otp_request_slot(
         conn, "ip", ip_hash, purpose,
-        cooldown_seconds=1, window_seconds=3600, max_requests=120,
+        cooldown_seconds=1, window_seconds=3600, max_requests=100,
     ):
         return False
     if device_id:
@@ -102,7 +102,7 @@ def reserve_verification_limits(
         return False
     if not otp_core.reserve_otp_request_slot(
         conn, "ip", ip_hash, purpose,
-        cooldown_seconds=1, window_seconds=3600, max_requests=120,
+        cooldown_seconds=1, window_seconds=3600, max_requests=100,
     ):
         return False
     if device_id:
