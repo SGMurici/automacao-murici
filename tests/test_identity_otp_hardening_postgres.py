@@ -124,8 +124,8 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
     def test_delivery_transition_rejects_expired_challenge(self):
         challenge_id = self._create_challenge()
         self.conn.execute(
-            "UPDATE otp_challenges SET created_at = NOW() - INTERVAL '2 minutes',
-                    expires_at = NOW() - INTERVAL '1 second' WHERE id = %s",
+            """UPDATE otp_challenges SET created_at = NOW() - INTERVAL '2 minutes',
+                    expires_at = NOW() - INTERVAL '1 second' WHERE id = %s""",
             (challenge_id,),
         )
         self.conn.commit()
