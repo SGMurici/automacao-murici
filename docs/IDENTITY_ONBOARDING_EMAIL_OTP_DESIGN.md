@@ -84,7 +84,7 @@ Candidate additions:
 - `delivery_attempted_at`, `sent_at`, `resend_after`, and a bounded provider delivery reference/status.
 - A challenge purpose/status constraint and index supporting lookup of active challenges by identity, purpose and creation time.
 - A partial uniqueness or transaction/lock strategy that prevents multiple active challenges for one identity/purpose without making resend races possible.
-- A separate rate-limit bucket table (or an existing, reviewed shared limiter) keyed by HMAC of normalized identity and canonical IP, with fixed/sliding-window semantics and retention.
+- Reuse the existing `otp_request_limits` table from migration 0005 as the single shared rate-limit ledger. It supports identity, IP and device dimensions per purpose; derive dimension hashes with a backend-only HMAC pepper and apply IP canonicalization before hashing. Do not create a parallel OTP limiter table.
 - An explicit account activation invariant: only verified primary email identities can transition a user from pending to active through the signup verification transaction.
 
 Do not store raw IP indefinitely. If IP-based abuse protection needs persistence, use short retention and a documented lawful purpose. Do not store the email in challenge rows if the identity table can resolve it; if provider delivery needs a transient value, decrypt only inside the delivery adapter and never log it.
