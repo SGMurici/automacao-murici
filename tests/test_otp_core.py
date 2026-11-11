@@ -48,10 +48,10 @@ class OtpCoreTests(unittest.TestCase):
         self.assertEqual(params[2], "email")
         self.assertEqual(params[3], self.identity_hash)
         self.assertEqual(params[4], "login")
-        self.assertEqual(params[4], otp_core._code_digest(
-            params[0], "000042", self.pepper
+        self.assertEqual(params[5], otp_core._code_digest(
+            params[0], "login", "00000042", self.pepper
         ))
-        self.assertNotIn("000042", params)
+        self.assertNotIn("00000042", params)
         self.assertEqual(params[6:], (600, 5))
 
     def test_create_rejects_weak_pepper_and_invalid_policy(self):
@@ -83,13 +83,13 @@ class OtpCoreTests(unittest.TestCase):
 
     def test_valid_code_is_consumed_atomically(self):
         challenge_id = "challenge-1"
-        digest = otp_core._code_digest(challenge_id, "000042", self.pepper)
+        digest = otp_core._code_digest(challenge_id, "login", "00000042", self.pepper)
         conn = FakeConnection([
             (digest, "login", True, None, 0, 5, "sent"),
             (challenge_id,),
         ])
         self.assertTrue(
-            otp_core.verify_otp_challenge(conn, challenge_id, "000042", self.pepper)
+            otp_core.verify_otp_challenge(conn, challenge_id, "00000042", self.pepper)
         )
         self.assertEqual(len(conn.cursor_instance.executed), 2)
         self.assertIn("SET consumed_at = NOW()", conn.cursor_instance.executed[1][0])
@@ -98,7 +98,7 @@ class OtpCoreTests(unittest.TestCase):
         challenge_id = "challenge-1"
         digest = otp_core._code_digest(challenge_id, "000042", self.pepper)
         conn = FakeConnection([
-            (digest, True, None, 0, 5, "sent"),
+            (digest, "login", True, None, 0, 5, "sent"),
             (1,),
         ])
         self.assertFalse(
@@ -121,7 +121,7 @@ class OtpCoreTests(unittest.TestCase):
                 conn = FakeConnection([(b"x" * 32, *row)])
                 self.assertFalse(
                     otp_core.verify_otp_challenge(
-                        conn, "challenge-1", "000042", self.pepper
+                        conn, "challenge-1", "00000042", self.pepper
                     )
                 )
                 self.assertEqual(len(conn.cursor_instance.executed), 1)
