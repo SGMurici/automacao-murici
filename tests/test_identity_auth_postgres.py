@@ -60,8 +60,9 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
 
     def setUp(self):
         self.client = application.app.test_client()
+        client_octet = int(uuid.uuid4().hex[:2], 16) or 1
         self.client_ip_headers = {
-            "X-Forwarded-For": "198.51.100.20, 10.0.0.1"
+            "X-Forwarded-For": f"198.51.100.{client_octet}, 10.0.0.1"
         }
         self.env = {
             "IDENTITY_LOOKUP_PEPPER": "identity-lookup-test-pepper-32-bytes-min",
