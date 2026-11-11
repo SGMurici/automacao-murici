@@ -72,8 +72,10 @@ def _smtp_config():
     }
 
 
-def build_otp_message(to_email, code, purpose, expires_minutes=10):
+def build_otp_message(to_email, code, purpose, expires_minutes=10, sender=None):
+    """Build a plain-text operational message without opening a network connection."""
     recipient = normalize_email(to_email)
+    sender = normalize_email(sender or _required_env("SMTP_FROM"))
     if purpose not in PURPOSE_SUBJECTS:
         raise ValueError("Finalidade de e-mail inválida.")
     if not isinstance(code, str) or not re.fullmatch(r"[0-9]{8}", code, flags=re.ASCII):
@@ -82,43 +84,25 @@ def build_otp_message(to_email, code, purpose, expires_minutes=10):
         raise ValueError("Validade do código inválida.")
 
     message = EmailMessage()
-    message["From"] = _smtp_config()["sender"]
+    message["From"] = sender
     message["To"] = recipient
     message["Subject"] = f"KAPPA — {PURPOSE_SUBJECTS[purpose]}"
     message["Message-ID"] = make_msgid()
     message.set_content(
-        "Olá,\n\n"
-        f"Seu código de verificação do KAPPA é: {code}\n\n"
+        "Olá,\\n\\n"
+        f"Seu código de verificação do KAPPA é: {code}\\n\\n"
         f"Ele expira em {expires_minutes} minutos. Se você não solicitou este código, "
-        "ignore esta mensagem. Não compartilhe o código com ninguém.\n\n"
-        "Esta mensagem é exclusivamente operacional e não contém publicidade.\n"
+        "ignore esta mensagem. Não compartilhe o código com ninguém.\\n\\n"
+        "Esta mensagem é exclusivamente operacional e não contém publicidade.\\n"
         "KAPPA"
     )
     return message
 
-
 def send_otp_email(to_email, code, purpose, expires_minutes=10):
     """Send one OTP email over mandatory TLS; return a non-secret message ID."""
     config = _smtp_config()
-    recipient = normalize_email(to_email)
-    if purpose not in PURPOSE_SUBJECTS:
-        raise ValueError("Finalidade de e-mail inválida.")
-    message = EmailMessage()
-    message["From"] = config["sender"]
-    message["To"] = recipient
-    message["Subject"] = f"KAPPA — {PURPOSE_SUBJECTS[purpose]}"
-    message["Message-ID"] = make_msgid()
-    if not isinstance(code, str) or not re.fullmatch(r"[0-9]{8}", code, flags=re.ASCII):
-        raise ValueError("Código de verificação inválido.")
-    if isinstance(expires_minutes, bool) or not isinstance(expires_minutes, int) or not 1 <= expires_minutes <= 15:
-        raise ValueError("Validade do código inválida.")
-    message.set_content(
-        "Olá,\n\n"
-        f"Seu código de verificação do KAPPA é: {code}\n\n"
-        f"Ele expira em {expires_minutes} minutos. Se você não solicitou este código, "
-        "ignore esta mensagem. Não compartilhe o código com ninguém.\n\n"
-        "Esta mensagem é exclusivamente operacional e não contém publicidade.\n"
-        "KAPPA"
+    message = build_otp_message(
+        to_email, code, purpose, expires_minutes, sender=config["sender"]
     )
 
     client = None
