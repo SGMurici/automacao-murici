@@ -15,6 +15,8 @@ DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = (
     ROOT / "migrations" / "0002_identity_core.sql",
+    ROOT / "migrations" / "0005_otp_request_limits.sql",
+    ROOT / "migrations" / "0006_session_authentication_freshness.sql",
     ROOT / "migrations" / "0009_identity_otp_hardening.sql",
 )
 
