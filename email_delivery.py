@@ -76,6 +76,12 @@ def _smtp_config():
     }
 
 
+def validate_email_config():
+    """Validate required SMTP settings without opening a network connection."""
+    _smtp_config()
+    return True
+
+
 def build_otp_message(to_email, code, purpose, expires_minutes=10, sender=None):
     """Build a plain-text operational message without opening a network connection."""
     recipient = normalize_email_address(to_email)
