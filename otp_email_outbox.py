@@ -222,6 +222,7 @@ def mark_failure(conn, challenge_id, lease_token, attempts, terminal, error_code
                    last_error_code = %s, updated_at = NOW()
                WHERE o.challenge_id = %s AND o.status = 'processing'
                  AND o.lease_token = %s
+                 AND o.lease_expires_at > NOW()
                RETURNING o.challenge_id""",
             (terminal, terminal, terminal, error_code, challenge_id, lease_token),
         )
