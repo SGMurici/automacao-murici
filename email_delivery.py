@@ -96,15 +96,14 @@ def build_otp_message(to_email, code, purpose, expires_minutes=10, sender=None):
     message = EmailMessage()
     message["From"] = sender
     message["To"] = recipient
-    message["Subject"] = f"KAPPA — {PURPOSE_SUBJECTS[purpose]}"
+    message["Subject"] = PURPOSE_SUBJECTS[purpose]
     message["Message-ID"] = make_msgid()
     message.set_content(
         "Olá,\n\n"
-        f"Seu código de verificação do KAPPA é: {code}\n\n"
+        f"Seu código de verificação é: {code}\n\n"
         f"Ele expira em {expires_minutes} minutos. Se você não solicitou este código, "
         "ignore esta mensagem. Não compartilhe o código com ninguém.\n\n"
-        "Esta mensagem é exclusivamente operacional e não contém publicidade.\n"
-        "KAPPA"
+        "Esta é uma mensagem automática de autenticação. Não contém publicidade."
     )
     return message
 
