@@ -74,7 +74,7 @@ O limitador atual aplica quota por identidade e IP, com cooldown e janela compar
 - Falha de entrega consome o desafio; desafio enviado só pode ser usado uma vez.
 - Cadastro ativa usuário, verifica identidade e cria tenant/owner em uma transação.
 - Não enviar informações profissionais, currículos ou dados sensíveis no e-mail OTP.
-- Definir retenção de logs e metadados de entrega, gestão de bounce/complaint e procedimento de exclusão.
+- Definir retenção de logs e metadados de entrega, gestão de bounce/complaint e procedimento de exclusão. Contas pendentes sem e-mail verificado são removidas pelo scheduler após o TTL configurado (24 horas por padrão); confirmar formalmente esse prazo na matriz de retenção.
 - Revisar aviso de privacidade, base legal, operador/suboperadores e transferência internacional antes da ativação pública.
 
 ## Gate de ativação
@@ -89,6 +89,7 @@ Não habilitar produção até todos os itens estarem comprovados:
 - [ ] cadeia de proxy e CIDRs confirmados por evidência, não estimativa;
 - [ ] testes de integração e segurança aprovados;
 - [ ] aviso de privacidade e retenção revisados;
+- [ ] prazo de retenção de cadastro pendente aprovado e limpeza do scheduler monitorada;
 - [ ] plano de rollback testado mantendo o recurso desligado por padrão.
 
 Nenhuma conta AWS, domínio, DNS, credencial, segredo Render, migration de produção, merge ou deploy foi criado/alterado por esta implementação.
