@@ -14,7 +14,7 @@ from email.utils import make_msgid
 from identity_lookup import normalize_identity
 
 
-def __normalize_email(value):
+def normalize_email_address(value):
     return normalize_identity("email", value)
 
 
@@ -47,7 +47,7 @@ def _bool_env(name, default):
 def _smtp_config():
     host = _required_env("SMTP_HOST")
     try:
-        sender = normalize_email(_required_env("SMTP_FROM"))
+        sender = normalize_email_address(_required_env("SMTP_FROM"))
         port = int(os.getenv("SMTP_PORT", "587"))
         timeout = float(os.getenv("SMTP_TIMEOUT_SECONDS", "10"))
     except (TypeError, ValueError):
@@ -78,8 +78,8 @@ def _smtp_config():
 
 def build_otp_message(to_email, code, purpose, expires_minutes=10, sender=None):
     """Build a plain-text operational message without opening a network connection."""
-    recipient = normalize_email(to_email)
-    sender = normalize_email(sender or _required_env("SMTP_FROM"))
+    recipient = normalize_email_address(to_email)
+    sender = normalize_email_address(sender or _required_env("SMTP_FROM"))
     if purpose not in PURPOSE_SUBJECTS:
         raise ValueError("Finalidade de e-mail inválida.")
     if not isinstance(code, str) or not re.fullmatch(r"[0-9]{8}", code, flags=re.ASCII):
@@ -106,7 +106,7 @@ def build_otp_message(to_email, code, purpose, expires_minutes=10, sender=None):
 def send_otp_email(to_email, code, purpose, expires_minutes=10):
     """Send one OTP email over mandatory TLS; return a non-secret message ID."""
     config = _smtp_config()
-    recipient = normalize_email(to_email)
+    recipient = normalize_email_address(to_email)
     message = build_otp_message(
         recipient, code, purpose, expires_minutes, sender=config["sender"]
     )
