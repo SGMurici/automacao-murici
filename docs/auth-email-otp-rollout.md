@@ -56,7 +56,7 @@ Sequência operacional, ainda não executada:
 9. Inserir as variáveis SMTP no Render, sem imprimir os valores nos logs ou no GitHub.
 10. Fazer teste de entrega para caixas de teste controladas, validar recebimento, SPF, DKIM, DMARC, bounce e complaint antes de habilitar usuários reais.
 
-O domínio remetente ainda não foi identificado nem confirmado. Não inventar nem registrar domínio. O subdomínio proposto depende de domínio cujo controle a empresa possa comprovar.
+O domínio remetente ainda não foi identificado nem confirmado. Um registro histórico citava `muricisystem.com`, mas essa proposta antecede a consolidação da marca Sodalis Murici e não é domínio aprovado nem comprovadamente registrado; não configurar nem comprar com base nesse registro. Não inventar nem registrar domínio. O subdomínio proposto depende de domínio cujo controle a empresa possa comprovar.
 
 ## Proxy e rate limiting
 
@@ -77,6 +77,10 @@ O limitador atual aplica quota por identidade e IP, com cooldown e janela compar
 - Definir retenção de logs e metadados de entrega, gestão de bounce/complaint e procedimento de exclusão. Contas pendentes sem e-mail verificado são removidas pelo scheduler após o TTL configurado (24 horas por padrão); confirmar formalmente esse prazo na matriz de retenção.
 - Revisar aviso de privacidade, base legal, operador/suboperadores e transferência internacional antes da ativação pública.
 
+## Origem do PWA e transporte de sessão
+
+A origem final do PWA e a estratégia de sessão ainda precisam ser decididas. O preview Lovable e o backend Render estão em domínios diferentes; cookies cross-site podem ser bloqueados. A API atual devolve token opaco no corpo JSON e as rotas existentes usam `Authorization: Bearer`. Antes da ativação pública, decidir e testar armazenamento de sessão no cliente, CORS, CSRF, cookies Secure/HttpOnly/SameSite ou estratégia BFF same-site. Não guardar token de sessão em localStorage como atalho e não enfraquecer atributos de cookie para contornar o problema.
+
 ## Gate de ativação
 
 Não habilitar produção até todos os itens estarem comprovados:
@@ -87,6 +91,7 @@ Não habilitar produção até todos os itens estarem comprovados:
 - [ ] credenciais SMTP de envio restrito criadas e guardadas no Render;
 - [ ] quatro segredos de autenticação independentes criados e guardados;
 - [ ] cadeia de proxy e CIDRs confirmados por evidência, não estimativa;
+- [ ] domínio/origem final do PWA e transporte seguro de sessão, CORS e CSRF definidos e testados;
 - [ ] testes de integração e segurança aprovados;
 - [ ] aviso de privacidade e retenção revisados;
 - [ ] prazo de retenção de cadastro pendente aprovado e limpeza do scheduler monitorada;
