@@ -98,9 +98,11 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
         self.conn.execute(
             """INSERT INTO otp_challenges
                (id, user_id, identity_type, identity_lookup_hash, purpose,
-                code_hash, expires_at, max_attempts, delivery_status)
+                code_hash, expires_at, max_attempts, delivery_status,
+                terms_policy_version, privacy_notice_version)
                VALUES (%s, %s, 'email', %s, 'signup', %s,
-                       NOW() + INTERVAL '10 minutes', 5, 'pending')""",
+                       NOW() + INTERVAL '10 minutes', 5, 'pending',
+                       'terms-test-v1', 'privacy-test-v1')""",
             (challenge_id, self.user_id, b"i" * 32, b"d" * 32),
         )
         self.conn.commit()
@@ -142,6 +144,25 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
                        VALUES (%s, %s, 'email', %s, 'signup', %s,
                                NOW() + INTERVAL '10 minutes', '', 'privacy-v1')""",
                     (uuid.uuid4(), self.user_id, b"p" * 32, b"c" * 32),
+                )
+
+    def test_legacy_signup_challenges_without_policy_versions_are_invalidated(self):
+        row = self.conn.execute(
+            "SELECT consumed_at FROM otp_challenges WHERE id = %s",
+            (self.legacy_sent_id,),
+        ).fetchone()
+        self.assertIsNotNone(row[0])
+
+    def test_signup_requires_both_policy_versions_at_database_level(self):
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            with self.conn.transaction():
+                self.conn.execute(
+                    """INSERT INTO otp_challenges
+                       (id, user_id, identity_type, identity_lookup_hash, purpose,
+                        code_hash, expires_at)
+                       VALUES (%s, %s, 'email', %s, 'signup', %s,
+                               NOW() + INTERVAL '10 minutes')""",
+                    (uuid.uuid4(), self.user_id, b"n" * 32, b"n" * 32),
                 )
 
     def test_sent_delivery_transition_persists_timestamps_and_is_one_way(self):
@@ -205,6 +226,8 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
             purpose,
             self.OTP_PEPPER,
             user_id=self.user_id,
+            terms_policy_version=("terms-test-v1" if purpose == "signup" else None),
+            privacy_notice_version=("privacy-test-v1" if purpose == "signup" else None),
         )
         self.conn.commit()
         return result

@@ -1400,6 +1400,10 @@ def auth_routes_ready(require_email_delivery=True):
         if not identity_key or identity_key in peppers:
             return False
         Fernet(identity_key)
+        token_key_value = os.environ.get("TOKEN_ENCRYPTION_KEY") or TOKEN_ENCRYPTION_KEY
+        token_key = token_key_value.encode("ascii") if token_key_value else b""
+        if not token_key or identity_key == token_key:
+            return False
         if not os.environ.get("TERMS_POLICY_VERSION", "").strip():
             return False
         if not os.environ.get("PRIVACY_NOTICE_VERSION", "").strip():
@@ -1407,11 +1411,7 @@ def auth_routes_ready(require_email_delivery=True):
         if require_email_delivery:
             email_delivery.validate_email_config()
         hops = int(os.environ.get("TRUSTED_PROXY_HOPS", ""))
-        networks = [
-            ipaddress.ip_network(item.strip(), strict=False)
-            for item in os.environ.get("TRUSTED_PROXY_CIDRS", "").split(",")
-            if item.strip()
-        ]
+        networks = identity_auth_core.trusted_proxy_networks(os.environ)
         return 1 <= hops <= 5 and bool(networks)
     except (KeyError, TypeError, ValueError, RuntimeError, email_delivery.EmailDeliveryError):
         return False
@@ -1423,13 +1423,7 @@ def trusted_auth_client_ip():
         hops = int(os.environ.get("TRUSTED_PROXY_HOPS", ""))
         if not 1 <= hops <= 5:
             return None
-        networks = [
-            ipaddress.ip_network(item.strip(), strict=False)
-            for item in os.environ.get("TRUSTED_PROXY_CIDRS", "").split(",")
-            if item.strip()
-        ]
-        if not networks:
-            return None
+        networks = identity_auth_core.trusted_proxy_networks(os.environ)
         peer = ipaddress.ip_address(request.remote_addr or "")
         if not any(peer.version == network.version and peer in network for network in networks):
             return None

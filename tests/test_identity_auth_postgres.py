@@ -72,6 +72,7 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             "OTP_PEPPER": "otp-test-pepper-32-bytes-minimum-value",
             "OTP_RATE_LIMIT_PEPPER": "otp-rate-limit-test-pepper-32-bytes",
             "IDENTITY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
+            "TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
             "TRUSTED_PROXY_HOPS": "2",
             "TRUSTED_PROXY_CIDRS": "127.0.0.0/8,10.0.0.0/8",
             "SMTP_HOST": "email-smtp.sa-east-1.amazonaws.com",
@@ -343,6 +344,14 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         valid = self._verify_signup(email, code)
         self.assertEqual(valid.status_code, 200)
+
+    def test_catch_all_trusted_proxy_cidrs_fail_closed(self):
+        with patch.dict(os.environ, {"TRUSTED_PROXY_CIDRS": "0.0.0.0/0,::/0"}):
+            self.assertFalse(application.auth_routes_ready())
+
+    def test_identity_encryption_key_must_differ_from_token_key(self):
+        with patch.dict(os.environ, {"TOKEN_ENCRYPTION_KEY": os.environ["IDENTITY_ENCRYPTION_KEY"]}):
+            self.assertFalse(application.auth_routes_ready())
 
     def test_missing_trusted_proxy_configuration_fails_closed(self):
         with patch.dict(os.environ, {"TRUSTED_PROXY_HOPS": "0"}):
