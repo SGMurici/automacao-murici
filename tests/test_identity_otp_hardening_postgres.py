@@ -122,6 +122,28 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
         ).fetchone()[0]
         self.assertIsNotNone(failed)
 
+    def test_policy_versions_are_signup_only_and_nonempty(self):
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            with self.conn.transaction():
+                self.conn.execute(
+                    """INSERT INTO otp_challenges
+                       (id, user_id, identity_type, identity_lookup_hash, purpose,
+                        code_hash, expires_at, terms_policy_version, privacy_notice_version)
+                       VALUES (%s, %s, 'email', %s, 'login', %s,
+                               NOW() + INTERVAL '10 minutes', 'terms-v1', 'privacy-v1')""",
+                    (uuid.uuid4(), self.user_id, b"p" * 32, b"c" * 32),
+                )
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            with self.conn.transaction():
+                self.conn.execute(
+                    """INSERT INTO otp_challenges
+                       (id, user_id, identity_type, identity_lookup_hash, purpose,
+                        code_hash, expires_at, terms_policy_version, privacy_notice_version)
+                       VALUES (%s, %s, 'email', %s, 'signup', %s,
+                               NOW() + INTERVAL '10 minutes', '', 'privacy-v1')""",
+                    (uuid.uuid4(), self.user_id, b"p" * 32, b"c" * 32),
+                )
+
     def test_sent_delivery_transition_persists_timestamps_and_is_one_way(self):
         challenge_id = self._create_challenge()
         self.assertTrue(otp_core.mark_otp_delivery(
