@@ -232,6 +232,47 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
             self.assertEqual(len(sent), 1)
             self.assertEqual(sent[0][0], registered_email)
 
+    def test_scheduler_purges_expired_pending_accounts_but_keeps_active_accounts(self):
+        pending_id = uuid.uuid4()
+        active_id = uuid.uuid4()
+        with self._connection() as conn:
+            conn.execute(
+                """INSERT INTO app_users (id, status, created_at)
+                   VALUES (%s, 'pending', NOW() - INTERVAL '25 hours')""",
+                (pending_id,),
+            )
+            conn.execute(
+                """INSERT INTO app_users (id, status, created_at)
+                   VALUES (%s, 'active', NOW() - INTERVAL '25 hours')""",
+                (active_id,),
+            )
+            conn.execute(
+                """INSERT INTO user_identities
+                   (id, user_id, identity_type, identity_lookup_hash,
+                    identity_value_ciphertext, is_primary)
+                   VALUES (%s, %s, 'email', %s, %s, TRUE)""",
+                (uuid.uuid4(), pending_id, b"p" * 32, b"encrypted-pending"),
+            )
+
+        with patch.object(application, "get_db_connection", side_effect=self._connection):
+            removed = application.cleanup_expired_pending_signups()
+
+        self.assertEqual(removed, 1)
+        with self._connection() as conn:
+            self.assertIsNone(
+                conn.execute("SELECT id FROM app_users WHERE id = %s", (pending_id,)).fetchone()
+            )
+            self.assertIsNotNone(
+                conn.execute("SELECT id FROM app_users WHERE id = %s", (active_id,)).fetchone()
+            )
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM user_identities WHERE user_id = %s",
+                    (pending_id,),
+                ).fetchone()[0],
+                0,
+            )
+
     def test_signup_requires_explicit_terms_and_privacy_notice_acknowledgement(self):
         client = application.app.test_client()
         with (
