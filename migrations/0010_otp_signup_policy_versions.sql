@@ -4,10 +4,26 @@ ALTER TABLE otp_challenges
     ADD COLUMN IF NOT EXISTS terms_policy_version VARCHAR(40),
     ADD COLUMN IF NOT EXISTS privacy_notice_version VARCHAR(40);
 
+-- Outstanding legacy signup challenges did not capture the policy versions
+-- accepted by the user. Invalidate them rather than inventing historical consent.
+UPDATE otp_challenges
+SET consumed_at = COALESCE(consumed_at, NOW())
+WHERE purpose = 'signup'
+  AND (
+      terms_policy_version IS NULL
+      OR length(btrim(terms_policy_version)) NOT BETWEEN 1 AND 40
+      OR privacy_notice_version IS NULL
+      OR length(btrim(privacy_notice_version)) NOT BETWEEN 1 AND 40
+  );
+
 ALTER TABLE otp_challenges
     ADD CONSTRAINT otp_challenges_policy_versions_paired
     CHECK (
-        (terms_policy_version IS NULL AND privacy_notice_version IS NULL)
+        (
+            purpose <> 'signup'
+            AND terms_policy_version IS NULL
+            AND privacy_notice_version IS NULL
+        )
         OR (
             purpose = 'signup'
             AND terms_policy_version IS NOT NULL
