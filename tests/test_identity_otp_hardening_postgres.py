@@ -28,12 +28,33 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
         cls.admin.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(cls.schema)))
         conn = psycopg.connect(DATABASE_URL, autocommit=True)
         conn.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(cls.schema)))
+        cls.legacy_sent_id = uuid.uuid4()
+        cls.legacy_failed_id = uuid.uuid4()
         try:
-            for migration in MIGRATIONS:
-                source = migration.read_text(encoding="utf-8")
-                for statement in source.split(";"):
-                    if statement.strip():
-                        conn.execute(statement, prepare=False)
+            source = MIGRATIONS[0].read_text(encoding="utf-8")
+            for statement in source.split(";"):
+                if statement.strip():
+                    conn.execute(statement, prepare=False)
+            conn.execute(
+                """INSERT INTO otp_challenges
+                   (id, identity_type, identity_lookup_hash, purpose, code_hash,
+                    created_at, expires_at, delivery_status)
+                   VALUES (%s, 'email', %s, 'signup', %s,
+                           NOW() - INTERVAL '3 minutes', NOW() + INTERVAL '10 minutes', 'sent')""",
+                (cls.legacy_sent_id, b"l" * 32, b"s" * 32),
+            )
+            conn.execute(
+                """INSERT INTO otp_challenges
+                   (id, identity_type, identity_lookup_hash, purpose, code_hash,
+                    created_at, expires_at, delivery_status)
+                   VALUES (%s, 'email', %s, 'signup', %s,
+                           NOW() - INTERVAL '3 minutes', NOW() + INTERVAL '10 minutes', 'failed')""",
+                (cls.legacy_failed_id, b"f" * 32, b"x" * 32),
+            )
+            source = MIGRATIONS[1].read_text(encoding="utf-8")
+            for statement in source.split(";"):
+                if statement.strip():
+                    conn.execute(statement, prepare=False)
         except Exception:
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(cls.schema)))
             conn.close()
@@ -80,6 +101,22 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
         )
         self.conn.commit()
         return challenge_id
+
+    def test_migration_backfills_legacy_sent_and_failed_challenges(self):
+        sent = self.conn.execute(
+            """SELECT delivery_attempted_at, sent_at, resend_after
+               FROM otp_challenges WHERE id = %s""",
+            (self.legacy_sent_id,),
+        ).fetchone()
+        self.assertIsNotNone(sent[0])
+        self.assertIsNotNone(sent[1])
+        self.assertGreater(sent[2], sent[1])
+
+        failed = self.conn.execute(
+            "SELECT consumed_at FROM otp_challenges WHERE id = %s",
+            (self.legacy_failed_id,),
+        ).fetchone()[0]
+        self.assertIsNotNone(failed)
 
     def test_sent_delivery_transition_persists_timestamps_and_is_one_way(self):
         challenge_id = self._create_challenge()
