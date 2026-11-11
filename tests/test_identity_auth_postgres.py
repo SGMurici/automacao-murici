@@ -69,6 +69,7 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             "IDENTITY_LOOKUP_PEPPER": "identity-lookup-test-pepper-32-bytes-min",
             "OTP_PEPPER": "otp-test-pepper-32-bytes-minimum-value",
             "OTP_RATE_LIMIT_PEPPER": "otp-rate-limit-test-pepper-32-bytes",
+            "IDENTITY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
             "TRUSTED_PROXY_HOPS": "2",
             "TRUSTED_PROXY_CIDRS": "127.0.0.0/8,10.0.0.0/8",
             "SMTP_HOST": "email-smtp.sa-east-1.amazonaws.com",
@@ -87,10 +88,6 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             application, "TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii")
         )
         self.key_patch.start()
-        self.identity_key_patch = patch.object(
-            application, "IDENTITY_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii")
-        )
-        self.identity_key_patch.start()
         self.auth_enabled_patch = patch.object(application, "AUTH_ROUTES_ENABLED", True)
         self.auth_enabled_patch.start()
         self.db_patch = patch.object(
@@ -110,7 +107,6 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         self.mail_patch.stop()
         self.db_patch.stop()
         self.auth_enabled_patch.stop()
-        self.identity_key_patch.stop()
         self.key_patch.stop()
         self.env_patch.stop()
 
