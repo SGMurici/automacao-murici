@@ -131,5 +131,122 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
         self.conn.rollback()
 
 
+    OTP_PEPPER = b"otp-integration-pepper-32-bytes-minimum"
+
+    def _create_challenge_with_code(self, purpose="signup"):
+        result = otp_core.create_otp_challenge(
+            self.conn,
+            "email",
+            b"i" * 32,
+            purpose,
+            self.OTP_PEPPER,
+            user_id=self.user_id,
+        )
+        self.conn.commit()
+        return result
+
+    def test_challenge_verification_consumes_correct_purpose_once(self):
+        challenge = self._create_challenge_with_code("signup")
+        self.assertTrue(otp_core.mark_otp_delivery(
+            self.conn, challenge["challenge_id"], "sent", "provider-verify-1"
+        ))
+        self.conn.commit()
+
+        self.assertTrue(otp_core.verify_otp_challenge(
+            self.conn, challenge["challenge_id"], "signup", challenge["code"], self.OTP_PEPPER
+        ))
+        self.conn.commit()
+        self.assertFalse(otp_core.verify_otp_challenge(
+            self.conn, challenge["challenge_id"], "signup", challenge["code"], self.OTP_PEPPER
+        ))
+        row = self.conn.execute(
+            "SELECT consumed_at, failed_attempts FROM otp_challenges WHERE id = %s",
+            (challenge["challenge_id"],),
+        ).fetchone()
+        self.assertIsNotNone(row[0])
+        self.assertEqual(row[1], 0)
+
+    def test_challenge_cannot_be_verified_for_another_purpose(self):
+        challenge = self._create_challenge_with_code("signup")
+        self.assertTrue(otp_core.mark_otp_delivery(
+            self.conn, challenge["challenge_id"], "sent"
+        ))
+        self.conn.commit()
+
+        self.assertFalse(otp_core.verify_otp_challenge(
+            self.conn, challenge["challenge_id"], "login", challenge["code"], self.OTP_PEPPER
+        ))
+        self.conn.commit()
+        attempts = self.conn.execute(
+            "SELECT failed_attempts FROM otp_challenges WHERE id = %s",
+            (challenge["challenge_id"],),
+        ).fetchone()[0]
+        self.assertEqual(attempts, 0)
+        self.assertTrue(otp_core.verify_otp_challenge(
+            self.conn, challenge["challenge_id"], "signup", challenge["code"], self.OTP_PEPPER
+        ))
+        self.conn.commit()
+
+    def test_failed_attempts_reach_limit_without_consuming_valid_code(self):
+        challenge = self._create_challenge_with_code("signup")
+        self.assertTrue(otp_core.mark_otp_delivery(
+            self.conn, challenge["challenge_id"], "sent"
+        ))
+        self.conn.commit()
+
+        for _ in range(5):
+            self.assertFalse(otp_core.verify_otp_challenge(
+                self.conn, challenge["challenge_id"], "signup", "99999999", self.OTP_PEPPER
+            ))
+            self.conn.commit()
+        self.assertFalse(otp_core.verify_otp_challenge(
+            self.conn, challenge["challenge_id"], "signup", challenge["code"], self.OTP_PEPPER
+        ))
+        self.conn.commit()
+        row = self.conn.execute(
+            "SELECT failed_attempts, consumed_at FROM otp_challenges WHERE id = %s",
+            (challenge["challenge_id"],),
+        ).fetchone()
+        self.assertEqual(row[0], 5)
+        self.assertIsNone(row[1])
+
+    def test_concurrent_verification_consumes_challenge_once(self):
+        challenge = self._create_challenge_with_code("signup")
+        self.assertTrue(otp_core.mark_otp_delivery(
+            self.conn, challenge["challenge_id"], "sent"
+        ))
+        self.conn.commit()
+
+        def verify_once(_):
+            conn = self._connection()
+            try:
+                result = otp_core.verify_otp_challenge(
+                    conn, challenge["challenge_id"], "signup", challenge["code"], self.OTP_PEPPER
+                )
+                conn.commit()
+                return result
+            finally:
+                conn.close()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(verify_once, range(2)))
+        self.assertEqual(sum(results), 1)
+
+    def test_successful_verification_can_be_rolled_back_by_caller(self):
+        challenge = self._create_challenge_with_code("signup")
+        self.assertTrue(otp_core.mark_otp_delivery(
+            self.conn, challenge["challenge_id"], "sent"
+        ))
+        self.conn.commit()
+
+        self.assertTrue(otp_core.verify_otp_challenge(
+            self.conn, challenge["challenge_id"], "signup", challenge["code"], self.OTP_PEPPER
+        ))
+        self.conn.rollback()
+        self.assertTrue(otp_core.verify_otp_challenge(
+            self.conn, challenge["challenge_id"], "signup", challenge["code"], self.OTP_PEPPER
+        ))
+        self.conn.commit()
+
 if __name__ == "__main__":
     unittest.main()
