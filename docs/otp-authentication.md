@@ -43,6 +43,7 @@ Migration \`0009_identity_otp_hardening.sql\` is additive to migration 0002. It 
 - Permit login only for active users with a verified identity.
 - Add session issuance/rotation/revocation only after successful OTP verification.
 - Test replay, expiry, concurrent verification, delivery failure, rate limits, rollback, tenant isolation and account recovery.
+- Unverified pending signup records are purged by the scheduler after `PENDING_SIGNUP_TTL_HOURS` (24 hours by default); formally approve this retention period and monitor the cleanup before public activation.
 - Complete privacy notice and LGPD review for authentication processing, email provider and retention before public activation.
 
 Routes exist in code but remain disabled by default. No provider account, credential, production setting or external message was created. No production migration, merge or deployment is authorized by this foundation. See \`docs/auth-email-otp-rollout.md\` for the activation gates.
