@@ -53,10 +53,11 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
                            NOW() - INTERVAL '3 minutes', NOW() + INTERVAL '10 minutes', 'failed')""",
                 (cls.legacy_failed_id, b"f" * 32, b"x" * 32),
             )
-            source = MIGRATIONS[1].read_text(encoding="utf-8")
-            for statement in source.split(";"):
-                if statement.strip():
-                    conn.execute(statement, prepare=False)
+            for migration in MIGRATIONS[1:]:
+                source = migration.read_text(encoding="utf-8")
+                for statement in source.split(";"):
+                    if statement.strip():
+                        conn.execute(statement, prepare=False)
         except Exception:
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(cls.schema)))
             conn.close()
