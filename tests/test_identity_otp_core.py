@@ -68,10 +68,18 @@ class OtpCoreTests(unittest.TestCase):
     def test_privacy_hash_is_scoped_and_non_reversible(self):
         a = otp.privacy_key_hash(self.SECRET, "otp_identity", "User@example.com")
         b = otp.privacy_key_hash(self.SECRET, "otp_identity", "user@example.com")
-        c = otp.privacy_key_hash(self.SECRET, "otp_ip", "user@example.com")
+        c = otp.privacy_key_hash(self.SECRET, "otp_ip", "192.0.2.1")
         self.assertEqual(a, b)
         self.assertNotEqual(a, c)
         self.assertEqual(len(a), 32)
+
+    def test_canonical_client_ip_normalizes_ipv6_and_mapped_ipv4(self):
+        self.assertEqual(otp.canonical_client_ip("2001:0db8:0:0::1"), "2001:db8::1")
+        self.assertEqual(otp.canonical_client_ip("::ffff:192.0.2.1"), "192.0.2.1")
+        with self.assertRaises(ValueError):
+            otp.canonical_client_ip("fe80::1%eth0")
+        with self.assertRaises(ValueError):
+            otp.canonical_client_ip("not-an-ip")
 
     def test_expiry_is_bounded_and_timezone_aware(self):
         now = datetime(2026, 11, 11, 12, tzinfo=timezone.utc)
@@ -110,9 +118,8 @@ class OtpCoreTests(unittest.TestCase):
         self.assertEqual(params[0], "failed")
 
     def test_delivery_rejects_provider_reference_for_failed_delivery(self):
-        conn = FakeConnection()
-        self.assertFalse(otp.mark_challenge_delivery(conn, self.CHALLENGE, "failed", "provider-id"))
-        self.assertEqual(conn.fake_cursor.calls[0][1][3], "provider-id")
+        with self.assertRaises(ValueError):
+            otp.mark_challenge_delivery(FakeConnection(), self.CHALLENGE, "failed", "provider-id")
 
     def test_delivery_rejects_invalid_state(self):
         with self.assertRaises(ValueError):
