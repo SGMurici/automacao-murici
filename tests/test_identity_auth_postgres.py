@@ -97,11 +97,11 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             return_value={"message_id": "<otp-test@example.test>"},
         )
         self.send_mail = self.mail_patch.start()
-        self.testing_patch = patch.object(application.app, "testing", True)
-        self.testing_patch.start()
+        self.original_testing = application.app.config.get("TESTING", False)
+        application.app.config["TESTING"] = True
 
     def tearDown(self):
-        self.testing_patch.stop()
+        application.app.config["TESTING"] = self.original_testing
         self.mail_patch.stop()
         self.db_patch.stop()
         self.identity_key_patch.stop()
