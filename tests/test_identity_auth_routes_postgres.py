@@ -55,6 +55,10 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
         conn.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(self.schema)))
         return conn
 
+    def setUp(self):
+        with self._connection() as conn:
+            conn.execute("TRUNCATE app_users, tenants, otp_request_limits CASCADE")
+
     def _env(self):
         return {
             "IDENTITY_LOOKUP_PEPPER": "identity-lookup-pepper-for-tests-32-bytes",
@@ -128,7 +132,7 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
 
             login_requested = self._post(
                 client, "/api/v1/auth/login/request", {"email": "new.user@example.com"},
-                ip="198.51.100.11",
+                ip="198.51.100.21",
             )
             self.assertEqual(login_requested.status_code, 202)
             self.assertEqual(len(sent), 2)
@@ -140,7 +144,7 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
                     "challenge_id": login_requested.get_json()["challenge_id"],
                     "code": sent[1][1],
                 },
-                ip="198.51.100.11",
+                ip="198.51.100.21",
             )
             self.assertEqual(login_verified.status_code, 200)
             self.assertNotEqual(login_verified.get_json()["access_token"], signup_token)
