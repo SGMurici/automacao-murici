@@ -7,6 +7,7 @@ import ipaddress
 import urllib.parse
 import urllib.request
 import urllib.error
+import uuid
 
 from datetime import datetime, timezone, timedelta
 
@@ -1755,6 +1756,297 @@ def bearer_session_token():
     ):
         return None
     return token
+
+
+def _identity_auth_configuration():
+    """Fail closed until all authentication secrets, SMTP and proxy trust are configured."""
+    identity_pepper = identity_auth_core.required_pepper(
+        "IDENTITY_LOOKUP_PEPPER", os.environ
+    )
+    otp_pepper = identity_auth_core.required_pepper("OTP_PEPPER", os.environ)
+    rate_limit_pepper = identity_auth_core.required_pepper(
+        "OTP_RATE_LIMIT_PEPPER", os.environ
+    )
+    client_ip = identity_auth_core.trusted_client_ip(request.access_route, os.environ)
+    if not TOKEN_ENCRYPTION_KEY:
+        raise identity_auth_core.IdentityAuthConfigurationError(
+            "Criptografia de identidade não configurada."
+        )
+    get_fernet()
+    email_delivery.validate_email_config()
+    return identity_pepper, otp_pepper, rate_limit_pepper, client_ip
+
+
+def _identity_auth_error():
+    return jsonify({
+        "status": "indisponivel",
+        "mensagem": "O serviço de autenticação ainda não está configurado.",
+    }), 503
+
+
+def _identity_auth_no_store(response):
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+def _optional_device_context(data):
+    device_id = data.get("device_id")
+    if device_id is None:
+        return None
+    if not isinstance(device_id, str) or len(device_id) > 64:
+        raise ValueError("Identificador do dispositivo inválido.")
+    try:
+        parsed = uuid.UUID(device_id)
+    except (ValueError, AttributeError):
+        raise ValueError("Identificador do dispositivo inválido.") from None
+    return str(parsed)
+
+
+@app.post("/api/v1/auth/otp/request")
+def api_request_identity_otp():
+    """Request signup/login OTP with generic response and layered abuse limits."""
+    if not request.is_json:
+        return jsonify({"status": "erro", "mensagem": "Envie os dados em JSON."}), 400
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"status": "erro", "mensagem": "Dados inválidos."}), 400
+
+    email = data.get("email")
+    purpose = data.get("purpose")
+    if not isinstance(email, str) or len(email) > 254 or purpose not in {"signup", "login"}:
+        return jsonify({"status": "erro", "mensagem": "Dados de autenticação inválidos."}), 400
+    try:
+        device_id = _optional_device_context(data)
+        normalized_email = identity_lookup.normalize_identity("email", email)
+    except ValueError as error:
+        return jsonify({"status": "erro", "mensagem": str(error)}), 400
+
+    try:
+        identity_pepper, otp_pepper, rate_limit_pepper, client_ip = (
+            _identity_auth_configuration()
+        )
+    except (identity_auth_core.IdentityAuthConfigurationError, email_delivery.EmailDeliveryError, ValueError):
+        app.logger.warning("Solicitação OTP recusada: autenticação ainda não configurada")
+        return _identity_auth_error()
+
+    identity_hash = identity_lookup.hash_identity_lookup(
+        "email", normalized_email, identity_pepper
+    )
+    challenge = None
+    try:
+        with get_db_connection() as conn:
+            allowed = identity_auth_core.reserve_request_limits(
+                conn, normalized_email, client_ip, device_id, purpose,
+                rate_limit_pepper,
+            )
+            if allowed:
+                identity = identity_auth_core.find_email_identity(conn, identity_hash)
+                if purpose == "signup":
+                    if not identity:
+                        ciphertext = encrypt_value(normalized_email).encode("utf-8")
+                        identity = identity_auth_core.ensure_pending_email_identity(
+                            conn, identity_hash, ciphertext
+                        )
+                    eligible = bool(identity and identity["user_status"] == "pending")
+                else:
+                    eligible = bool(
+                        identity
+                        and identity["user_status"] == "active"
+                        and identity["verified_at"] is not None
+                    )
+                if eligible:
+                    challenge = otp_core.create_otp_challenge(
+                        conn,
+                        "email",
+                        identity_hash,
+                        purpose,
+                        otp_pepper,
+                        ttl_seconds=600,
+                        max_attempts=5,
+                        user_id=identity["user_id"],
+                    )
+            conn.commit()
+    except Exception:
+        app.logger.exception("Falha interna ao preparar solicitação OTP")
+        return safe_error_response("Não foi possível processar a solicitação.")
+
+    if challenge:
+        delivery_status = "sent"
+        provider_reference = None
+        try:
+            delivery = email_delivery.send_otp_email(
+                normalized_email, challenge["code"], purpose, expires_minutes=10
+            )
+            provider_reference = delivery.get("message_id")
+        except email_delivery.EmailDeliveryError:
+            delivery_status = "failed"
+            app.logger.warning("Provedor não confirmou entrega de OTP")
+        except Exception:
+            delivery_status = "failed"
+            app.logger.exception("Falha inesperada no adaptador de e-mail OTP")
+        try:
+            with get_db_connection() as conn:
+                updated = otp_core.mark_otp_delivery(
+                    conn, challenge["challenge_id"], delivery_status,
+                    provider_reference=provider_reference,
+                )
+                if not updated:
+                    raise RuntimeError("Transição de entrega OTP não aplicada.")
+                conn.commit()
+        except Exception:
+            app.logger.exception("Falha ao persistir estado de entrega OTP")
+            return safe_error_response("Não foi possível concluir a solicitação.")
+
+    response = jsonify({
+        "status": "accepted",
+        "mensagem": (
+            "Se o endereço estiver elegível, enviaremos um código de verificação. "
+            "Confira sua caixa de entrada e a pasta de spam."
+        ),
+    })
+    response.status_code = 202
+    return _identity_auth_no_store(response)
+
+
+@app.post("/api/v1/auth/otp/verify")
+def api_verify_identity_otp():
+    """Verify the latest sent challenge and activate/login in one transaction."""
+    if not request.is_json:
+        return jsonify({"status": "erro", "mensagem": "Envie os dados em JSON."}), 400
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"status": "erro", "mensagem": "Dados inválidos."}), 400
+
+    email = data.get("email")
+    code = data.get("code")
+    purpose = data.get("purpose")
+    if (
+        not isinstance(email, str)
+        or len(email) > 254
+        or not isinstance(code, str)
+        or len(code) != otp_core.OTP_CODE_DIGITS
+        or purpose not in {"signup", "login"}
+    ):
+        return jsonify({"status": "erro", "mensagem": "Código ou dados inválidos."}), 400
+    try:
+        normalized_email = identity_lookup.normalize_identity("email", email)
+        device_id = _optional_device_context(data)
+    except ValueError as error:
+        return jsonify({"status": "erro", "mensagem": str(error)}), 400
+
+    try:
+        identity_pepper, otp_pepper, rate_limit_pepper, client_ip = (
+            _identity_auth_configuration()
+        )
+    except (identity_auth_core.IdentityAuthConfigurationError, email_delivery.EmailDeliveryError, ValueError):
+        app.logger.warning("Verificação OTP recusada: autenticação ainda não configurada")
+        return _identity_auth_error()
+
+    identity_hash = identity_lookup.hash_identity_lookup(
+        "email", normalized_email, identity_pepper
+    )
+    device_label = data.get("device_label")
+    if device_label is not None:
+        if not isinstance(device_label, str) or len(device_label) > 120:
+            return jsonify({"status": "erro", "mensagem": "Dispositivo inválido."}), 400
+        device_label = device_label.strip() or None
+
+    try:
+        with get_db_connection() as conn:
+            # Verification attempts are bounded per challenge in otp_core. The
+            # trusted IP is still required here so requests cannot bypass the
+            # same deployment trust boundary as OTP issuance.
+            challenge = identity_auth_core.latest_sent_challenge(
+                conn, identity_hash, purpose
+            )
+            if not challenge:
+                return jsonify({
+                    "status": "erro",
+                    "mensagem": "Código inválido ou expirado.",
+                }), 400
+            challenge_id, user_id = challenge
+            verified = otp_core.verify_otp_challenge(
+                conn, str(challenge_id), purpose, code, otp_pepper
+            )
+            if not verified or not user_id:
+                return jsonify({
+                    "status": "erro",
+                    "mensagem": "Código inválido ou expirado.",
+                }), 400
+
+            if purpose == "signup":
+                if data.get("accept_terms") is not True or data.get("acknowledge_privacy") is not True:
+                    return jsonify({
+                        "status": "erro",
+                        "mensagem": "Confirme os termos de uso e o aviso de privacidade.",
+                    }), 400
+                terms_version = os.environ.get("TERMS_POLICY_VERSION", "").strip()
+                privacy_version = os.environ.get("PRIVACY_NOTICE_VERSION", "").strip()
+                if not terms_version or not privacy_version:
+                    raise identity_auth_core.IdentityAuthConfigurationError(
+                        "Versões dos documentos legais não configuradas."
+                    )
+                tenant_id = identity_auth_core.activate_verified_signup(
+                    conn, user_id, identity_hash, data.get("display_name")
+                )
+                if not tenant_id:
+                    return jsonify({
+                        "status": "erro",
+                        "mensagem": "Código inválido ou expirado.",
+                    }), 400
+                authorization_core.record_consent_event(
+                    conn, user_id, "terms_of_service", terms_version,
+                    "granted", "signup", tenant_id=tenant_id,
+                )
+                authorization_core.record_consent_event(
+                    conn, user_id, "privacy_notice_acknowledgement", privacy_version,
+                    "granted", "signup", tenant_id=tenant_id,
+                )
+                authorization_core.record_audit_event(
+                    conn, "identity.signup", "success", actor_user_id=user_id,
+                    tenant_id=tenant_id, resource_type="user",
+                    resource_id=str(user_id),
+                )
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """SELECT 1
+                           FROM app_users AS u
+                           JOIN user_identities AS i ON i.user_id = u.id
+                           WHERE u.id = %s
+                             AND u.status = 'active'
+                             AND i.identity_type = 'email'
+                             AND i.identity_lookup_hash = %s
+                             AND i.verified_at IS NOT NULL
+                           LIMIT 1""",
+                        (user_id, identity_hash),
+                    )
+                    if not cur.fetchone():
+                        return jsonify({
+                            "status": "erro",
+                            "mensagem": "Código inválido ou expirado.",
+                        }), 400
+
+            token = identity_core.issue_session(
+                conn, user_id, device_label=device_label
+            )
+            conn.commit()
+
+        response = jsonify({
+            "status": "ok",
+            "token_type": "Bearer",
+            "access_token": token,
+            "expires_in": 604800,
+            "usuario": {"id": str(user_id)},
+        })
+        return _identity_auth_no_store(response)
+    except identity_auth_core.IdentityAuthConfigurationError:
+        app.logger.warning("Ativação de conta recusada: documentos legais não configurados")
+        return _identity_auth_error()
+    except Exception:
+        app.logger.exception("Falha ao verificar código de autenticação")
+        return safe_error_response("Não foi possível concluir a autenticação.")
 
 
 @app.get("/api/v1/me")
