@@ -1691,10 +1691,6 @@ def verify_auth_otp(purpose):
                     conn, user_id, "terms_of_service", terms_version,
                     "granted", "signup", tenant_id=tenant_id,
                 )
-                authorization_core.record_consent_event(
-                    conn, user_id, "privacy_notice_acknowledgement", privacy_version,
-                    "granted", "signup", tenant_id=tenant_id,
-                )
                 authorization_core.record_audit_event(
                     conn, "privacy_notice.acknowledged", "success",
                     actor_user_id=user_id,
