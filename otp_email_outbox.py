@@ -92,10 +92,14 @@ def expire_due(conn):
                    UPDATE otp_email_outbox o
                    SET status = 'failed', payload_ciphertext = NULL,
                        lease_token = NULL, lease_expires_at = NULL,
-                       last_error_code = 'expired', updated_at = NOW()
+                       last_error_code = CASE
+                           WHEN c.expires_at <= NOW() THEN 'expired'
+                           ELSE 'attempts_exhausted'
+                       END,
+                       updated_at = NOW()
                    FROM otp_challenges c
                    WHERE c.id = o.challenge_id
-                     AND c.expires_at <= NOW()
+                     AND (c.expires_at <= NOW() OR o.attempts >= 8)
                      AND o.status IN ('pending', 'processing')
                    RETURNING o.challenge_id
                )
