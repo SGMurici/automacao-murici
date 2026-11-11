@@ -52,7 +52,37 @@ class OtpCoreTests(unittest.TestCase):
             params[0], "login", "00000042", self.pepper
         ))
         self.assertNotIn("00000042", params)
-        self.assertEqual(params[6:], (600, 5))
+        self.assertEqual(params[6:], (600, 5, None, None))
+
+    def test_signup_challenge_persists_exact_policy_versions(self):
+        conn = FakeConnection([("challenge-2",)])
+        otp_core.create_otp_challenge(
+            conn,
+            "email",
+            self.identity_hash,
+            "signup",
+            self.pepper,
+            terms_policy_version="terms-v3",
+            privacy_notice_version="privacy-v7",
+        )
+        query, params = conn.cursor_instance.executed[0]
+        self.assertIn("terms_policy_version, privacy_notice_version", query)
+        self.assertEqual(params[-2:], ("terms-v3", "privacy-v7"))
+
+    def test_signup_policy_versions_must_be_paired_and_signup_only(self):
+        conn = FakeConnection([("challenge-3",)])
+        with self.assertRaises(ValueError):
+            otp_core.create_otp_challenge(
+                conn, "email", self.identity_hash, "signup", self.pepper,
+                terms_policy_version="terms-v1",
+            )
+        with self.assertRaises(ValueError):
+            otp_core.create_otp_challenge(
+                conn, "email", self.identity_hash, "login", self.pepper,
+                terms_policy_version="terms-v1",
+                privacy_notice_version="privacy-v1",
+            )
+        self.assertEqual(conn.cursor_instance.executed, [])
 
     def test_create_rejects_weak_pepper_and_invalid_policy(self):
         conn = FakeConnection([("challenge-1",)])

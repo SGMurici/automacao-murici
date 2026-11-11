@@ -15,7 +15,10 @@ DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = (
     ROOT / "migrations" / "0002_identity_core.sql",
+    ROOT / "migrations" / "0005_otp_request_limits.sql",
+    ROOT / "migrations" / "0006_session_authentication_freshness.sql",
     ROOT / "migrations" / "0009_identity_otp_hardening.sql",
+    ROOT / "migrations" / "0010_otp_signup_policy_versions.sql",
 )
 
 
@@ -51,10 +54,11 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
                            NOW() - INTERVAL '3 minutes', NOW() + INTERVAL '10 minutes', 'failed')""",
                 (cls.legacy_failed_id, b"f" * 32, b"x" * 32),
             )
-            source = MIGRATIONS[1].read_text(encoding="utf-8")
-            for statement in source.split(";"):
-                if statement.strip():
-                    conn.execute(statement, prepare=False)
+            for migration in MIGRATIONS[1:]:
+                source = migration.read_text(encoding="utf-8")
+                for statement in source.split(";"):
+                    if statement.strip():
+                        conn.execute(statement, prepare=False)
         except Exception:
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(cls.schema)))
             conn.close()

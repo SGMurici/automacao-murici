@@ -2,6 +2,8 @@ import os
 import json
 import secrets
 import hashlib
+import uuid
+import ipaddress
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -13,6 +15,9 @@ import psycopg
 from cryptography.fernet import Fernet
 
 import identity_core
+import identity_lookup
+import otp_core
+import email_delivery
 import account_deletion_core
 
 
@@ -40,6 +45,8 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 TOKEN_ENCRYPTION_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY")
 
 PUBLISH_SECRET = os.environ.get("PUBLISH_SECRET")
+
+AUTH_ROUTES_ENABLED = os.environ.get("AUTH_ROUTES_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 LINKEDIN_ACCOUNT_NAME = "LinkedIn Principal"
 
@@ -1358,6 +1365,383 @@ def health():
     )
 
 
+
+def auth_routes_ready():
+    """Fail closed until all identity secrets and trusted-proxy settings exist."""
+    if not AUTH_ROUTES_ENABLED:
+        return False
+    try:
+        pepper_names = ("IDENTITY_LOOKUP_PEPPER", "OTP_PEPPER", "OTP_RATE_LIMIT_PEPPER")
+        peppers = [os.environ.get(name, "").encode("utf-8") for name in pepper_names]
+        if any(len(value) < 32 for value in peppers) or len(set(peppers)) != 3:
+            return False
+        encryption_key = os.environ["IDENTITY_ENCRYPTION_KEY"].encode("ascii")
+        if encryption_key in peppers:
+            return False
+        Fernet(encryption_key)
+        if not os.environ.get("TERMS_POLICY_VERSION", "").strip():
+            return False
+        if not os.environ.get("PRIVACY_NOTICE_VERSION", "").strip():
+            return False
+        # Validate SMTP configuration before accepting signups; this does not open a connection.
+        email_delivery.validate_email_config()
+        hops = int(os.environ.get("TRUSTED_PROXY_HOPS", ""))
+        cidrs = [
+            ipaddress.ip_network(item.strip(), strict=False)
+            for item in os.environ.get("TRUSTED_PROXY_CIDRS", "").split(",")
+            if item.strip()
+        ]
+        return 1 <= hops <= 5 and bool(cidrs)
+    except (KeyError, TypeError, ValueError, email_delivery.EmailDeliveryError):
+        return False
+
+
+def trusted_auth_client_ip():
+    """Resolve the client IP only through an explicitly allowlisted proxy chain."""
+    try:
+        hops = int(os.environ.get("TRUSTED_PROXY_HOPS", ""))
+        if not 1 <= hops <= 5:
+            return None
+        networks = [
+            ipaddress.ip_network(item.strip(), strict=False)
+            for item in os.environ.get("TRUSTED_PROXY_CIDRS", "").split(",")
+            if item.strip()
+        ]
+        if not networks:
+            return None
+        peer = ipaddress.ip_address(request.remote_addr or "")
+        if not any(peer.version == network.version and peer in network for network in networks):
+            return None
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        values = [item.strip() for item in forwarded.split(",") if item.strip()]
+        if len(values) < hops:
+            return None
+        # The rightmost N-1 forwarded values are the intermediate trusted proxies.
+        for proxy_value in values[-(hops - 1):] if hops > 1 else []:
+            proxy_ip = ipaddress.ip_address(proxy_value)
+            if not any(
+                proxy_ip.version == network.version and proxy_ip in network
+                for network in networks
+            ):
+                return None
+        candidate = ipaddress.ip_address(values[-hops])
+        return str(candidate)
+    except (ValueError, TypeError):
+        return None
+
+
+def _auth_pepper(name):
+    value = os.environ.get(name, "")
+    if len(value.encode("utf-8")) < 32:
+        raise ValueError("Segredo de autenticação indisponível.")
+    return value.encode("utf-8")
+
+
+def _auth_accepted_response(challenge_id):
+    response = jsonify({
+        "status": "accepted",
+        "challenge_id": str(challenge_id),
+        "mensagem": "Se o endereço puder receber um código para esta operação, enviaremos uma mensagem.",
+    })
+    response.status_code = 202
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def request_auth_otp(purpose):
+    """Start signup/login OTP without disclosing whether an account exists."""
+    if not auth_routes_ready():
+        return safe_error_response("Autenticação temporariamente indisponível.", 503)
+    if not request.is_json:
+        return jsonify({"status": "erro", "mensagem": "Envie os dados em JSON."}), 400
+    data = request.get_json(silent=True)
+    email = data.get("email") if isinstance(data, dict) else None
+    if not isinstance(email, str) or len(email) > 254:
+        return jsonify({"status": "erro", "mensagem": "Endereço de e-mail inválido."}), 400
+    if purpose == "signup" and (
+        data.get("terms_accepted") is not True
+        or data.get("privacy_notice_acknowledged") is not True
+    ):
+        return jsonify({
+            "status": "erro",
+            "mensagem": "É necessário aceitar os termos e confirmar a leitura do aviso de privacidade.",
+        }), 400
+
+    client_ip = trusted_auth_client_ip()
+    if not client_ip:
+        return safe_error_response("Não foi possível validar a origem da solicitação.", 503)
+
+    try:
+        normalized_email = identity_lookup.normalize_identity("email", email)
+        identity_hash = identity_lookup.hash_identity_lookup(
+            "email", normalized_email, _auth_pepper("IDENTITY_LOOKUP_PEPPER")
+        )
+        rate_pepper = _auth_pepper("OTP_RATE_LIMIT_PEPPER")
+        ip_hash = otp_core.hash_otp_rate_limit_dimension("ip", client_ip, rate_pepper)
+        identity_rate_hash = otp_core.hash_otp_rate_limit_dimension(
+            "identity", normalized_email, rate_pepper
+        )
+    except ValueError:
+        return jsonify({"status": "erro", "mensagem": "Endereço de e-mail inválido."}), 400
+
+    response_challenge_id = str(uuid.uuid4())
+    challenge = None
+    try:
+        with get_db_connection() as conn:
+            identity_allowed = otp_core.reserve_otp_request_slot(
+                conn, "identity", identity_rate_hash, purpose,
+                cooldown_seconds=60, window_seconds=3600, max_requests=5,
+            )
+            ip_allowed = otp_core.reserve_otp_request_slot(
+                conn, "ip", ip_hash, purpose,
+                cooldown_seconds=10, window_seconds=3600, max_requests=20,
+            )
+            if identity_allowed and ip_allowed:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """SELECT u.id, u.status, ui.verified_at
+                           FROM user_identities AS ui
+                           JOIN app_users AS u ON u.id = ui.user_id
+                           WHERE ui.identity_type = 'email'
+                             AND ui.identity_lookup_hash = %s
+                           FOR UPDATE OF ui, u""",
+                        (identity_hash,),
+                    )
+                    existing = cur.fetchone()
+
+                user_id = None
+                eligible = False
+                if purpose == "signup":
+                    if existing and existing[1] == "pending" and existing[2] is None:
+                        user_id = existing[0]
+                        eligible = True
+                    elif not existing:
+                        user_id = uuid.uuid4()
+                        identity_id = uuid.uuid4()
+                        identity_ciphertext = Fernet(
+                            os.environ["IDENTITY_ENCRYPTION_KEY"].encode("ascii")
+                        ).encrypt(normalized_email.encode("utf-8"))
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "INSERT INTO app_users (id, status) VALUES (%s, 'pending')",
+                                (user_id,),
+                            )
+                            cur.execute(
+                                """INSERT INTO user_identities
+                                   (id, user_id, identity_type, identity_lookup_hash,
+                                    identity_value_ciphertext, is_primary)
+                                   VALUES (%s, %s, 'email', %s, %s, TRUE)""",
+                                (identity_id, user_id, identity_hash, identity_ciphertext),
+                            )
+                        eligible = True
+                elif (
+                    purpose == "login"
+                    and existing
+                    and existing[1] == "active"
+                    and existing[2] is not None
+                ):
+                    user_id = existing[0]
+                    eligible = True
+
+                if eligible and user_id:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """UPDATE otp_challenges
+                               SET consumed_at = NOW()
+                               WHERE identity_type = 'email'
+                                 AND identity_lookup_hash = %s
+                                 AND purpose = %s
+                                 AND consumed_at IS NULL
+                                 AND delivery_status IN ('pending', 'sent')""",
+                            (identity_hash, purpose),
+                        )
+                    challenge = otp_core.create_otp_challenge(
+                        conn,
+                        "email",
+                        identity_hash,
+                        purpose,
+                        _auth_pepper("OTP_PEPPER"),
+                        ttl_seconds=600,
+                        max_attempts=5,
+                        user_id=user_id,
+                        terms_policy_version=(
+                            os.environ["TERMS_POLICY_VERSION"].strip()
+                            if purpose == "signup" else None
+                        ),
+                        privacy_notice_version=(
+                            os.environ["PRIVACY_NOTICE_VERSION"].strip()
+                            if purpose == "signup" else None
+                        ),
+                    )
+                    response_challenge_id = challenge["challenge_id"]
+    except Exception:
+        app.logger.error("Falha interna ao preparar desafio de autenticação.")
+        return safe_error_response("Não foi possível iniciar a autenticação.")
+
+    if challenge:
+        try:
+            delivery = email_delivery.send_otp_email(
+                normalized_email, challenge["code"], purpose, expires_minutes=10
+            )
+            with get_db_connection() as conn:
+                otp_core.mark_otp_delivery(
+                    conn, challenge["challenge_id"], "sent",
+                    delivery.get("message_id"),
+                )
+        except Exception:
+            try:
+                with get_db_connection() as conn:
+                    otp_core.mark_otp_delivery(
+                        conn, challenge["challenge_id"], "failed"
+                    )
+            except Exception:
+                app.logger.error("Falha ao finalizar estado de entrega OTP.")
+            app.logger.warning("Entrega OTP indisponível para finalidade %s.", purpose)
+
+    return _auth_accepted_response(response_challenge_id)
+
+
+def verify_auth_otp(purpose):
+    if not auth_routes_ready():
+        return safe_error_response("Autenticação temporariamente indisponível.", 503)
+    if not request.is_json:
+        return jsonify({"status": "erro", "mensagem": "Envie os dados em JSON."}), 400
+    data = request.get_json(silent=True)
+    challenge_id = data.get("challenge_id") if isinstance(data, dict) else None
+    code = data.get("code") if isinstance(data, dict) else None
+    try:
+        challenge_id = str(uuid.UUID(str(challenge_id)))
+    except (ValueError, TypeError, AttributeError):
+        return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+    if not isinstance(code, str) or len(code) != 8 or not code.isascii() or not code.isdigit():
+        return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT user_id, identity_type, identity_lookup_hash,
+                              terms_policy_version, privacy_notice_version
+                       FROM otp_challenges
+                       WHERE id = %s AND purpose = %s""",
+                    (challenge_id, purpose),
+                )
+                challenge_row = cur.fetchone()
+            if not challenge_row:
+                return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+
+            if not otp_core.verify_otp_challenge(
+                conn, challenge_id, purpose, code, _auth_pepper("OTP_PEPPER")
+            ):
+                return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+
+            (
+                user_id, identity_type, identity_hash,
+                terms_policy_version, privacy_notice_version,
+            ) = challenge_row
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT u.id, u.status, ui.verified_at
+                       FROM user_identities AS ui
+                       JOIN app_users AS u ON u.id = ui.user_id
+                       WHERE ui.user_id = %s
+                         AND ui.identity_type = %s
+                         AND ui.identity_lookup_hash = %s
+                       FOR UPDATE OF ui, u""",
+                    (user_id, identity_type, identity_hash),
+                )
+                identity_row = cur.fetchone()
+
+            if not identity_row:
+                return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+
+            if purpose == "signup":
+                if identity_row[1] != "pending" or identity_row[2] is not None:
+                    return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+                if not terms_policy_version or not privacy_notice_version:
+                    return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+                tenant_id = uuid.uuid4()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO consent_events
+                           (id, user_id, purpose, policy_version, decision, source)
+                           VALUES (%s, %s, 'terms_of_service', %s, 'granted', 'api')""",
+                        (uuid.uuid4(), user_id, terms_policy_version),
+                    )
+                    cur.execute(
+                        """INSERT INTO audit_events
+                           (id, actor_user_id, action, result, metadata)
+                           VALUES (%s, %s, 'privacy_notice.acknowledged', 'success', %s::jsonb)""",
+                        (
+                            uuid.uuid4(),
+                            user_id,
+                            json.dumps({"policy_version": privacy_notice_version}),
+                        ),
+                    )
+                    cur.execute(
+                        "UPDATE user_identities SET verified_at = NOW() WHERE user_id = %s AND identity_type = %s AND identity_lookup_hash = %s AND verified_at IS NULL",
+                        (user_id, identity_type, identity_hash),
+                    )
+                    cur.execute(
+                        "UPDATE app_users SET status = 'active', updated_at = NOW() WHERE id = %s AND status = 'pending'",
+                        (user_id,),
+                    )
+                    cur.execute(
+                        "INSERT INTO tenants (id, tenant_type) VALUES (%s, 'personal')",
+                        (tenant_id,),
+                    )
+                    cur.execute(
+                        """INSERT INTO tenant_memberships
+                           (tenant_id, user_id, role, status)
+                           VALUES (%s, %s, 'owner', 'active')""",
+                        (tenant_id, user_id),
+                    )
+                    cur.execute(
+                        """INSERT INTO audit_events
+                           (id, actor_user_id, tenant_id, action, result)
+                           VALUES (%s, %s, %s, 'auth.signup.verified', 'success')""",
+                        (uuid.uuid4(), user_id, tenant_id),
+                    )
+            elif purpose == "login":
+                if identity_row[1] != "active" or identity_row[2] is None:
+                    return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+            else:
+                return jsonify({"status": "erro", "mensagem": "Finalidade inválida."}), 400
+
+            token = identity_core.issue_session(conn, user_id, ttl_seconds=604800)
+        response = jsonify({
+            "status": "ok",
+            "token_type": "Bearer",
+            "access_token": token,
+            "expires_in": 604800,
+            "usuario": {"id": str(user_id)},
+        })
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception:
+        app.logger.error("Falha interna ao verificar desafio de autenticação.")
+        return safe_error_response("Não foi possível concluir a autenticação.")
+
+
+@app.post("/api/v1/auth/signup/request")
+def api_signup_request():
+    return request_auth_otp("signup")
+
+
+@app.post("/api/v1/auth/signup/verify")
+def api_signup_verify():
+    return verify_auth_otp("signup")
+
+
+@app.post("/api/v1/auth/login/request")
+def api_login_request():
+    return request_auth_otp("login")
+
+
+@app.post("/api/v1/auth/login/verify")
+def api_login_verify():
+    return verify_auth_otp("login")
+
 def bearer_session_token():
     """Lê token opaco somente do cabeçalho Authorization: Bearer."""
     authorization = request.headers.get("Authorization", "")
@@ -2622,6 +3006,31 @@ def scheduler_status():
         return safe_error_response("Falha ao consultar a fila. Consulte os logs do servidor.")
 
 
+def cleanup_expired_pending_signups():
+    """Purge unverified pending accounts after the configured retention window."""
+    try:
+        ttl_hours = int(os.environ.get("PENDING_SIGNUP_TTL_HOURS", "24"))
+        if not 1 <= ttl_hours <= 168:
+            raise ValueError("Prazo de retenção de cadastro pendente inválido.")
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('app_users')")
+                if not cur.fetchone()[0]:
+                    return 0
+                cur.execute(
+                    """DELETE FROM app_users
+                       WHERE status = 'pending'
+                         AND created_at <= NOW() - (%s * INTERVAL '1 hour')
+                       RETURNING id""",
+                    (ttl_hours,),
+                )
+                deleted = cur.fetchall()
+        return len(deleted)
+    except Exception:
+        app.logger.error("Falha ao limpar cadastros pendentes expirados.")
+        return 0
+
+
 @app.post("/scheduler/run")
 def scheduler_run():
     """
@@ -2636,6 +3045,12 @@ def scheduler_run():
         return auth_error
 
     try:
+        purged_pending_signups = cleanup_expired_pending_signups()
+        if purged_pending_signups:
+            app.logger.info(
+                "Cadastros pendentes expirados removidos: %s",
+                purged_pending_signups,
+            )
         result = scheduler_publish_one()
 
         if result["status"] == "publicado":
