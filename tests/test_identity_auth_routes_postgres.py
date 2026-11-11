@@ -67,6 +67,8 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
             "IDENTITY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
             "TRUSTED_PROXY_HOPS": "1",
             "TRUSTED_PROXY_CIDRS": "10.0.0.0/8",
+            "TERMS_POLICY_VERSION": "terms-test-v1",
+            "PRIVACY_NOTICE_VERSION": "privacy-test-v1",
         }
 
     def _post(self, client, path, payload, ip="198.51.100.10"):
@@ -92,7 +94,11 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
             patch.object(application.email_delivery, "send_otp_email", side_effect=send_email),
         ):
             requested = self._post(
-                client, "/api/v1/auth/signup/request", {"email": "New.User@example.com"}
+                client, "/api/v1/auth/signup/request", {
+                    "email": "New.User@example.com",
+                    "terms_accepted": True,
+                    "privacy_notice_acknowledged": True,
+                }
             )
             self.assertEqual(requested.status_code, 202)
             self.assertEqual(requested.get_json()["status"], "accepted")
@@ -129,6 +135,19 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
             self.assertIsNotNone(identity[0])
             self.assertNotIn(b"new.user@example.com", bytes(identity[1]))
             self.assertEqual(membership, ("personal", "owner"))
+            with self._connection() as conn:
+                terms = conn.execute(
+                    """SELECT policy_version, decision FROM consent_events
+                       WHERE user_id = %s AND purpose = 'terms_of_service'""",
+                    (user_id,),
+                ).fetchone()
+                privacy = conn.execute(
+                    """SELECT metadata->>'policy_version' FROM audit_events
+                       WHERE actor_user_id = %s AND action = 'privacy_notice.acknowledged'""",
+                    (user_id,),
+                ).fetchone()
+            self.assertEqual(terms, ("terms-test-v1", "granted"))
+            self.assertEqual(privacy[0], "privacy-test-v1")
 
             login_requested = self._post(
                 client, "/api/v1/auth/login/request", {"email": "new.user@example.com"},
