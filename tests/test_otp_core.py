@@ -96,7 +96,7 @@ class OtpCoreTests(unittest.TestCase):
 
     def test_invalid_code_increments_attempts_without_consuming(self):
         challenge_id = "challenge-1"
-        digest = otp_core._code_digest(challenge_id, "000042", self.pepper)
+        digest = otp_core._code_digest(challenge_id, "login", "00000042", self.pepper)
         conn = FakeConnection([
             (digest, "login", True, None, 0, 5, "sent"),
             (1,),
