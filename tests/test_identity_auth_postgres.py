@@ -10,6 +10,7 @@ from psycopg import sql
 from cryptography.fernet import Fernet
 
 import app as application
+import identity_lookup
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -146,18 +147,17 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         self.assertEqual(verified.json["token_type"], "Bearer")
         self.assertGreaterEqual(len(verified.json["access_token"]), 32)
 
+        identity_hash = identity_lookup.hash_identity_lookup(
+            "email", email, os.environ["IDENTITY_LOOKUP_PEPPER"].encode("utf-8")
+        )
         with self._application_db_connection() as conn:
             user = conn.execute(
                 """SELECT u.status, i.verified_at
                    FROM app_users AS u
                    JOIN user_identities AS i ON i.user_id = u.id
                    WHERE i.identity_type = 'email'
-                     AND i.identity_lookup_hash = (
-                         SELECT identity_lookup_hash FROM user_identities
-                         WHERE identity_value_ciphertext IS NOT NULL
-                         ORDER BY created_at DESC LIMIT 1
-                     )
-                   ORDER BY i.created_at DESC LIMIT 1"""
+                     AND i.identity_lookup_hash = %s""",
+                (identity_hash,),
             ).fetchone()
             self.assertEqual(user[0], "active")
             self.assertIsNotNone(user[1])
@@ -167,9 +167,9 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
                    JOIN tenants AS t ON t.id = m.tenant_id
                    WHERE m.user_id = (
                        SELECT user_id FROM user_identities
-                       WHERE identity_value_ciphertext IS NOT NULL
-                       ORDER BY created_at DESC LIMIT 1
-                   )"""
+                       WHERE identity_lookup_hash = %s
+                   )""",
+                (identity_hash,),
             ).fetchone()
             self.assertEqual(membership, ("personal", "owner", "active"))
             self.assertEqual(
