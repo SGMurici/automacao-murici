@@ -53,6 +53,8 @@ def create_otp_challenge(
     ttl_seconds=600,
     max_attempts=5,
     user_id=None,
+    terms_policy_version=None,
+    privacy_notice_version=None,
 ):
     """Create a challenge and return its raw eight-digit code once for delivery."""
     pepper = _validate_pepper(pepper)
@@ -69,6 +71,14 @@ def create_otp_challenge(
         raise ValueError("Limite de tentativas deve ser inteiro.")
     if not 1 <= max_attempts <= 10:
         raise ValueError("Limite de tentativas fora do intervalo permitido.")
+    if (terms_policy_version is None) != (privacy_notice_version is None):
+        raise ValueError("Versões de políticas devem ser informadas em conjunto.")
+    if terms_policy_version is not None:
+        for value in (terms_policy_version, privacy_notice_version):
+            if not isinstance(value, str) or not value.strip() or len(value) > 40:
+                raise ValueError("Versão de política inválida.")
+        if purpose != "signup":
+            raise ValueError("Versões de política só se aplicam ao cadastro.")
 
     challenge_id = str(uuid.uuid4())
     code = f"{secrets.randbelow(10 ** OTP_CODE_DIGITS):0{OTP_CODE_DIGITS}d}"
@@ -77,11 +87,12 @@ def create_otp_challenge(
         cur.execute(
             """INSERT INTO otp_challenges (
                    id, user_id, identity_type, identity_lookup_hash, purpose,
-                   code_hash, expires_at, max_attempts, delivery_status
+                   code_hash, expires_at, max_attempts, delivery_status,
+                   terms_policy_version, privacy_notice_version
                )
                VALUES (
                    %s, %s, %s, %s, %s, %s,
-                   NOW() + (%s * INTERVAL '1 second'), %s, 'pending'
+                   NOW() + (%s * INTERVAL '1 second'), %s, 'pending', %s, %s
                )
                RETURNING id""",
             (
@@ -93,6 +104,8 @@ def create_otp_challenge(
                 digest,
                 ttl_seconds,
                 max_attempts,
+                terms_policy_version,
+                privacy_notice_version,
             ),
         )
         row = cur.fetchone()
