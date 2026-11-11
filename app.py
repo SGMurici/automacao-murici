@@ -1758,7 +1758,7 @@ def bearer_session_token():
     return token
 
 
-def _identity_auth_configuration():
+def _identity_auth_configuration(require_email_delivery=True):
     """Fail closed until all authentication secrets, SMTP and proxy trust are configured."""
     identity_pepper = identity_auth_core.required_pepper(
         "IDENTITY_LOOKUP_PEPPER", os.environ
@@ -1773,7 +1773,8 @@ def _identity_auth_configuration():
             "Criptografia de identidade não configurada."
         )
     get_fernet()
-    email_delivery.validate_email_config()
+    if require_email_delivery:
+        email_delivery.validate_email_config()
     return identity_pepper, otp_pepper, rate_limit_pepper, client_ip
 
 
@@ -1935,11 +1936,22 @@ def api_verify_identity_otp():
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
 
+    if purpose == "signup":
+        if data.get("accept_terms") is not True or data.get("acknowledge_privacy") is not True:
+            return jsonify({
+                "status": "erro",
+                "mensagem": "Confirme os termos de uso e o aviso de privacidade.",
+            }), 400
+        terms_version = os.environ.get("TERMS_POLICY_VERSION", "").strip()
+        privacy_version = os.environ.get("PRIVACY_NOTICE_VERSION", "").strip()
+        if not terms_version or not privacy_version:
+            return _identity_auth_error()
+
     try:
         identity_pepper, otp_pepper, rate_limit_pepper, client_ip = (
-            _identity_auth_configuration()
+            _identity_auth_configuration(require_email_delivery=False)
         )
-    except (identity_auth_core.IdentityAuthConfigurationError, email_delivery.EmailDeliveryError, ValueError):
+    except (identity_auth_core.IdentityAuthConfigurationError, ValueError):
         app.logger.warning("Verificação OTP recusada: autenticação ainda não configurada")
         return _identity_auth_error()
 
@@ -1976,17 +1988,6 @@ def api_verify_identity_otp():
                 }), 400
 
             if purpose == "signup":
-                if data.get("accept_terms") is not True or data.get("acknowledge_privacy") is not True:
-                    return jsonify({
-                        "status": "erro",
-                        "mensagem": "Confirme os termos de uso e o aviso de privacidade.",
-                    }), 400
-                terms_version = os.environ.get("TERMS_POLICY_VERSION", "").strip()
-                privacy_version = os.environ.get("PRIVACY_NOTICE_VERSION", "").strip()
-                if not terms_version or not privacy_version:
-                    raise identity_auth_core.IdentityAuthConfigurationError(
-                        "Versões dos documentos legais não configuradas."
-                    )
                 tenant_id = identity_auth_core.activate_verified_signup(
                     conn, user_id, identity_hash, data.get("display_name")
                 )
