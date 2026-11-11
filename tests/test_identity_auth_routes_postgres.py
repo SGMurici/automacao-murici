@@ -69,6 +69,13 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
             "TRUSTED_PROXY_CIDRS": "10.0.0.0/8",
             "TERMS_POLICY_VERSION": "terms-test-v1",
             "PRIVACY_NOTICE_VERSION": "privacy-test-v1",
+            "SMTP_HOST": "email-smtp.sa-east-1.amazonaws.com",
+            "SMTP_PORT": "587",
+            "SMTP_FROM": "no-reply@example.com",
+            "SMTP_USERNAME": "smtp-test-user",
+            "SMTP_PASSWORD": "smtp-test-password",
+            "SMTP_USE_TLS": "true",
+            "SMTP_USE_SSL": "false",
         }
 
     def _post(self, client, path, payload, ip="198.51.100.10"):
