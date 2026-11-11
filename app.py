@@ -229,9 +229,10 @@ def encrypt_value(value):
 
 
 def get_identity_fernet():
-    if not IDENTITY_ENCRYPTION_KEY:
+    key = os.environ.get("IDENTITY_ENCRYPTION_KEY") or IDENTITY_ENCRYPTION_KEY
+    if not key:
         raise RuntimeError("IDENTITY_ENCRYPTION_KEY nao configurado.")
-    return Fernet(IDENTITY_ENCRYPTION_KEY.encode())
+    return Fernet(key.encode("ascii"))
 
 
 def encrypt_identity_value(value):
@@ -1394,16 +1395,11 @@ def auth_routes_ready(require_email_delivery=True):
         peppers = [identity_auth_core.required_pepper(name, os.environ) for name in pepper_names]
         if len(set(peppers)) != len(peppers):
             return False
-        identity_key = (IDENTITY_ENCRYPTION_KEY or "").encode("ascii")
+        identity_key_value = os.environ.get("IDENTITY_ENCRYPTION_KEY") or IDENTITY_ENCRYPTION_KEY
+        identity_key = identity_key_value.encode("ascii") if identity_key_value else b""
         if not identity_key or identity_key in peppers:
             return False
         Fernet(identity_key)
-        if not TOKEN_ENCRYPTION_KEY:
-            return False
-        token_key = TOKEN_ENCRYPTION_KEY.encode("ascii")
-        if token_key == identity_key or token_key in peppers:
-            return False
-        get_fernet()
         if not os.environ.get("TERMS_POLICY_VERSION", "").strip():
             return False
         if not os.environ.get("PRIVACY_NOTICE_VERSION", "").strip():
@@ -1698,6 +1694,11 @@ def verify_auth_otp(purpose):
                 authorization_core.record_consent_event(
                     conn, user_id, "privacy_notice_acknowledgement", privacy_version,
                     "granted", "signup", tenant_id=tenant_id,
+                )
+                authorization_core.record_audit_event(
+                    conn, "privacy_notice.acknowledged", "success",
+                    actor_user_id=user_id,
+                    metadata={"policy_version": privacy_version},
                 )
                 authorization_core.record_audit_event(
                     conn, "identity.signup", "success", actor_user_id=user_id,
