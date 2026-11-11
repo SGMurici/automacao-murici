@@ -1375,6 +1375,10 @@ def auth_routes_ready():
             if len(os.environ.get(name, "").encode("utf-8")) < 32:
                 return False
         Fernet(os.environ["IDENTITY_ENCRYPTION_KEY"].encode("ascii"))
+        if not os.environ.get("TERMS_POLICY_VERSION", "").strip():
+            return False
+        if not os.environ.get("PRIVACY_NOTICE_VERSION", "").strip():
+            return False
         hops = int(os.environ.get("TRUSTED_PROXY_HOPS", ""))
         cidrs = [
             ipaddress.ip_network(item.strip(), strict=False)
@@ -1448,6 +1452,14 @@ def request_auth_otp(purpose):
     email = data.get("email") if isinstance(data, dict) else None
     if not isinstance(email, str) or len(email) > 254:
         return jsonify({"status": "erro", "mensagem": "Endereço de e-mail inválido."}), 400
+    if purpose == "signup" and (
+        data.get("terms_accepted") is not True
+        or data.get("privacy_notice_acknowledged") is not True
+    ):
+        return jsonify({
+            "status": "erro",
+            "mensagem": "É necessário aceitar os termos e confirmar a leitura do aviso de privacidade.",
+        }), 400
 
     client_ip = trusted_auth_client_ip()
     if not client_ip:
@@ -1526,6 +1538,45 @@ def request_auth_otp(purpose):
                     eligible = True
 
                 if eligible and user_id:
+                    if purpose == "signup":
+                        terms_version = os.environ["TERMS_POLICY_VERSION"].strip()
+                        privacy_version = os.environ["PRIVACY_NOTICE_VERSION"].strip()
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                """SELECT 1 FROM consent_events
+                                   WHERE user_id = %s
+                                     AND purpose = 'terms_of_service'
+                                     AND policy_version = %s
+                                     AND decision = 'granted'
+                                   LIMIT 1""",
+                                (user_id, terms_version),
+                            )
+                            if not cur.fetchone():
+                                cur.execute(
+                                    """INSERT INTO consent_events
+                                       (id, user_id, purpose, policy_version, decision, source)
+                                       VALUES (%s, %s, 'terms_of_service', %s, 'granted', 'api')""",
+                                    (uuid.uuid4(), user_id, terms_version),
+                                )
+                            cur.execute(
+                                """SELECT 1 FROM audit_events
+                                   WHERE actor_user_id = %s
+                                     AND action = 'privacy_notice.acknowledged'
+                                     AND metadata->>'policy_version' = %s
+                                   LIMIT 1""",
+                                (user_id, privacy_version),
+                            )
+                            if not cur.fetchone():
+                                cur.execute(
+                                    """INSERT INTO audit_events
+                                       (id, actor_user_id, action, result, metadata)
+                                       VALUES (%s, %s, 'privacy_notice.acknowledged', 'success', %s::jsonb)""",
+                                    (
+                                        uuid.uuid4(),
+                                        user_id,
+                                        json.dumps({"policy_version": privacy_version}),
+                                    ),
+                                )
                     with conn.cursor() as cur:
                         cur.execute(
                             """UPDATE otp_challenges
