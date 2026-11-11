@@ -80,6 +80,21 @@ def create_otp_challenge(
         if purpose != "signup":
             raise ValueError("Versões de política só se aplicam ao cadastro.")
 
+    if terms_policy_version is not None or privacy_notice_version is not None:
+        if purpose != "signup":
+            raise ValueError("Versões legais só podem acompanhar cadastro.")
+        for value, name in (
+            (terms_policy_version, "termos"),
+            (privacy_notice_version, "aviso de privacidade"),
+        ):
+            if not isinstance(value, str) or not value.strip() or len(value.strip()) > 40:
+                raise ValueError(f"Versão de {name} inválida.")
+        terms_policy_version = terms_policy_version.strip()
+        privacy_notice_version = privacy_notice_version.strip()
+    elif purpose == "signup":
+        terms_policy_version = None
+        privacy_notice_version = None
+
     challenge_id = str(uuid.uuid4())
     code = f"{secrets.randbelow(10 ** OTP_CODE_DIGITS):0{OTP_CODE_DIGITS}d}"
     digest = _code_digest(challenge_id, purpose, code, pepper)
