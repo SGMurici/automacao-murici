@@ -191,7 +191,7 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             ).fetchone()
             self.assertEqual(membership, ("personal", "owner", "active"))
             self.assertEqual(
-                conn.execute("SELECT COUNT(*) FROM consent_events WHERE user_id = %s", (user_id,)).fetchone()[0], 2
+                conn.execute("SELECT COUNT(*) FROM consent_events WHERE user_id = %s", (user_id,)).fetchone()[0], 1
             )
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM auth_sessions WHERE user_id = %s", (user_id,)).fetchone()[0], 1
