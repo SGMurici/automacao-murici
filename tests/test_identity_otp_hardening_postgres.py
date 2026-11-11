@@ -144,6 +144,25 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
                     (uuid.uuid4(), self.user_id, b"p" * 32, b"c" * 32),
                 )
 
+    def test_legacy_signup_challenges_without_policy_versions_are_invalidated(self):
+        row = self.conn.execute(
+            "SELECT consumed_at FROM otp_challenges WHERE id = %s",
+            (self.legacy_sent_id,),
+        ).fetchone()
+        self.assertIsNotNone(row[0])
+
+    def test_signup_requires_both_policy_versions_at_database_level(self):
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            with self.conn.transaction():
+                self.conn.execute(
+                    """INSERT INTO otp_challenges
+                       (id, user_id, identity_type, identity_lookup_hash, purpose,
+                        code_hash, expires_at)
+                       VALUES (%s, %s, 'email', %s, 'signup', %s,
+                               NOW() + INTERVAL '10 minutes')""",
+                    (uuid.uuid4(), self.user_id, b"n" * 32, b"n" * 32),
+                )
+
     def test_sent_delivery_transition_persists_timestamps_and_is_one_way(self):
         challenge_id = self._create_challenge()
         self.assertTrue(otp_core.mark_otp_delivery(
