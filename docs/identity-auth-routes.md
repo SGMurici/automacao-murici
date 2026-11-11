@@ -96,7 +96,7 @@ Recommended sender: a dedicated address such as \`nao-responda@auth.<controlled-
 - Explain the purpose of email verification and retain only required delivery/security metadata.
 - Review SES DPA, subprocessors, data location, international transfer mechanism under LGPD and retention terms.
 - Verify the exact Cloudflare → Render proxy chain and CIDRs in a controlled non-production service before configuring \`TRUSTED_PROXY_HOPS\` and \`TRUSTED_PROXY_CIDRS\`.
-- Define expiry/cleanup for abandoned pending users and stale OTP challenge/limiter rows.
+- Abandoned pending users are purged by the scheduler after 24 hours by default; `PENDING_SIGNUP_TTL_HOURS` can be set from 1 to 168. Define separate cleanup/retention for stale OTP challenge and limiter rows.
 - Apply migrations 0002, 0005, 0006, 0009 and 0010 only through the separately authorized production migration process.
 - Add recovery and email-change workflows only after signup/login are validated.
 
