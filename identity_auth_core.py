@@ -90,10 +90,10 @@ def reserve_verification_limits(
 ):
     """Use the same quota ledger with domain-separated verification buckets."""
     identity_hash = otp_core.hash_otp_rate_limit_dimension(
-        "identity", f"verify:{normalized_identity}", rate_limit_pepper
+        "identity", normalized_identity, rate_limit_pepper, context="verify"
     )
     ip_hash = otp_core.hash_otp_rate_limit_dimension(
-        "ip", client_ip, rate_limit_pepper
+        "ip", client_ip, rate_limit_pepper, context="verify"
     )
     if not otp_core.reserve_otp_request_slot(
         conn, "identity", identity_hash, purpose,
@@ -107,7 +107,7 @@ def reserve_verification_limits(
         return False
     if device_id:
         device_hash = otp_core.hash_otp_rate_limit_dimension(
-            "device", f"verify:{device_id}", rate_limit_pepper
+            "device", device_id, rate_limit_pepper, context="verify"
         )
         if not otp_core.reserve_otp_request_slot(
             conn, "device", device_hash, purpose,
