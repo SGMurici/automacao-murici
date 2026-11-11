@@ -72,6 +72,7 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             "OTP_PEPPER": "otp-test-pepper-32-bytes-minimum-value",
             "OTP_RATE_LIMIT_PEPPER": "otp-rate-limit-test-pepper-32-bytes",
             "IDENTITY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
+            "TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
             "TRUSTED_PROXY_HOPS": "2",
             "TRUSTED_PROXY_CIDRS": "127.0.0.0/8,10.0.0.0/8",
             "SMTP_HOST": "email-smtp.sa-east-1.amazonaws.com",
