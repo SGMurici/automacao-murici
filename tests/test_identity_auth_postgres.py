@@ -159,6 +159,12 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         self.assertEqual(verified.json["status"], "ok")
         self.assertEqual(verified.json["token_type"], "Bearer")
         self.assertGreaterEqual(len(verified.json["access_token"]), 32)
+        me = self.client.get(
+            "/api/v1/me",
+            headers={"Authorization": f"Bearer {verified.json['access_token']}"},
+        )
+        self.assertEqual(me.status_code, 200)
+        self.assertEqual(me.json["tenants"][0]["papel"], "owner")
 
         identity_hash = identity_lookup.hash_identity_lookup(
             "email", email, os.environ["IDENTITY_LOOKUP_PEPPER"].encode("utf-8")
@@ -174,6 +180,11 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             ).fetchone()
             self.assertEqual(user[0], "active")
             self.assertIsNotNone(user[1])
+            encrypted_identity = conn.execute(
+                "SELECT identity_value_ciphertext FROM user_identities WHERE identity_lookup_hash = %s",
+                (identity_hash,),
+            ).fetchone()[0]
+            self.assertNotIn(email.encode("utf-8"), bytes(encrypted_identity))
             membership = conn.execute(
                 """SELECT t.tenant_type, m.role, m.status
                    FROM tenant_memberships AS m
@@ -225,6 +236,61 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json["status"], "accepted")
         self.send_mail.assert_not_called()
+
+    def test_verified_user_can_request_login_and_receive_second_session(self):
+        email = f"login-{uuid.uuid4().hex}@example.test"
+        signup = self._request_signup(email)
+        self.challenge_id = signup.json["challenge_id"]
+        signup_code = self.send_mail.call_args.args[1]
+        activated = self._verify_signup(email, signup_code)
+        self.assertEqual(activated.status_code, 200)
+
+        self.send_mail.reset_mock()
+        login_request = self.client.post(
+            "/api/v1/auth/login/request",
+            json={"email": email},
+            headers=self.client_ip_headers,
+        )
+        self.assertEqual(login_request.status_code, 202)
+        self.challenge_id = login_request.json["challenge_id"]
+        self.send_mail.assert_called_once()
+        login_code = self.send_mail.call_args.args[1]
+
+        login = self.client.post(
+            "/api/v1/auth/login/verify",
+            json={"challenge_id": self.challenge_id, "code": login_code},
+            headers=self.client_ip_headers,
+        )
+        self.assertEqual(login.status_code, 200)
+        self.assertNotEqual(
+            login.json["access_token"], activated.json["access_token"]
+        )
+        with self._application_db_connection() as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0], 2
+            )
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM audit_events WHERE action = 'identity.login'"
+                ).fetchone()[0],
+                1,
+            )
+
+    def test_failed_email_delivery_consumes_challenge(self):
+        email = f"delivery-fail-{uuid.uuid4().hex}@example.test"
+        self.send_mail.side_effect = application.email_delivery.EmailDeliveryError(
+            "Não foi possível entregar o e-mail de verificação."
+        )
+        requested = self._request_signup(email)
+        self.assertEqual(requested.status_code, 202)
+        challenge_id = requested.json["challenge_id"]
+        with self._application_db_connection() as conn:
+            state = conn.execute(
+                "SELECT delivery_status, consumed_at FROM otp_challenges WHERE id = %s",
+                (challenge_id,),
+            ).fetchone()
+        self.assertEqual(state[0], "failed")
+        self.assertIsNotNone(state[1])
 
     def test_signup_verification_requires_terms_before_consuming_code(self):
         email = f"terms-{uuid.uuid4().hex}@example.test"
