@@ -287,6 +287,8 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             json={"email": email},
             headers=self.client_ip_headers,
         )
+        import otp_email_outbox_worker
+        otp_email_outbox_worker.run_once(self._application_db_connection)
         self.assertEqual(login_request.status_code, 202)
         self.challenge_id = login_request.json["challenge_id"]
         self.send_mail.assert_called_once()
@@ -328,6 +330,15 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         requested = self._request_signup(email)
         self.assertEqual(requested.status_code, 202)
         challenge_id = requested.json["challenge_id"]
+        import otp_email_outbox_worker
+        for _ in range(7):
+            with self._application_db_connection() as conn:
+                conn.execute(
+                    "UPDATE otp_email_outbox SET available_at = NOW() WHERE challenge_id = %s",
+                    (challenge_id,),
+                )
+                conn.commit()
+            otp_email_outbox_worker.run_once(self._application_db_connection)
         with self._application_db_connection() as conn:
             state = conn.execute(
                 "SELECT delivery_status, consumed_at FROM otp_challenges WHERE id = %s",
