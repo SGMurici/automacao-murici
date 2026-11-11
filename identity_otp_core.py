@@ -5,6 +5,7 @@ never logs OTPs or secrets. Challenges store only keyed digests.
 """
 import hashlib
 import hmac
+import ipaddress
 import math
 import secrets
 import uuid
@@ -79,6 +80,19 @@ def verify_otp(secret, challenge_id, purpose, code, expected_digest):
     return hmac.compare_digest(candidate, bytes(expected_digest))
 
 
+def canonical_client_ip(value):
+    """Canonicalize an IP address; caller must derive it from trusted proxies."""
+    if not isinstance(value, str) or not value or "%" in value:
+        raise ValueError("Endereço IP inválido.")
+    try:
+        address = ipaddress.ip_address(value.strip())
+    except ValueError:
+        raise ValueError("Endereço IP inválido.")
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return address.compressed
+
+
 def privacy_key_hash(secret, scope, value):
     """HMAC lookup key; raw email/IP must not be persisted in limiter buckets."""
     key = _secret_bytes(secret)
@@ -86,7 +100,7 @@ def privacy_key_hash(secret, scope, value):
         raise ValueError("Escopo de limite inválido.")
     if not isinstance(value, str) or not value:
         raise ValueError("Chave de limite inválida.")
-    normalized = value.strip().lower() if scope == "otp_identity" else value.strip()
+    normalized = normalize_email(value) if scope == "otp_identity" else canonical_client_ip(value)
     if not normalized or len(normalized) > 512:
         raise ValueError("Chave de limite inválida.")
     message = f"kappa-rate-limit-v1:{scope}:{normalized}".encode("utf-8")
@@ -144,6 +158,8 @@ def mark_challenge_delivery(conn, challenge_id, delivery_status, provider_refere
     if delivery_status not in {"sent", "failed"}:
         raise ValueError("Estado de entrega inválido.")
     if provider_reference is not None:
+        if delivery_status != "sent":
+            raise ValueError("Referência só pode ser registrada após envio confirmado.")
         if not isinstance(provider_reference, str) or not provider_reference.strip() or len(provider_reference) > 160:
             raise ValueError("Referência de entrega inválida.")
         provider_reference = provider_reference.strip()
