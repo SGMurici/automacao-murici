@@ -21,6 +21,7 @@ MIGRATIONS = (
     ROOT / "migrations" / "0005_otp_request_limits.sql",
     ROOT / "migrations" / "0006_session_authentication_freshness.sql",
     ROOT / "migrations" / "0009_identity_otp_hardening.sql",
+    ROOT / "migrations" / "0010_otp_signup_policy_versions.sql",
 )
 
 
@@ -68,7 +69,8 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             "IDENTITY_LOOKUP_PEPPER": "identity-lookup-test-pepper-32-bytes-min",
             "OTP_PEPPER": "otp-test-pepper-32-bytes-minimum-value",
             "OTP_RATE_LIMIT_PEPPER": "otp-rate-limit-test-pepper-32-bytes",
-            "OTP_TRUSTED_PROXY_HOPS": "2",
+            "TRUSTED_PROXY_HOPS": "2",
+            "TRUSTED_PROXY_CIDRS": "127.0.0.0/8,10.0.0.0/8",
             "SMTP_HOST": "email-smtp.sa-east-1.amazonaws.com",
             "SMTP_PORT": "587",
             "SMTP_FROM": "nao-responda@example.test",
@@ -89,6 +91,8 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             application, "IDENTITY_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii")
         )
         self.identity_key_patch.start()
+        self.auth_enabled_patch = patch.object(application, "AUTH_ROUTES_ENABLED", True)
+        self.auth_enabled_patch.start()
         self.db_patch = patch.object(
             application, "get_db_connection", side_effect=self._application_db_connection
         )
@@ -105,6 +109,7 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         application.app.config["TESTING"] = self.original_testing
         self.mail_patch.stop()
         self.db_patch.stop()
+        self.auth_enabled_patch.stop()
         self.identity_key_patch.stop()
         self.key_patch.stop()
         self.env_patch.stop()
@@ -118,20 +123,21 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
 
     def _request_signup(self, email):
         return self.client.post(
-            "/api/v1/auth/otp/request",
-            json={"email": email, "purpose": "signup"},
+            "/api/v1/auth/signup/request",
+            json={
+                "email": email,
+                "terms_accepted": True,
+                "privacy_notice_acknowledged": True,
+            },
             headers=self.client_ip_headers,
         )
 
     def _verify_signup(self, email, code):
         return self.client.post(
-            "/api/v1/auth/otp/verify",
+            "/api/v1/auth/signup/verify",
             json={
-                "email": email,
+                "challenge_id": self.challenge_id,
                 "code": code,
-                "purpose": "signup",
-                "accept_terms": True,
-                "acknowledge_privacy": True,
                 "display_name": "Conta de teste",
                 "device_label": "Browser de teste",
             },
@@ -141,9 +147,9 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
     def test_signup_verifies_email_activates_owner_tenant_and_issues_session(self):
         email = f"user-{uuid.uuid4().hex}@example.test"
         requested = self._request_signup(email)
+        self.challenge_id = requested.json["challenge_id"]
         self.assertEqual(requested.status_code, 202)
         self.assertEqual(requested.json["status"], "accepted")
-        self.assertNotIn("challenge_id", requested.json)
         self.send_mail.assert_called_once()
         self.assertEqual(self.send_mail.call_args.args[0], email.lower())
         code = self.send_mail.call_args.args[1]
@@ -192,6 +198,11 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         code = self.send_mail.call_args.args[1]
         wrong_code = "00000000" if code != "00000000" else "00000001"
 
+        self.challenge_id = self.client.post(
+            "/api/v1/auth/signup/request",
+            json={"email": email, "terms_accepted": True, "privacy_notice_acknowledged": True},
+            headers=self.client_ip_headers,
+        ).json["challenge_id"]
         wrong = self._verify_signup(email, wrong_code)
         self.assertEqual(wrong.status_code, 400)
         time.sleep(1.05)
@@ -204,14 +215,15 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         second = self._request_signup(email)
         self.assertEqual(first.status_code, 202)
         self.assertEqual(second.status_code, 202)
-        self.assertEqual(first.json, second.json)
+        self.assertEqual(first.json["status"], second.json["status"])
+        self.assertNotEqual(first.json["challenge_id"], second.json["challenge_id"])
         self.send_mail.assert_called_once()
 
     def test_unknown_login_returns_generic_response_and_sends_no_email(self):
         email = f"unknown-{uuid.uuid4().hex}@example.test"
         response = self.client.post(
-            "/api/v1/auth/otp/request",
-            json={"email": email, "purpose": "login"},
+            "/api/v1/auth/login/request",
+            json={"email": email},
             headers=self.client_ip_headers,
         )
         self.assertEqual(response.status_code, 202)
@@ -223,16 +235,18 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         self.assertEqual(self._request_signup(email).status_code, 202)
         code = self.send_mail.call_args.args[1]
         response = self.client.post(
-            "/api/v1/auth/otp/verify",
-            json={"email": email, "code": code, "purpose": "signup"},
+            "/api/v1/auth/signup/request",
+            json={"email": email},
             headers=self.client_ip_headers,
         )
         self.assertEqual(response.status_code, 400)
+        requested = self._request_signup(email)
+        self.challenge_id = requested.json["challenge_id"]
         valid = self._verify_signup(email, code)
         self.assertEqual(valid.status_code, 200)
 
     def test_missing_trusted_proxy_configuration_fails_closed(self):
-        with patch.dict(os.environ, {"OTP_TRUSTED_PROXY_HOPS": "0"}):
+        with patch.dict(os.environ, {"TRUSTED_PROXY_HOPS": "0"}):
             email = f"blocked-{uuid.uuid4().hex}@example.test"
             response = self._request_signup(email)
         self.assertEqual(response.status_code, 503)
