@@ -44,6 +44,12 @@ class EmailDeliveryTests(unittest.TestCase):
         with self.assertRaises(email_delivery.EmailDeliveryError):
             email_delivery._smtp_config()
 
+    def test_requires_authenticated_smtp_even_when_both_credentials_are_missing(self):
+        os.environ.pop("SMTP_USERNAME")
+        os.environ.pop("SMTP_PASSWORD")
+        with self.assertRaises(email_delivery.EmailDeliveryError):
+            email_delivery._smtp_config()
+
     def test_rejects_conflicting_tls_modes(self):
         os.environ["SMTP_USE_SSL"] = "true"
         with self.assertRaises(email_delivery.EmailDeliveryError):
