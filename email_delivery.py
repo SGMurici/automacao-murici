@@ -56,7 +56,7 @@ def _smtp_config():
         raise EmailDeliveryError("Configuração SMTP inválida.")
     username = os.getenv("SMTP_USERNAME", "").strip()
     password = os.getenv("SMTP_PASSWORD", "")
-    if bool(username) != bool(password):
+    if not username or not password:
         raise EmailDeliveryError("Credenciais SMTP incompletas.")
     use_ssl = _bool_env("SMTP_USE_SSL", False)
     use_tls = _bool_env("SMTP_USE_TLS", True)
