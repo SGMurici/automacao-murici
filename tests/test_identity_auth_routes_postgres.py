@@ -66,6 +66,7 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
             "OTP_PEPPER": "otp-pepper-for-auth-route-tests-32-bytes",
             "OTP_RATE_LIMIT_PEPPER": "rate-limit-pepper-for-auth-tests-32-bytes",
             "IDENTITY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
+            "TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
             "TRUSTED_PROXY_HOPS": "1",
             "TRUSTED_PROXY_CIDRS": "10.0.0.0/8",
             "TERMS_POLICY_VERSION": "terms-test-v1",
