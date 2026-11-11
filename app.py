@@ -44,6 +44,7 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 
 TOKEN_ENCRYPTION_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY")
+IDENTITY_ENCRYPTION_KEY = os.environ.get("IDENTITY_ENCRYPTION_KEY")
 
 PUBLISH_SECRET = os.environ.get("PUBLISH_SECRET")
 
@@ -224,6 +225,18 @@ def encrypt_value(value):
 
     fernet = get_fernet()
     return fernet.encrypt(value.encode()).decode()
+
+
+def get_identity_fernet():
+    if not IDENTITY_ENCRYPTION_KEY:
+        raise RuntimeError("IDENTITY_ENCRYPTION_KEY nao configurado.")
+    return Fernet(IDENTITY_ENCRYPTION_KEY.encode())
+
+
+def encrypt_identity_value(value):
+    if value is None:
+        return None
+    return get_identity_fernet().encrypt(value.encode("utf-8")).decode("ascii")
 
 
 def decrypt_value(value):
@@ -1768,11 +1781,12 @@ def _identity_auth_configuration(require_email_delivery=True):
         "OTP_RATE_LIMIT_PEPPER", os.environ
     )
     client_ip = identity_auth_core.trusted_client_ip(request.access_route, os.environ)
-    if not TOKEN_ENCRYPTION_KEY:
+    if not TOKEN_ENCRYPTION_KEY or not IDENTITY_ENCRYPTION_KEY:
         raise identity_auth_core.IdentityAuthConfigurationError(
             "Criptografia de identidade não configurada."
         )
     get_fernet()
+    get_identity_fernet()
     if require_email_delivery:
         email_delivery.validate_email_config()
     return identity_pepper, otp_pepper, rate_limit_pepper, client_ip
@@ -1845,7 +1859,7 @@ def api_request_identity_otp():
                 identity = identity_auth_core.find_email_identity(conn, identity_hash)
                 if purpose == "signup":
                     if not identity:
-                        ciphertext = encrypt_value(normalized_email).encode("utf-8")
+                        ciphertext = encrypt_identity_value(normalized_email).encode("utf-8")
                         identity = identity_auth_core.ensure_pending_email_identity(
                             conn, identity_hash, ciphertext
                         )
@@ -1966,9 +1980,16 @@ def api_verify_identity_otp():
 
     try:
         with get_db_connection() as conn:
-            # Verification attempts are bounded per challenge in otp_core. The
-            # trusted IP is still required here so requests cannot bypass the
-            # same deployment trust boundary as OTP issuance.
+            # Challenge attempts and per-identity/IP/device quotas both apply.
+            allowed = identity_auth_core.reserve_verification_limits(
+                conn, normalized_email, client_ip, device_id, purpose,
+                rate_limit_pepper,
+            )
+            if not allowed:
+                return jsonify({
+                    "status": "erro",
+                    "mensagem": "Código inválido ou expirado.",
+                }), 400
             challenge = identity_auth_core.latest_sent_challenge(
                 conn, identity_hash, purpose
             )
@@ -2028,6 +2049,10 @@ def api_verify_identity_otp():
                             "status": "erro",
                             "mensagem": "Código inválido ou expirado.",
                         }), 400
+                authorization_core.record_audit_event(
+                    conn, "identity.login", "success", actor_user_id=user_id,
+                    resource_type="user", resource_id=str(user_id),
+                )
 
             token = identity_core.issue_session(
                 conn, user_id, device_label=device_label
