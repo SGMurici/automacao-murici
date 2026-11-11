@@ -1384,7 +1384,7 @@ def auth_routes_ready():
         if not os.environ.get("PRIVACY_NOTICE_VERSION", "").strip():
             return False
         # Validate SMTP configuration before accepting signups; this does not open a connection.
-        email_delivery._smtp_config()
+        email_delivery.validate_email_config()
         hops = int(os.environ.get("TRUSTED_PROXY_HOPS", ""))
         cidrs = [
             ipaddress.ip_network(item.strip(), strict=False)
