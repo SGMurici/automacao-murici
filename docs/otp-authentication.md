@@ -2,12 +2,12 @@
 
 ## Scope
 
-The backend has one provider-agnostic OTP lifecycle in \`otp_core.py\`. It is an internal foundation only: it does not expose public signup/login routes, send real email, create customer accounts, authenticate end to end, or issue the first application session.
+The backend has one provider-agnostic OTP lifecycle in \`otp_core.py\`. Email signup/login routes are implemented but fail closed behind \`AUTH_ROUTES_ENABLED=false\` by default. They do not become operational until the SES sender, independent secrets and trusted Render proxy chain are configured and validated.
 
 ## Unified challenge lifecycle
 
 1. Normalize the identity with \`identity_lookup.normalize_identity\` and derive its lookup key with \`identity_lookup.hash_identity_lookup\`. Persist only the keyed digest in identity and challenge lookup columns; keep the encrypted identity value separately.
-2. Reserve resend quota in the existing shared \`otp_request_limits\` table using \`otp_core.reserve_otp_request_slot\`. Reserve each available dimension (identity, canonical IP, stable app-generated device ID) before generating a challenge.
+2. Reserve resend quota in the existing shared \`otp_request_limits\` table using \`otp_core.reserve_otp_request_slot\`. The current HTTP routes reserve identity and canonical client IP before generating a challenge. Device quota remains optional and is not currently applied; no hardware fingerprint is collected.
 3. Create the challenge with \`otp_core.create_otp_challenge\`. It generates an eight-digit code and stores only HMAC-SHA-256 bound to challenge ID and purpose. The raw code is returned once to the private delivery adapter.
 4. The adapter sends the message over authenticated TLS. Never log, persist in plaintext, return to the browser, or include the code in analytics.
 5. Finalize delivery with \`otp_core.mark_otp_delivery\`. A confirmed send records delivery metadata and cooldown; a failed delivery consumes the challenge so an undelivered code cannot later be used.
@@ -37,7 +37,7 @@ Migration \`0009_identity_otp_hardening.sql\` is additive to migration 0002. It 
 - Verify a controlled sender domain and configure SPF, DKIM and DMARC.
 - Keep \`OTP_PEPPER\`, \`IDENTITY_LOOKUP_PEPPER\` and \`OTP_RATE_LIMIT_PEPPER\` separate in the backend secret manager; share the same key across instances and plan rotation deliberately.
 - Use generic API responses to prevent account enumeration.
-- Apply identity, IP and device quotas before challenge creation.
+- Apply identity and trusted-proxy-derived IP quotas before challenge creation; device quota is a later optional control.
 - Define provider failure handling, alerting, suppression handling and log retention.
 - Connect successful signup verification to activation of the user and creation of the personal tenant plus owner membership in one transaction.
 - Permit login only for active users with a verified identity.
@@ -45,4 +45,4 @@ Migration \`0009_identity_otp_hardening.sql\` is additive to migration 0002. It 
 - Test replay, expiry, concurrent verification, delivery failure, rate limits, rollback, tenant isolation and account recovery.
 - Complete privacy notice and LGPD review for authentication processing, email provider and retention before public activation.
 
-No provider account, credential, route, production setting or external message was created by this implementation. No production migration, merge or deployment is authorized by this foundation.
+Routes exist in code but remain disabled by default. No provider account, credential, production setting or external message was created. No production migration, merge or deployment is authorized by this foundation. See \`docs/auth-email-otp-rollout.md\` for the activation gates.
