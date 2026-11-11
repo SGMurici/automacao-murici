@@ -98,9 +98,11 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
         self.conn.execute(
             """INSERT INTO otp_challenges
                (id, user_id, identity_type, identity_lookup_hash, purpose,
-                code_hash, expires_at, max_attempts, delivery_status)
+                code_hash, expires_at, max_attempts, delivery_status,
+                terms_policy_version, privacy_notice_version)
                VALUES (%s, %s, 'email', %s, 'signup', %s,
-                       NOW() + INTERVAL '10 minutes', 5, 'pending')""",
+                       NOW() + INTERVAL '10 minutes', 5, 'pending',
+                       'terms-test-v1', 'privacy-test-v1')""",
             (challenge_id, self.user_id, b"i" * 32, b"d" * 32),
         )
         self.conn.commit()
@@ -224,6 +226,8 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
             purpose,
             self.OTP_PEPPER,
             user_id=self.user_id,
+            terms_policy_version=("terms-test-v1" if purpose == "signup" else None),
+            privacy_notice_version=("privacy-test-v1" if purpose == "signup" else None),
         )
         self.conn.commit()
         return result
