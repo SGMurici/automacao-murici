@@ -195,9 +195,10 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
         ))
         self.conn.commit()
 
+        wrong_code = "99999999" if challenge["code"] != "99999999" else "99999998"
         for _ in range(5):
             self.assertFalse(otp_core.verify_otp_challenge(
-                self.conn, challenge["challenge_id"], "signup", "99999999", self.OTP_PEPPER
+                self.conn, challenge["challenge_id"], "signup", wrong_code, self.OTP_PEPPER
             ))
             self.conn.commit()
         self.assertFalse(otp_core.verify_otp_challenge(
