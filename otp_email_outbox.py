@@ -21,10 +21,6 @@ class OutboxConfigurationError(RuntimeError):
     pass
 
 
-class OutboxPayloadError(RuntimeError):
-    pass
-
-
 def _fernet():
     raw = os.environ.get("OTP_DELIVERY_ENCRYPTION_KEY", "")
     if not raw:
@@ -84,33 +80,6 @@ def enqueue(conn, challenge_id, recipient, code, purpose, expires_minutes=10):
         )
 
 
-def expire_due(conn):
-    """Fail and erase queued payloads whose OTP challenge expired before delivery."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """WITH expired AS (
-                   UPDATE otp_email_outbox o
-                   SET status = 'failed', payload_ciphertext = NULL,
-                       lease_token = NULL, lease_expires_at = NULL,
-                       last_error_code = 'expired', updated_at = NOW()
-                   FROM otp_challenges c
-                   WHERE c.id = o.challenge_id
-                     AND c.expires_at <= NOW()
-                     AND o.status IN ('pending', 'processing')
-                   RETURNING o.challenge_id
-               )
-               UPDATE otp_challenges c
-               SET delivery_status = 'failed',
-                   delivery_attempted_at = COALESCE(delivery_attempted_at, NOW()),
-                   consumed_at = COALESCE(consumed_at, NOW())
-               FROM expired
-               WHERE c.id = expired.challenge_id
-                 AND c.delivery_status = 'pending'
-               RETURNING c.id"""
-        )
-        return cur.rowcount
-
-
 def claim_batch(conn, limit=10):
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
         raise ValueError("Invalid batch size")
@@ -161,20 +130,20 @@ def decrypt_payload(ciphertext):
         raw = _fernet().decrypt(ciphertext.encode("ascii"))
         payload = json.loads(raw.decode("utf-8"))
     except (InvalidToken, ValueError, TypeError, UnicodeError) as exc:
-        raise OutboxPayloadError("OTP outbox payload is invalid") from exc
+        raise OutboxConfigurationError("OTP outbox payload is invalid") from exc
     required = {"challenge_id", "recipient", "code", "purpose", "expires_minutes"}
     if not isinstance(payload, dict) or set(payload) != required:
-        raise OutboxPayloadError("OTP outbox payload schema is invalid")
+        raise OutboxConfigurationError("OTP outbox payload schema is invalid")
     if str(uuid.UUID(payload["challenge_id"])) == "":
-        raise OutboxPayloadError("OTP outbox challenge is invalid")
+        raise OutboxConfigurationError("OTP outbox challenge is invalid")
     if payload["purpose"] not in {"signup", "login", "verify_identity", "recovery"}:
-        raise OutboxPayloadError("OTP outbox purpose is invalid")
+        raise OutboxConfigurationError("OTP outbox purpose is invalid")
     if not isinstance(payload["recipient"], str) or not payload["recipient"]:
-        raise OutboxPayloadError("OTP outbox recipient is invalid")
+        raise OutboxConfigurationError("OTP outbox recipient is invalid")
     if not isinstance(payload["code"], str) or len(payload["code"]) != 8 or not payload["code"].isascii() or not payload["code"].isdigit():
-        raise OutboxPayloadError("OTP outbox code is invalid")
+        raise OutboxConfigurationError("OTP outbox code is invalid")
     if isinstance(payload["expires_minutes"], bool) or not isinstance(payload["expires_minutes"], int) or not 1 <= payload["expires_minutes"] <= 15:
-        raise OutboxPayloadError("OTP outbox expiry is invalid")
+        raise OutboxConfigurationError("OTP outbox expiry is invalid")
     return payload
 
 

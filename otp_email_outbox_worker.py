@@ -12,7 +12,6 @@ import otp_email_outbox
 def run_once(connection_factory, batch_size=10):
     stats = {"claimed": 0, "sent": 0, "retrying": 0, "failed": 0}
     with connection_factory() as conn:
-        otp_email_outbox.expire_due(conn)
         jobs = otp_email_outbox.claim_batch(conn, batch_size)
         conn.commit()
     stats["claimed"] = len(jobs)
@@ -43,7 +42,7 @@ def run_once(connection_factory, batch_size=10):
                 conn.commit()
             if finalized:
                 stats["retrying"] += 1
-        except otp_email_outbox.OutboxPayloadError:
+        except otp_email_outbox.OutboxConfigurationError:
             with connection_factory() as conn:
                 finalized = otp_email_outbox.mark_failure(
                     conn, job["challenge_id"], job["lease_token"],
@@ -52,16 +51,6 @@ def run_once(connection_factory, batch_size=10):
                 conn.commit()
             if finalized:
                 stats["failed"] += 1
-        except otp_email_outbox.OutboxConfigurationError:
-            # Missing/reused key configuration is operational: retain payload and retry.
-            with connection_factory() as conn:
-                finalized = otp_email_outbox.mark_failure(
-                    conn, job["challenge_id"], job["lease_token"],
-                    job["attempts"], False, "configuration",
-                )
-                conn.commit()
-            if finalized:
-                stats["retrying"] += 1
         except Exception:
             # Unknown failures are retried with the same challenge/code. Never log payload.
             with connection_factory() as conn:

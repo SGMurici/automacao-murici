@@ -1410,8 +1410,8 @@ def auth_routes_ready(require_email_delivery=True):
             return False
         if not os.environ.get("PRIVACY_NOTICE_VERSION", "").strip():
             return False
-        if require_email_delivery:
-            email_delivery.validate_email_config()
+        # SMTP configuration belongs to the isolated worker, not the HTTP API.
+        # The API only needs the independent outbox encryption key validated above.
         hops = int(os.environ.get("TRUSTED_PROXY_HOPS", ""))
         networks = identity_auth_core.trusted_proxy_networks(os.environ)
         return 1 <= hops <= 5 and bool(networks)
