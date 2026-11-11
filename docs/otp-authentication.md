@@ -2,71 +2,47 @@
 
 ## Scope
 
-The backend now contains provider-agnostic OTP challenge primitives in `otp_core.py`. This is an internal foundation only. It does not send email/SMS, expose a public OTP route, create accounts, authenticate a customer end to end, or issue the first application session.
+The backend has one provider-agnostic OTP lifecycle in \`otp_core.py\`. It is an internal foundation only: it does not expose public signup/login routes, send real email, create customer accounts, authenticate end to end, or issue the first application session.
 
-## Challenge lifecycle
+## Unified challenge lifecycle
 
-1. The authenticated server flow normalizes the email/phone with `identity_lookup.normalize_identity` and supplies only the HMAC-SHA256 lookup digest from `identity_lookup.hash_identity_lookup` to the core. Never use an unkeyed SHA-256 digest for an email address or phone number.
-2. `create_otp_challenge` generates a six-digit code, binds its HMAC-SHA256 digest to the random challenge ID, and stores only the digest.
-3. A private delivery adapter receives the raw code once and sends it through the approved provider. The code must never be logged, persisted in plaintext, returned to the browser, or included in analytics.
-4. After the provider responds, the adapter marks delivery as `sent` or `failed`. Verification only accepts `sent` challenges.
-5. `verify_otp_challenge` locks the challenge row, checks expiry, delivery state, consumption and attempt count, then consumes a valid challenge atomically. Invalid codes increment the attempt counter.
+1. Normalize the identity with \`identity_lookup.normalize_identity\` and derive its lookup key with \`identity_lookup.hash_identity_lookup\`. Persist only the keyed digest in identity and challenge lookup columns; keep the encrypted identity value separately.
+2. Reserve resend quota in the existing shared \`otp_request_limits\` table using \`otp_core.reserve_otp_request_slot\`. Reserve each available dimension (identity, canonical IP, stable app-generated device ID) before generating a challenge.
+3. Create the challenge with \`otp_core.create_otp_challenge\`. It generates an eight-digit code and stores only HMAC-SHA-256 bound to challenge ID and purpose. The raw code is returned once to the private delivery adapter.
+4. The adapter sends the message over authenticated TLS. Never log, persist in plaintext, return to the browser, or include the code in analytics.
+5. Finalize delivery with \`otp_core.mark_otp_delivery\`. A confirmed send records delivery metadata and cooldown; a failed delivery consumes the challenge so an undelivered code cannot later be used.
+6. Verify with \`otp_core.verify_otp_challenge\`. It locks the row, checks purpose, expiry, delivery state and attempts, compares the keyed digest, increments failed attempts or consumes a valid code atomically.
 
 ## Fixed safeguards
 
-- Six numeric digits.
-- HMAC-SHA256 digest keyed by an injected pepper of at least 32 bytes.
-- Digest is bound to the challenge ID to prevent cross-challenge reuse.
-- TTL: 60–900 seconds; default 300 seconds.
+- Eight numeric digits, generated with a cryptographically secure random source.
+- HMAC-SHA-256 digest bound to challenge ID and purpose.
+- OTP pepper: at least 32 random bytes, backend-only and separate from identity lookup, rate-limit, Flask, OAuth and publishing secrets.
+- TTL: 60–900 seconds; default 600 seconds.
 - Attempts: 1–10; default 5.
 - Purposes: signup, login, verify_identity and recovery.
 - Identity types: email and phone.
 - A challenge cannot be verified until delivery is marked sent.
-- A successful code is single-use.
+- Successful verification is single-use; failed delivery consumes the challenge.
+- Rate limiting uses the existing \`otp_request_limits\` ledger from migration 0005. It is shared across workers and supports identity, IP and device dimensions, separated by purpose.
+- Identity/IP/device limiter keys are keyed HMAC digests. Normalize identity first; canonicalize IP and derive it only from trusted proxy configuration.
+
+## Schema evolution
+
+Migration \`0009_identity_otp_hardening.sql\` is additive to migration 0002. It adds optional user ownership, delivery timestamps, resend cooldown and provider reference to \`otp_challenges\`, plus indexes and consistency constraints. It does not create a second rate-limit ledger: migration 0005 and \`otp_request_limits\` remain the single shared quota mechanism.
 
 ## Operational requirements before public routes
 
-- Choose and configure an email delivery provider; SMS is not assumed.
-- Keep the pepper in the backend secret manager; never in source control or frontend configuration.
-- Define resend cooldowns and rate limits by identity, IP/device and purpose.
-- Define abuse monitoring, generic responses that prevent account enumeration, and provider failure handling.
-- Complete email normalization and verified-identity lookup rules.
-- Connect OTP success to the approved signup/login/recovery flow and session issuance.
-- Add authenticated onboarding and versioned consent capture before enabling customer data features.
-- Test delivery failure, replay, concurrent verification, expiry, rate limiting and recovery.
-- Do not activate customer authentication until the delivery adapter and abuse controls are reviewed.
+- Select and configure a transactional email provider; SMS is not assumed.
+- Verify a controlled sender domain and configure SPF, DKIM and DMARC.
+- Keep \`OTP_PEPPER\`, \`IDENTITY_LOOKUP_PEPPER\` and \`OTP_RATE_LIMIT_PEPPER\` separate in the backend secret manager; share the same key across instances and plan rotation deliberately.
+- Use generic API responses to prevent account enumeration.
+- Apply identity, IP and device quotas before challenge creation.
+- Define provider failure handling, alerting, suppression handling and log retention.
+- Connect successful signup verification to activation of the user and creation of the personal tenant plus owner membership in one transaction.
+- Permit login only for active users with a verified identity.
+- Add session issuance/rotation/revocation only after successful OTP verification.
+- Test replay, expiry, concurrent verification, delivery failure, rate limits, rollback, tenant isolation and account recovery.
+- Complete privacy notice and LGPD review for authentication processing, email provider and retention before public activation.
 
-No provider account, credential, route, production setting or external message was created by this implementation.
-
-
-## OTP resend and abuse throttling
-
-Migration `0005_otp_request_limits.sql` adds an atomic quota ledger keyed by a dimension type, a pseudonymous 32-byte dimension digest and OTP purpose. The core exposes `reserve_otp_request_slot`, which enforces a resend cooldown and a fixed-window request quota in one PostgreSQL UPSERT. Concurrent requests for the same dimension cannot both bypass the quota.
-
-The caller should reserve all dimensions available for a request (identity, IP and device) before creating or delivering a challenge. Generate the dimension digest with `otp_core.hash_otp_rate_limit_dimension`, which uses HMAC-SHA-256 with a backend-only pepper and domain-separates identity, IP and device values. Normalize the value according to its type before calling the helper. Never use a plain hash of an email, phone number, IP address or device identifier. Keep the HMAC key in the secret manager and rotate it only with a deliberate migration/expiry plan. Do not store raw dimensions in this table or logs.
-
-Default policy in the primitive: 60-second cooldown, at most 5 requests per 60-minute window per dimension and purpose. Parameters are validated and can be adjusted by the application policy. These limits are a foundation; final thresholds require monitoring and abuse testing before public signup/login routes are enabled.
-
-The new primitive does not send messages, expose routes or activate OTP authentication. The provider, public endpoints, generic anti-enumeration responses, distributed IP/device fingerprinting strategy and operational alerting remain pending.
-
-
-## Identity normalization and privacy-preserving lookup
-
-Use `identity_lookup.normalize_identity(identity_type, value)` before any identity lookup or OTP rate-limit reservation:
-
-- Email: trim whitespace, normalize the local part with Unicode NFC and case-folding, convert the domain to IDNA ASCII lower-case, and reject malformed or oversized values.
-- Phone: require an explicit international country code and normalize to E.164. Do not infer a country from device locale or IP address.
-- Lookup: use `identity_lookup.hash_identity_lookup(identity_type, value, IDENTITY_LOOKUP_PEPPER)`. The helper applies HMAC-SHA256 with domain separation and returns a 32-byte digest suitable for `user_identities.identity_lookup_hash` and `otp_challenges.identity_lookup_hash`.
-- Keep `IDENTITY_LOOKUP_PEPPER` separate from the OTP-code pepper and rate-limit pepper, at least 32 random bytes, stored only in the backend secret manager and identical across app instances.
-- Never log raw identity values or persist them outside the encrypted identity-value column.
-- Do not rotate this key casually. Rotation requires recomputing lookup digests for all stored identities and active OTP challenges. A plain SHA-256 digest cannot be converted to HMAC without recovering the original identity from its encrypted value; if that is impossible, require identity re-verification before enabling the new key.
-
-The helper is provider-agnostic and does not create routes or activate authentication. Before connecting any signup/login route, confirm that every caller uses the same normalization and keyed digest path.
-
-
-## Canonical rate-limit dimensions
-
-- IP dimensions are canonicalized with Python's `ipaddress` parser before HMAC. IPv4-mapped IPv6 is collapsed to the corresponding IPv4 address, equivalent IPv6 spellings produce the same digest, and scoped IPv6 addresses are rejected.
-- Identity dimensions must first be normalized with `identity_lookup.normalize_identity` using the known identity type. Do not pass raw or inconsistently formatted e-mail/phone values.
-- Device dimensions must be stable app-generated identifiers, not user-agent strings or raw hardware identifiers.
-- The IP value must come from the trusted proxy configuration. Do not trust arbitrary client-supplied `X-Forwarded-For` values.
+No provider account, credential, route, production setting or external message was created by this implementation. No production migration, merge or deployment is authorized by this foundation.
