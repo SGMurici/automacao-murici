@@ -62,6 +62,7 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
             "OTP_RATE_LIMIT_PEPPER": "rate-limit-pepper-for-auth-tests-32-bytes",
             "IDENTITY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
             "TRUSTED_PROXY_HOPS": "1",
+            "TRUSTED_PROXY_CIDRS": "10.0.0.0/8",
         }
 
     def _post(self, client, path, payload, ip="198.51.100.10"):
@@ -210,7 +211,7 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
         self.assertEqual(missing_proxy.status_code, 503)
 
     def test_trusted_proxy_ip_uses_rightmost_configured_hop_count(self):
-        with patch.dict(os.environ, {"TRUSTED_PROXY_HOPS": "2"}, clear=False):
+        with patch.dict(os.environ, {"TRUSTED_PROXY_HOPS": "2", "TRUSTED_PROXY_CIDRS": "10.0.0.0/8"}, clear=False):
             with application.app.test_request_context(
                 "/",
                 headers={"X-Forwarded-For": "203.0.113.9, 10.0.0.1"},
