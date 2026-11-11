@@ -143,9 +143,11 @@ def mark_otp_delivery(conn, challenge_id, delivery_status, provider_reference=No
         return cur.fetchone() is not None
 
 
-def verify_otp_challenge(conn, challenge_id, code, pepper):
-    """Verify a sent, unexpired challenge once, consuming it atomically on success."""
+def verify_otp_challenge(conn, challenge_id, purpose, code, pepper):
+    """Verify a sent challenge only for its expected purpose, consuming it atomically."""
     pepper = _validate_pepper(pepper)
+    if purpose not in VALID_PURPOSES:
+        raise ValueError("Finalidade do OTP inválida.")
     if not isinstance(code, str) or re.fullmatch(r"[0-9]{8}", code, flags=re.ASCII) is None:
         return False
     if not isinstance(challenge_id, str) or not challenge_id:
@@ -164,11 +166,12 @@ def verify_otp_challenge(conn, challenge_id, code, pepper):
         if not row:
             return False
         (
-            stored_hash, purpose, unexpired, consumed_at,
+            stored_hash, stored_purpose, unexpired, consumed_at,
             failed_attempts, max_attempts, delivery_status,
         ) = row
         if (
             not unexpired
+            or stored_purpose != purpose
             or consumed_at is not None
             or delivery_status != "sent"
             or failed_attempts >= max_attempts
