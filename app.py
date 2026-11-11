@@ -3006,6 +3006,31 @@ def scheduler_status():
         return safe_error_response("Falha ao consultar a fila. Consulte os logs do servidor.")
 
 
+def cleanup_expired_pending_signups():
+    """Purge unverified pending accounts after the configured retention window."""
+    try:
+        ttl_hours = int(os.environ.get("PENDING_SIGNUP_TTL_HOURS", "24"))
+        if not 1 <= ttl_hours <= 168:
+            raise ValueError("Prazo de retenção de cadastro pendente inválido.")
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('app_users')")
+                if not cur.fetchone()[0]:
+                    return 0
+                cur.execute(
+                    """DELETE FROM app_users
+                       WHERE status = 'pending'
+                         AND created_at <= NOW() - (%s * INTERVAL '1 hour')
+                       RETURNING id""",
+                    (ttl_hours,),
+                )
+                deleted = cur.fetchall()
+        return len(deleted)
+    except Exception:
+        app.logger.error("Falha ao limpar cadastros pendentes expirados.")
+        return 0
+
+
 @app.post("/scheduler/run")
 def scheduler_run():
     """
@@ -3020,6 +3045,12 @@ def scheduler_run():
         return auth_error
 
     try:
+        purged_pending_signups = cleanup_expired_pending_signups()
+        if purged_pending_signups:
+            app.logger.info(
+                "Cadastros pendentes expirados removidos: %s",
+                purged_pending_signups,
+            )
         result = scheduler_publish_one()
 
         if result["status"] == "publicado":
