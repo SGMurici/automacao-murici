@@ -13,6 +13,21 @@ class IdentityAuthConfigurationError(RuntimeError):
     pass
 
 
+def trusted_proxy_networks(environ):
+    """Parse explicit trusted proxy ranges and reject catch-all networks."""
+    raw = environ.get("TRUSTED_PROXY_CIDRS", "")
+    networks = [
+        ipaddress.ip_network(item.strip(), strict=False)
+        for item in raw.split(",")
+        if item.strip()
+    ]
+    if not networks or any(network.prefixlen == 0 for network in networks):
+        raise IdentityAuthConfigurationError(
+            "TRUSTED_PROXY_CIDRS ausente ou excessivamente abrangente."
+        )
+    return tuple(networks)
+
+
 def required_pepper(name, environ):
     value = environ.get(name, "")
     if not isinstance(value, str) or len(value.encode("utf-8")) < 32:
