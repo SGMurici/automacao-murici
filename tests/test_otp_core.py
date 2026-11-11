@@ -237,6 +237,19 @@ class OtpCoreTests(unittest.TestCase):
         self.assertNotEqual(identity, ip)
         self.assertNotEqual(identity, other_key)
 
+    def test_verification_rate_limit_context_is_separate_from_issuance(self):
+        request_hash = otp_core.hash_otp_rate_limit_dimension(
+            "ip", "192.0.2.1", self.pepper
+        )
+        verify_hash = otp_core.hash_otp_rate_limit_dimension(
+            "ip", "192.0.2.1", self.pepper, context="verify"
+        )
+        self.assertNotEqual(request_hash, verify_hash)
+        with self.assertRaises(ValueError):
+            otp_core.hash_otp_rate_limit_dimension(
+                "ip", "192.0.2.1", self.pepper, context="unknown"
+            )
+
     def test_ip_rate_limit_hash_canonicalizes_ipv4_mapped_ipv6(self):
         ipv4 = otp_core.hash_otp_rate_limit_dimension(
             "ip", "192.0.2.1", self.pepper

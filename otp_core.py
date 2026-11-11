@@ -75,8 +75,10 @@ def create_otp_challenge(
         raise ValueError("Versões de políticas devem ser informadas em conjunto.")
     if terms_policy_version is not None:
         for value in (terms_policy_version, privacy_notice_version):
-            if not isinstance(value, str) or not value.strip() or len(value) > 40:
+            if not isinstance(value, str) or not value.strip() or len(value.strip()) > 40:
                 raise ValueError("Versão de política inválida.")
+        terms_policy_version = terms_policy_version.strip()
+        privacy_notice_version = privacy_notice_version.strip()
         if purpose != "signup":
             raise ValueError("Versões de política só se aplicam ao cadastro.")
 
@@ -291,7 +293,7 @@ def reserve_otp_request_slot(
         return cur.fetchone() is not None
 
 
-def hash_otp_rate_limit_dimension(dimension_type, dimension_value, pepper):
+def hash_otp_rate_limit_dimension(dimension_type, dimension_value, pepper, context="request"):
     """Return a keyed pseudonymous digest for an OTP abuse-limit dimension.
 
     Normalize identity values with identity_lookup.normalize_identity before
@@ -301,6 +303,8 @@ def hash_otp_rate_limit_dimension(dimension_type, dimension_value, pepper):
     valid_dimensions = {"identity", "ip", "device"}
     if dimension_type not in valid_dimensions:
         raise ValueError("Dimensão de limitação OTP inválida.")
+    if context not in {"request", "verify"}:
+        raise ValueError("Contexto de limitação OTP inválido.")
     pepper = _validate_pepper(pepper)
     if (
         not isinstance(dimension_value, str)
@@ -320,5 +324,8 @@ def hash_otp_rate_limit_dimension(dimension_type, dimension_value, pepper):
             address = address.ipv4_mapped
         normalized_value = address.compressed
 
-    message = f"kappa-otp-rate-limit-v1:{dimension_type}:{normalized_value}".encode("utf-8")
+    if context == "request":
+        message = f"kappa-otp-rate-limit-v1:{dimension_type}:{normalized_value}".encode("utf-8")
+    else:
+        message = f"kappa-otp-rate-limit-v1:verify:{dimension_type}:{normalized_value}".encode("utf-8")
     return hmac.new(pepper, message, hashlib.sha256).digest()
