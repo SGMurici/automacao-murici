@@ -5,6 +5,7 @@ import time
 import uuid
 from pathlib import Path
 from unittest.mock import patch
+from concurrent.futures import ThreadPoolExecutor
 
 import psycopg
 from psycopg import sql
@@ -12,6 +13,7 @@ from cryptography.fernet import Fernet
 
 import app as application
 import identity_lookup
+import identity_auth_core
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -195,6 +197,39 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM auth_sessions WHERE user_id = %s", (user_id,)).fetchone()[0], 1
+            )
+
+    def test_concurrent_signup_requests_create_one_pending_identity(self):
+        email = f"race-{uuid.uuid4().hex}@example.test"
+        identity_hash = identity_lookup.hash_identity_lookup(
+            "email", email, os.environ["IDENTITY_LOOKUP_PEPPER"].encode("utf-8")
+        )
+        ciphertext = b"ciphertext-for-race-test"
+
+        def create_or_get(_):
+            with self._application_db_connection() as conn:
+                identity = identity_auth_core.ensure_pending_email_identity(
+                    conn, identity_hash, ciphertext
+                )
+                return str(identity["user_id"])
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            user_ids = list(executor.map(create_or_get, range(4)))
+        self.assertEqual(len(set(user_ids)), 1)
+        with self._application_db_connection() as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM user_identities WHERE identity_lookup_hash = %s",
+                    (identity_hash,),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM app_users WHERE id = %s",
+                    (user_ids[0],),
+                ).fetchone()[0],
+                1,
             )
 
     def test_wrong_code_increments_attempt_and_correct_code_can_still_verify(self):
