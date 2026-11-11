@@ -10,6 +10,7 @@ from cryptography.fernet import Fernet
 from psycopg import sql
 
 import app as application
+import identity_lookup
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -145,6 +146,24 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
 
     def test_signup_and_login_requests_do_not_disclose_unknown_or_existing_accounts(self):
         sent = []
+        env = self._env()
+        registered_email = "registered@example.com"
+        user_id = uuid.uuid4()
+        lookup_hash = identity_lookup.hash_identity_lookup(
+            "email", registered_email, env["IDENTITY_LOOKUP_PEPPER"].encode("utf-8")
+        )
+        ciphertext = Fernet(env["IDENTITY_ENCRYPTION_KEY"].encode("ascii")).encrypt(
+            registered_email.encode("utf-8")
+        )
+        with self._connection() as conn:
+            conn.execute("INSERT INTO app_users (id, status) VALUES (%s, 'active')", (user_id,))
+            conn.execute(
+                """INSERT INTO user_identities
+                   (id, user_id, identity_type, identity_lookup_hash,
+                    identity_value_ciphertext, verified_at, is_primary)
+                   VALUES (%s, %s, 'email', %s, %s, NOW(), TRUE)""",
+                (uuid.uuid4(), user_id, lookup_hash, ciphertext),
+            )
 
         def send_email(recipient, code, purpose, expires_minutes=10):
             sent.append((recipient, code, purpose))
@@ -152,7 +171,7 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
 
         client = application.app.test_client()
         with (
-            patch.dict(os.environ, self._env(), clear=False),
+            patch.dict(os.environ, env, clear=False),
             patch.object(application, "AUTH_ROUTES_ENABLED", True),
             patch.object(application, "get_db_connection", side_effect=self._connection),
             patch.object(application.email_delivery, "send_otp_email", side_effect=send_email),
@@ -160,14 +179,16 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
             unknown = self._post(
                 client, "/api/v1/auth/login/request", {"email": "unknown@example.com"}
             )
-            existing_signup = self._post(
-                client, "/api/v1/auth/signup/request", {"email": "unknown@example.com"},
+            registered = self._post(
+                client, "/api/v1/auth/login/request", {"email": registered_email},
                 ip="198.51.100.11",
             )
-            self.assertEqual(unknown.status_code, existing_signup.status_code)
-            self.assertEqual(set(unknown.get_json()), set(existing_signup.get_json()))
+            self.assertEqual(unknown.status_code, registered.status_code)
+            self.assertEqual(set(unknown.get_json()), set(registered.get_json()))
             self.assertEqual(unknown.get_json()["status"], "accepted")
-            self.assertEqual(len(sent), 0)
+            self.assertEqual(registered.get_json()["status"], "accepted")
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(sent[0][0], registered_email)
 
     def test_routes_fail_closed_when_feature_flag_or_proxy_chain_is_missing(self):
         client = application.app.test_client()
