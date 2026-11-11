@@ -11,7 +11,11 @@ import ssl
 from email.message import EmailMessage
 from email.utils import make_msgid
 
-from identity_otp_core import normalize_email
+from identity_lookup import normalize_identity
+
+
+def __normalize_email(value):
+    return normalize_identity("email", value)
 
 
 PURPOSE_SUBJECTS = {
