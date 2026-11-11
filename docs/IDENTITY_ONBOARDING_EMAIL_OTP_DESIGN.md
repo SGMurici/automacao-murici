@@ -65,6 +65,7 @@ Security requirements:
 - Generate codes with `secrets`, never `random`.
 - Store only `HMAC-SHA-256(OTP_PEPPER, challenge_id || purpose || code)`; never store plaintext OTP or a plain SHA-256 hash of a low-entropy code.
 - `OTP_PEPPER` must be a distinct secret from `FLASK_SECRET_KEY`, `PUBLISH_SECRET` and `TOKEN_ENCRYPTION_KEY`. Missing secret fails closed.
+- `OTP_DELIVERY_ENCRYPTION_KEY` must be a valid Fernet key and distinct from `IDENTITY_ENCRYPTION_KEY`, `TOKEN_ENCRYPTION_KEY` and all peppers. Missing or reused key fails closed.
 - Bind the digest to challenge ID and purpose to prevent cross-challenge/cross-purpose reuse.
 - Use database time for expiry and server timestamps for audit.
 - Make challenge verification one-time and concurrency-safe using a row lock or one conditional `UPDATE ... WHERE consumed_at IS NULL AND expires_at > NOW() AND failed_attempts < max_attempts RETURNING ...`.
@@ -99,12 +100,23 @@ Migration acceptance:
 
 ## 5. Email delivery adapter and provider decision
 
-Implement a small provider-neutral interface, for example:
-- `send_verification_email(to, code, purpose, expires_at) -> delivery_reference`
-- provider-specific adapter behind environment configuration;
-- bounded connect/read timeout, retry only when provider idempotency semantics are known;
-- generic failure outwardly, detailed sanitized internal error;
-- persist challenge as `pending`, attempt delivery, then mark `sent`; if delivery fails, mark `failed` and make the code unusable.
+The HTTP request must not open an SMTP connection or wait for a provider. Use a transactional outbox so the OTP challenge and its delivery intent commit atomically.
+
+### Outbox contract
+
+- `otp_email_outbox` has one row per challenge (`challenge_id` unique), encrypted payload, `pending|processing|sent|failed` state, attempt counters, `available_at`, lease token/expiry, sanitized error code, provider reference and timestamps.
+- The payload contains only the normalized recipient, OTP, purpose, challenge ID and expiry window. Encrypt it with a dedicated Fernet key `OTP_DELIVERY_ENCRYPTION_KEY`; require this key to be distinct from identity/token encryption keys and all peppers. Never persist plaintext OTP or recipient in the outbox row.
+- Create the challenge and encrypted outbox row in the same PostgreSQL transaction. If encryption or enqueue fails, roll back both.
+- The API returns the same generic `202 accepted` contract after commit. It does not claim that the message has been delivered.
+- A one-shot worker claims due rows with `FOR UPDATE SKIP LOCKED`, increments attempts and assigns a lease token/expiry. It commits the claim before calling SMTP.
+- On provider confirmation, the worker updates the challenge to `sent` and the outbox to `sent` in one transaction, records only the provider reference and erases the encrypted payload.
+- On transient failure, retry with bounded exponential backoff while retaining the encrypted payload. An expired processing lease can be reclaimed by another worker.
+- On terminal failure, expiration or exhausted attempts, mark the challenge `failed` and consumed, mark the outbox `failed`, and erase the encrypted payload.
+- A timeout after the SMTP server accepted a message can cause a duplicate delivery on retry. The retry must reuse the same challenge and code; never mint a second code merely because delivery acknowledgement was uncertain.
+- Use bounded SMTP timeouts and a maximum lease longer than the SMTP timeout. A worker that lost its lease must not finalize another worker's claim.
+- Logs contain job/challenge IDs and a sanitized error class only; never log OTP, ciphertext, recipient, email body, credentials or raw provider response.
+
+The outbox worker is a separate command, not a Flask request hook or an implicit in-process scheduler. Production scheduling, provider credentials and worker deployment remain disabled until separately reviewed.
 
 Do not use a personal Gmail account as the transactional mail system by default. It couples authentication availability to a personal mailbox, increases account-security risk and creates operational limits. Compare provider cost, deliverability, Brazilian domain/DNS setup, data processing terms, data residency, logs, support and sender reputation before selecting one. The provider is not selected in this design.
 
