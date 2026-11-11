@@ -21,6 +21,7 @@ MIGRATIONS = (
     ROOT / "migrations" / "0006_session_authentication_freshness.sql",
     ROOT / "migrations" / "0009_identity_otp_hardening.sql",
     ROOT / "migrations" / "0010_otp_signup_policy_versions.sql",
+    ROOT / "migrations" / "0011_otp_email_transactional_outbox.sql",
 )
 
 
@@ -67,6 +68,7 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
             "OTP_RATE_LIMIT_PEPPER": "rate-limit-pepper-for-auth-tests-32-bytes",
             "IDENTITY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
             "TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
+            "OTP_DELIVERY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
             "TRUSTED_PROXY_HOPS": "1",
             "TRUSTED_PROXY_CIDRS": "10.0.0.0/8",
             "TERMS_POLICY_VERSION": "terms-test-v1",
@@ -109,6 +111,8 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
                     "privacy_notice_acknowledged": True,
                 }
             )
+            import otp_email_outbox_worker
+            otp_email_outbox_worker.run_once(self._connection)
             self.assertEqual(requested.status_code, 202)
             self.assertEqual(requested.get_json()["status"], "accepted")
             self.assertEqual(len(sent), 1)
@@ -172,6 +176,7 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
                 client, "/api/v1/auth/login/request", {"email": "new.user@example.com"},
                 ip="198.51.100.21",
             )
+            otp_email_outbox_worker.run_once(self._connection)
             self.assertEqual(login_requested.status_code, 202)
             self.assertEqual(len(sent), 2)
             self.assertEqual(sent[1][2], "login")
@@ -226,6 +231,8 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
                 client, "/api/v1/auth/login/request", {"email": registered_email},
                 ip="198.51.100.11",
             )
+            import otp_email_outbox_worker
+            otp_email_outbox_worker.run_once(self._connection)
             self.assertEqual(unknown.status_code, registered.status_code)
             self.assertEqual(set(unknown.get_json()), set(registered.get_json()))
             self.assertEqual(unknown.get_json()["status"], "accepted")

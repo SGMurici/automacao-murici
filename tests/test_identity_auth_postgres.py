@@ -24,6 +24,7 @@ MIGRATIONS = (
     ROOT / "migrations" / "0006_session_authentication_freshness.sql",
     ROOT / "migrations" / "0009_identity_otp_hardening.sql",
     ROOT / "migrations" / "0010_otp_signup_policy_versions.sql",
+    ROOT / "migrations" / "0011_otp_email_transactional_outbox.sql",
 )
 
 
@@ -73,6 +74,7 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             "OTP_RATE_LIMIT_PEPPER": "otp-rate-limit-test-pepper-32-bytes",
             "IDENTITY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
             "TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
+            "OTP_DELIVERY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
             "TRUSTED_PROXY_HOPS": "2",
             "TRUSTED_PROXY_CIDRS": "127.0.0.0/8,10.0.0.0/8",
             "SMTP_HOST": "email-smtp.sa-east-1.amazonaws.com",
@@ -121,7 +123,7 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         return connection
 
     def _request_signup(self, email):
-        return self.client.post(
+        response = self.client.post(
             "/api/v1/auth/signup/request",
             json={
                 "email": email,
@@ -130,6 +132,10 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             },
             headers=self.client_ip_headers,
         )
+        if response.status_code == 202:
+            import otp_email_outbox_worker
+            otp_email_outbox_worker.run_once(self._application_db_connection)
+        return response
 
     def _verify_signup(self, email, code):
         return self.client.post(

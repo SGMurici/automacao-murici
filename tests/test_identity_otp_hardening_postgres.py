@@ -387,11 +387,11 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
         self.conn.execute(
             """INSERT INTO otp_challenges
                (id, user_id, identity_type, identity_lookup_hash, purpose,
-                code_hash, expires_at, max_attempts, delivery_status,
+                code_hash, created_at, expires_at, max_attempts, delivery_status,
                 terms_policy_version, privacy_notice_version)
                VALUES (%s, %s, 'email', %s, 'signup', %s,
-                       NOW() - INTERVAL '1 minute', 5, 'pending',
-                       'terms-test-v1', 'privacy-test-v1')""",
+                       NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute',
+                       5, 'pending', 'terms-test-v1', 'privacy-test-v1')""",
             (challenge_id, self.user_id, b"e" * 32, b"d" * 32),
         )
         self.conn.execute(

@@ -21,6 +21,11 @@ class OutboxCursor:
     def fetchone(self):
         return self.rows.pop(0) if self.rows else None
 
+    def fetchall(self):
+        rows = list(self.rows)
+        self.rows.clear()
+        return rows
+
 
 class OutboxConnection:
     def __init__(self, rows=None):
