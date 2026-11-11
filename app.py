@@ -1544,45 +1544,6 @@ def request_auth_otp(purpose):
                     eligible = True
 
                 if eligible and user_id:
-                    if purpose == "signup":
-                        terms_version = os.environ["TERMS_POLICY_VERSION"].strip()
-                        privacy_version = os.environ["PRIVACY_NOTICE_VERSION"].strip()
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                """SELECT 1 FROM consent_events
-                                   WHERE user_id = %s
-                                     AND purpose = 'terms_of_service'
-                                     AND policy_version = %s
-                                     AND decision = 'granted'
-                                   LIMIT 1""",
-                                (user_id, terms_version),
-                            )
-                            if not cur.fetchone():
-                                cur.execute(
-                                    """INSERT INTO consent_events
-                                       (id, user_id, purpose, policy_version, decision, source)
-                                       VALUES (%s, %s, 'terms_of_service', %s, 'granted', 'api')""",
-                                    (uuid.uuid4(), user_id, terms_version),
-                                )
-                            cur.execute(
-                                """SELECT 1 FROM audit_events
-                                   WHERE actor_user_id = %s
-                                     AND action = 'privacy_notice.acknowledged'
-                                     AND metadata->>'policy_version' = %s
-                                   LIMIT 1""",
-                                (user_id, privacy_version),
-                            )
-                            if not cur.fetchone():
-                                cur.execute(
-                                    """INSERT INTO audit_events
-                                       (id, actor_user_id, action, result, metadata)
-                                       VALUES (%s, %s, 'privacy_notice.acknowledged', 'success', %s::jsonb)""",
-                                    (
-                                        uuid.uuid4(),
-                                        user_id,
-                                        json.dumps({"policy_version": privacy_version}),
-                                    ),
-                                )
                     with conn.cursor() as cur:
                         cur.execute(
                             """UPDATE otp_challenges
@@ -1603,6 +1564,14 @@ def request_auth_otp(purpose):
                         ttl_seconds=600,
                         max_attempts=5,
                         user_id=user_id,
+                        terms_policy_version=(
+                            os.environ["TERMS_POLICY_VERSION"].strip()
+                            if purpose == "signup" else None
+                        ),
+                        privacy_notice_version=(
+                            os.environ["PRIVACY_NOTICE_VERSION"].strip()
+                            if purpose == "signup" else None
+                        ),
                     )
                     response_challenge_id = challenge["challenge_id"]
     except Exception:
@@ -1651,7 +1620,8 @@ def verify_auth_otp(purpose):
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """SELECT user_id, identity_type, identity_lookup_hash
+                    """SELECT user_id, identity_type, identity_lookup_hash,
+                              terms_policy_version, privacy_notice_version
                        FROM otp_challenges
                        WHERE id = %s AND purpose = %s""",
                     (challenge_id, purpose),
@@ -1665,7 +1635,10 @@ def verify_auth_otp(purpose):
             ):
                 return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
 
-            user_id, identity_type, identity_hash = challenge_row
+            (
+                user_id, identity_type, identity_hash,
+                terms_policy_version, privacy_notice_version,
+            ) = challenge_row
             with conn.cursor() as cur:
                 cur.execute(
                     """SELECT u.id, u.status, ui.verified_at
@@ -1685,8 +1658,26 @@ def verify_auth_otp(purpose):
             if purpose == "signup":
                 if identity_row[1] != "pending" or identity_row[2] is not None:
                     return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+                if not terms_policy_version or not privacy_notice_version:
+                    return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
                 tenant_id = uuid.uuid4()
                 with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO consent_events
+                           (id, user_id, purpose, policy_version, decision, source)
+                           VALUES (%s, %s, 'terms_of_service', %s, 'granted', 'api')""",
+                        (uuid.uuid4(), user_id, terms_policy_version),
+                    )
+                    cur.execute(
+                        """INSERT INTO audit_events
+                           (id, actor_user_id, action, result, metadata)
+                           VALUES (%s, %s, 'privacy_notice.acknowledged', 'success', %s::jsonb)""",
+                        (
+                            uuid.uuid4(),
+                            user_id,
+                            json.dumps({"policy_version": privacy_notice_version}),
+                        ),
+                    )
                     cur.execute(
                         "UPDATE user_identities SET verified_at = NOW() WHERE user_id = %s AND identity_type = %s AND identity_lookup_hash = %s AND verified_at IS NULL",
                         (user_id, identity_type, identity_hash),
