@@ -29,7 +29,7 @@ class EmailDeliveryTests(unittest.TestCase):
         self.assertEqual(message["Subject"], "Confirme seu e-mail")
         self.assertNotIn("KAPPA", message["Subject"])
         self.assertIn("00123456", body)
-        self.assertIn("não contém publicidade", body)
+        self.assertIn("Não contém publicidade", body)
         self.assertIn("\n\n", body)
         self.assertNotIn("\\n", body)
 
