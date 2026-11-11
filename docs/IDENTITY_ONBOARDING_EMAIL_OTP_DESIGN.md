@@ -229,3 +229,28 @@ This document does not authorize any of these production actions.
 4. **Legal text:** approve authentication-specific privacy notice and retention language with Brazilian privacy counsel before public signup.
 
 No production changes, email sends, database writes, migrations, secret changes, account creation, merge or deploy were performed while preparing this design.
+
+
+## 13. Implementation status — 11 November 2026
+
+The transactional OTP email outbox is implemented in PR #22 (feat/otp-transactional-outbox-2026-11-11), based on the security-foundation branch. The implementation is intentionally not deployed.
+
+Included in the PR:
+- Migration 0011_otp_email_transactional_outbox.sql creates one outbox row per challenge, with encrypted payload, constrained state, bounded attempts, provider reference and lease metadata.
+- otp_email_outbox.py validates a dedicated Fernet key, encrypts the transient recipient/code payload, claims due rows with FOR UPDATE SKIP LOCKED, recovers expired leases, erases payloads after terminal outcomes, and prevents stale leases from finalizing jobs.
+- otp_email_outbox_worker.py processes one bounded batch, sends outside the database transaction, retries transient SMTP failures using the same challenge/code, and sanitizes failure handling.
+- run_otp_email_outbox_worker.py is a one-shot CLI entry point. No Render Cron, worker service or scheduler was configured.
+- The Flask OTP request path now inserts the challenge and encrypted outbox payload in the same PostgreSQL transaction and returns the generic 202 response without opening SMTP connections.
+- SMTP configuration is now required only by the worker. The API requires OTP_DELIVERY_ENCRYPTION_KEY and validates its separation from identity/token encryption keys and all OTP/identity peppers.
+
+Validation:
+- GitHub Actions workflow Backend regression tests passed on the implementation head after the lease-ownership and API/worker separation changes.
+- The run executed 200 tests, including PostgreSQL 16 integration coverage for migration 0011, atomic rollback of challenge/outbox creation, lease recovery, invalid lease rejection and expiry cleanup.
+- No production database migration was run, no production secret was changed, no real email was sent, and no worker was deployed.
+
+Operational requirements before activation:
+1. Generate a Fernet key dedicated to OTP_DELIVERY_ENCRYPTION_KEY; configure the identical value in the API and worker environments, distinct from all other keys and peppers.
+2. Configure SMTP credentials only in the worker environment after provider, domain, SPF/DKIM/DMARC and legal review are approved.
+3. Apply migration 0011 only after explicit production migration authorization.
+4. Deploy and schedule the one-shot worker only after operational monitoring, retry alerts and delivery-failure handling are reviewed.
+5. Keep AUTH_ROUTES_ENABLED disabled until all release gates are approved.
