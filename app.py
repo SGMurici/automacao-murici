@@ -1371,14 +1371,20 @@ def auth_routes_ready():
     if not AUTH_ROUTES_ENABLED:
         return False
     try:
-        for name in ("IDENTITY_LOOKUP_PEPPER", "OTP_PEPPER", "OTP_RATE_LIMIT_PEPPER"):
-            if len(os.environ.get(name, "").encode("utf-8")) < 32:
-                return False
-        Fernet(os.environ["IDENTITY_ENCRYPTION_KEY"].encode("ascii"))
+        pepper_names = ("IDENTITY_LOOKUP_PEPPER", "OTP_PEPPER", "OTP_RATE_LIMIT_PEPPER")
+        peppers = [os.environ.get(name, "").encode("utf-8") for name in pepper_names]
+        if any(len(value) < 32 for value in peppers) or len(set(peppers)) != 3:
+            return False
+        encryption_key = os.environ["IDENTITY_ENCRYPTION_KEY"].encode("ascii")
+        if encryption_key in peppers:
+            return False
+        Fernet(encryption_key)
         if not os.environ.get("TERMS_POLICY_VERSION", "").strip():
             return False
         if not os.environ.get("PRIVACY_NOTICE_VERSION", "").strip():
             return False
+        # Validate SMTP configuration before accepting signups; this does not open a connection.
+        email_delivery._smtp_config()
         hops = int(os.environ.get("TRUSTED_PROXY_HOPS", ""))
         cidrs = [
             ipaddress.ip_network(item.strip(), strict=False)
@@ -1386,7 +1392,7 @@ def auth_routes_ready():
             if item.strip()
         ]
         return 1 <= hops <= 5 and bool(cidrs)
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, email_delivery.EmailDeliveryError):
         return False
 
 
