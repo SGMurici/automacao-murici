@@ -3,7 +3,7 @@
 **Status:** design baseline for review; not production-ready.  
 **Parent code baseline:** PR #16 HEAD `ca63c5ed1ec2a44e0ef4750c2fd0a8138e5dbf49`.  
 **Branch:** `feat/identity-email-otp-design-2026-11-11`.  
-**Scope:** email-based signup, verification, login, recovery prerequisites and later operational-admin enrollment.  
+**Scope:** email-based signup, verification, login, recovery prerequisites and later operational-admin enrollment for the approved Android application, backed by the existing Flask/PostgreSQL service.  
 **Explicit non-goals:** applying migrations, sending real email, selecting/contracting an email provider, changing Render secrets, creating Murici's account, enabling production routes, merging or deploying.
 
 ## 1. Findings from inspected code
@@ -108,7 +108,7 @@ Implement a small provider-neutral interface, for example:
 
 Do not use a personal Gmail account as the transactional mail system by default. It couples authentication availability to a personal mailbox, increases account-security risk and creates operational limits. Compare provider cost, deliverability, Brazilian domain/DNS setup, data processing terms, data residency, logs, support and sender reputation before selecting one. The provider is not selected in this design.
 
-## 6. API contract proposal
+## 6. API contract proposal (Android client / Flask backend)
 
 - `POST /api/v1/auth/signup`: request signup and send verification code; generic 202 response.
 - `POST /api/v1/auth/signup/verify`: consume signup challenge; activate account and create personal tenant; issue bearer session.
@@ -126,7 +126,7 @@ All auth responses:
 - rate limiting at API and provider boundary;
 - no bearer token in URL, analytics or browser localStorage.
 
-For the PWA, prefer a server-managed HttpOnly Secure SameSite cookie if the API origin and CSRF model support it. If bearer tokens remain necessary for the existing client contract, keep them in memory only, rotate safely, and explicitly model XSS/CSRF tradeoffs. This decision must be made against the actual PWA origin and frontend implementation before release; do not silently change the existing bearer contract.
+The current product direction (decision dated 10/11/2026) is migration of the same product to an Android application; the Lovable PWA is an earlier web prototype, not the approved primary client. Keep authentication in the Flask backend and do not introduce a second identity provider. For Android, use platform-backed secure storage (Android Keystore-backed encrypted storage) for refresh/session material, never SharedPreferences/plain files; prefer short-lived access tokens held in memory and rotate/revoke sessions server-side. Evaluate cookie-based auth only if a future web client needs it, with explicit CSRF/origin controls. Confirm the actual Android repository/framework and networking stack before selecting the client transport. Do not silently assume the PWA is the target.
 
 ## 7. Tenant creation and privilege boundaries
 
@@ -184,6 +184,8 @@ This document does not authorize any of these production actions.
 
 ## 10. Legal, privacy, cost and rollout gates
 
+- The approved platform direction as of 10/11/2026 is an Android application. The existing Lovable PWA is a legacy prototype; do not treat it as the primary product client or build a parallel PWA auth flow unless the owner explicitly changes direction.
+
 - Publish a clear privacy notice explaining why email is collected (account authentication, security and essential account communications), retention and provider processing.
 - Separate authentication necessity from optional marketing consent; never bundle them.
 - Record the applicable privacy notice version and acknowledgement where legally required; do not treat an OTP as blanket consent to all product processing.
@@ -196,7 +198,7 @@ This document does not authorize any of these production actions.
 
 ## 11. Implementation sequence
 
-1. Confirm PWA origin/session transport and choose a transactional email provider after a cost/legal comparison.
+1. Locate/confirm the Android application repository, framework and networking stack; define secure session transport for Android. Treat the Lovable PWA as a legacy prototype unless the product owner reverses the 10/11/2026 decision. Choose a transactional email provider after cost/legal comparison.
 2. Draft migration 0009 and pure OTP core helpers (normalization, HMAC, challenge policy, rate-limit policy).
 3. Test helpers and migration on isolated PostgreSQL 16.
 4. Implement provider adapter and delivery-failure state handling.
@@ -210,7 +212,7 @@ This document does not authorize any of these production actions.
 ## 12. Current blockers / decisions to batch
 
 1. **Email provider:** choose only after comparing cost, deliverability, domain/DNS, data processing terms and operational complexity. Recommendation: dedicated transactional provider, not personal Gmail; no provider selected yet.
-2. **PWA session transport:** confirm actual frontend origin and whether it can use a secure HttpOnly cookie with CSRF protection; otherwise keep the existing bearer contract with memory-only token handling until a deliberate migration.
+2. **Android client/session transport:** locate the actual Android source and confirm framework, secure-storage implementation and token lifecycle. The Lovable PWA is not the approved primary client under the 10/11/2026 platform decision.
 3. **Sender domain:** identify a domain/subdomain controlled by the project for SPF, DKIM and DMARC. Do not invent or configure DNS.
 4. **Legal text:** approve authentication-specific privacy notice and retention language with Brazilian privacy counsel before public signup.
 
