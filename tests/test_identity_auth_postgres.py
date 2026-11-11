@@ -171,15 +171,16 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         )
         with self._application_db_connection() as conn:
             user = conn.execute(
-                """SELECT u.status, i.verified_at
+                """SELECT u.id, u.status, i.verified_at
                    FROM app_users AS u
                    JOIN user_identities AS i ON i.user_id = u.id
                    WHERE i.identity_type = 'email'
                      AND i.identity_lookup_hash = %s""",
                 (identity_hash,),
             ).fetchone()
-            self.assertEqual(user[0], "active")
-            self.assertIsNotNone(user[1])
+            user_id = user[0]
+            self.assertEqual(user[1], "active")
+            self.assertIsNotNone(user[2])
             encrypted_identity = conn.execute(
                 "SELECT identity_value_ciphertext FROM user_identities WHERE identity_lookup_hash = %s",
                 (identity_hash,),
@@ -189,18 +190,15 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
                 """SELECT t.tenant_type, m.role, m.status
                    FROM tenant_memberships AS m
                    JOIN tenants AS t ON t.id = m.tenant_id
-                   WHERE m.user_id = (
-                       SELECT user_id FROM user_identities
-                       WHERE identity_lookup_hash = %s
-                   )""",
-                (identity_hash,),
+                   WHERE m.user_id = %s""",
+                (user_id,),
             ).fetchone()
             self.assertEqual(membership, ("personal", "owner", "active"))
             self.assertEqual(
-                conn.execute("SELECT COUNT(*) FROM consent_events").fetchone()[0], 2
+                conn.execute("SELECT COUNT(*) FROM consent_events WHERE user_id = %s", (user_id,)).fetchone()[0], 2
             )
             self.assertEqual(
-                conn.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0], 1
+                conn.execute("SELECT COUNT(*) FROM auth_sessions WHERE user_id = %s", (user_id,)).fetchone()[0], 1
             )
 
     def test_wrong_code_increments_attempt_and_correct_code_can_still_verify(self):
@@ -265,13 +263,21 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         self.assertNotEqual(
             login.json["access_token"], activated.json["access_token"]
         )
+        identity_hash = identity_lookup.hash_identity_lookup(
+            "email", email, os.environ["IDENTITY_LOOKUP_PEPPER"].encode("utf-8")
+        )
         with self._application_db_connection() as conn:
+            user_id = conn.execute(
+                "SELECT user_id FROM user_identities WHERE identity_lookup_hash = %s",
+                (identity_hash,),
+            ).fetchone()[0]
             self.assertEqual(
-                conn.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0], 2
+                conn.execute("SELECT COUNT(*) FROM auth_sessions WHERE user_id = %s", (user_id,)).fetchone()[0], 2
             )
             self.assertEqual(
                 conn.execute(
-                    "SELECT COUNT(*) FROM audit_events WHERE action = 'identity.login'"
+                    "SELECT COUNT(*) FROM audit_events WHERE action = 'identity.login' AND actor_user_id = %s",
+                    (user_id,),
                 ).fetchone()[0],
                 1,
             )
