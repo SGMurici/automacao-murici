@@ -214,6 +214,20 @@ class EmailOtpAuthRoutePostgresTests(unittest.TestCase):
             self.assertEqual(len(sent), 1)
             self.assertEqual(sent[0][0], registered_email)
 
+    def test_signup_requires_explicit_terms_and_privacy_notice_acknowledgement(self):
+        client = application.app.test_client()
+        with (
+            patch.dict(os.environ, self._env(), clear=False),
+            patch.object(application, "AUTH_ROUTES_ENABLED", True),
+            patch.object(application, "get_db_connection", side_effect=self._connection),
+        ):
+            response = client.post(
+                "/api/v1/auth/signup/request",
+                json={"email": "person@example.com"},
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["status"], "erro")
+
     def test_routes_fail_closed_when_feature_flag_or_proxy_chain_is_missing(self):
         client = application.app.test_client()
         with patch.object(application, "AUTH_ROUTES_ENABLED", False):
