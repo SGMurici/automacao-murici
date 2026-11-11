@@ -11,7 +11,7 @@ Rotas preparadas:
 - \`POST /api/v1/auth/login/request\`
 - \`POST /api/v1/auth/login/verify\`
 
-A solicitação retorna resposta genérica e identificador de desafio, sem confirmar se a conta existe. A verificação bem-sucedida do cadastro ativa o usuário, verifica o e-mail, cria tenant pessoal e associação owner na mesma transação, registra auditoria e emite sessão opaca. Login só emite sessão para identidade previamente verificada e usuário ativo.
+A solicitação retorna resposta genérica e identificador de desafio, sem confirmar se a conta existe. A solicitação de cadastro exige aceite explícito dos termos e confirmação de leitura do aviso de privacidade. As versões são registradas no evento de consentimento e na auditoria. A verificação bem-sucedida ativa o usuário, verifica o e-mail, cria tenant pessoal e associação owner na mesma transação e emite sessão opaca. Login só emite sessão para identidade previamente verificada e usuário ativo.
 
 ## Segredos e variáveis necessárias
 
