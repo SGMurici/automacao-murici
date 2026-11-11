@@ -194,15 +194,11 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
 
     def test_wrong_code_increments_attempt_and_correct_code_can_still_verify(self):
         email = f"wrong-{uuid.uuid4().hex}@example.test"
-        self.assertEqual(self._request_signup(email).status_code, 202)
+        requested = self._request_signup(email)
+        self.assertEqual(requested.status_code, 202)
+        self.challenge_id = requested.json["challenge_id"]
         code = self.send_mail.call_args.args[1]
         wrong_code = "00000000" if code != "00000000" else "00000001"
-
-        self.challenge_id = self.client.post(
-            "/api/v1/auth/signup/request",
-            json={"email": email, "terms_accepted": True, "privacy_notice_acknowledged": True},
-            headers=self.client_ip_headers,
-        ).json["challenge_id"]
         wrong = self._verify_signup(email, wrong_code)
         self.assertEqual(wrong.status_code, 400)
         time.sleep(1.05)
@@ -232,7 +228,9 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
 
     def test_signup_verification_requires_terms_before_consuming_code(self):
         email = f"terms-{uuid.uuid4().hex}@example.test"
-        self.assertEqual(self._request_signup(email).status_code, 202)
+        requested = self._request_signup(email)
+        self.assertEqual(requested.status_code, 202)
+        self.challenge_id = requested.json["challenge_id"]
         code = self.send_mail.call_args.args[1]
         response = self.client.post(
             "/api/v1/auth/signup/request",
@@ -240,8 +238,6 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
             headers=self.client_ip_headers,
         )
         self.assertEqual(response.status_code, 400)
-        requested = self._request_signup(email)
-        self.challenge_id = requested.json["challenge_id"]
         valid = self._verify_signup(email, code)
         self.assertEqual(valid.status_code, 200)
 
