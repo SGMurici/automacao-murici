@@ -135,6 +135,11 @@ def send_otp_email(to_email, code, purpose, expires_minutes=10):
         if config["username"]:
             client.login(config["username"], config["password"])
     except (smtplib.SMTPException, OSError, ssl.SSLError, TimeoutError):
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
         raise EmailDeliveryError("Não foi possível preparar a conexão segura de e-mail.") from None
 
     try:
