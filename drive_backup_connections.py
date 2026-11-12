@@ -154,6 +154,10 @@ def update_tokens(
 ):
     access_ciphertext = _ciphertext(encrypt, _required_text(access_token, "access_token"))
     refresh_ciphertext = _ciphertext(encrypt, _required_text(refresh_token, "refresh_token"))
+    if token_expires_at is not None and not isinstance(token_expires_at, datetime):
+        raise ValueError("token_expires_at deve ser datetime ou None.")
+    if token_expires_at and token_expires_at.tzinfo is None:
+        token_expires_at = token_expires_at.replace(tzinfo=timezone.utc)
     with conn.cursor() as cur:
         cur.execute(
             """UPDATE external_connections
