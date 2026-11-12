@@ -47,8 +47,15 @@ class DriveBackupConnectionTests(unittest.TestCase):
             sorted(self.scopes),
         )
 
-    def test_rejects_missing_or_broad_scope(self):
-        for scopes in (["openid"], [drive.REQUIRED_SCOPE, "https://www.googleapis.com/auth/drive"]):
+    def test_rejects_missing_broad_or_unrelated_scope(self):
+        invalid_scope_sets = (
+            ["openid"],
+            [drive.REQUIRED_SCOPE, "https://www.googleapis.com/auth/drive"],
+            [drive.REQUIRED_SCOPE, "https://www.googleapis.com/auth/gmail.readonly"],
+            [drive.REQUIRED_SCOPE, "https://www.googleapis.com/auth/calendar"],
+            [drive.REQUIRED_SCOPE, None],
+        )
+        for scopes in invalid_scope_sets:
             with self.subTest(scopes=scopes), self.assertRaises(ValueError):
                 drive.validate_granted_scopes(scopes)
 
