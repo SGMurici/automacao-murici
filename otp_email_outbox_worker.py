@@ -12,7 +12,10 @@ import otp_email_outbox
 def run_once(connection_factory, batch_size=1):
     stats = {"claimed": 0, "sent": 0, "retrying": 0, "failed": 0, "uncertain": 0}
     with connection_factory() as conn:
-        otp_email_outbox.expire_due(conn)
+        expired = otp_email_outbox.expire_due(conn)
+        if isinstance(expired, dict):
+            stats["uncertain"] += int(expired.get("uncertain", 0) or 0)
+            stats["failed"] += int(expired.get("failed", 0) or 0)
         jobs = otp_email_outbox.claim_batch(conn, batch_size)
         conn.commit()
     stats["claimed"] = len(jobs)
