@@ -85,10 +85,17 @@ def enqueue(conn, challenge_id, recipient, code, purpose, expires_minutes=10):
 
 
 def expire_due(conn):
-    """Fail and erase queued payloads whose OTP challenge expired before delivery."""
+    """Expire safe-to-retry jobs; ambiguous dispatch leases become uncertain, never retried."""
     with conn.cursor() as cur:
         cur.execute(
-            """WITH expired AS (
+            """WITH uncertain AS (
+                   UPDATE otp_email_outbox
+                   SET status = 'uncertain', payload_ciphertext = NULL,
+                       lease_token = NULL, lease_expires_at = NULL,
+                       last_error_code = 'delivery_uncertain', updated_at = NOW()
+                   WHERE status = 'dispatching' AND lease_expires_at <= NOW()
+                   RETURNING challenge_id
+               ), expired AS (
                    UPDATE otp_email_outbox o
                    SET status = 'failed', payload_ciphertext = NULL,
                        lease_token = NULL, lease_expires_at = NULL,
@@ -102,18 +109,21 @@ def expire_due(conn):
                      AND (c.expires_at <= NOW() OR o.attempts >= 8)
                      AND o.status IN ('pending', 'processing')
                    RETURNING o.challenge_id
+               ), finalized AS (
+                   SELECT challenge_id, 'uncertain'::varchar AS delivery_status FROM uncertain
+                   UNION ALL
+                   SELECT challenge_id, 'failed'::varchar AS delivery_status FROM expired
                )
                UPDATE otp_challenges c
-               SET delivery_status = 'failed',
+               SET delivery_status = finalized.delivery_status,
                    delivery_attempted_at = COALESCE(delivery_attempted_at, NOW()),
                    consumed_at = COALESCE(consumed_at, NOW())
-               FROM expired
-               WHERE c.id = expired.challenge_id
+               FROM finalized
+               WHERE c.id = finalized.challenge_id
                  AND c.delivery_status = 'pending'
                RETURNING c.id"""
         )
         return cur.rowcount
-
 
 def claim_batch(conn, limit=10):
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
@@ -190,6 +200,20 @@ def decrypt_payload(ciphertext):
     return payload
 
 
+def mark_dispatching(conn, challenge_id, lease_token):
+    """Persist the point after which an SMTP retry could duplicate a delivered message."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE otp_email_outbox
+               SET status = 'dispatching', updated_at = NOW()
+               WHERE challenge_id = %s AND status = 'processing'
+                 AND lease_token = %s AND lease_expires_at > NOW()
+               RETURNING challenge_id""",
+            (challenge_id, lease_token),
+        )
+        return cur.fetchone() is not None
+
+
 def mark_sent(conn, challenge_id, lease_token, provider_reference):
     if not isinstance(provider_reference, str) or not provider_reference.strip() or len(provider_reference) > 160:
         raise ValueError("Invalid provider reference")
@@ -200,7 +224,7 @@ def mark_sent(conn, challenge_id, lease_token, provider_reference):
                    provider_reference = %s, lease_token = NULL,
                    lease_expires_at = NULL, last_error_code = NULL,
                    sent_at = NOW(), updated_at = NOW()
-               WHERE challenge_id = %s AND status = 'processing'
+               WHERE challenge_id = %s AND status = 'dispatching'
                  AND lease_token = %s AND lease_expires_at > NOW()
                RETURNING challenge_id""",
             (provider_reference.strip(), challenge_id, lease_token),
@@ -228,7 +252,7 @@ def mark_failure(conn, challenge_id, lease_token, attempts, terminal, error_code
                        ELSE NOW() + (LEAST(900, (2 ^ LEAST(o.attempts, 9))::int) * INTERVAL '1 second') END,
                    lease_token = NULL, lease_expires_at = NULL,
                    last_error_code = %s, updated_at = NOW()
-               WHERE o.challenge_id = %s AND o.status = 'processing'
+               WHERE o.challenge_id = %s AND o.status IN ('processing', 'dispatching')
                  AND o.lease_token = %s
                  AND o.lease_expires_at > NOW()
                RETURNING o.challenge_id""",
@@ -241,4 +265,26 @@ def mark_failure(conn, challenge_id, lease_token, attempts, terminal, error_code
         import otp_core
         if not otp_core.mark_otp_delivery(conn, challenge_id, "failed"):
             raise RuntimeError("OTP challenge could not be marked failed")
+    return True
+
+
+def mark_uncertain(conn, challenge_id, lease_token):
+    """Stop automatic retries when SMTP may have accepted the message."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE otp_email_outbox
+               SET status = 'uncertain', payload_ciphertext = NULL,
+                   lease_token = NULL, lease_expires_at = NULL,
+                   last_error_code = 'delivery_uncertain', updated_at = NOW()
+               WHERE challenge_id = %s AND status = 'dispatching'
+                 AND lease_token = %s AND lease_expires_at > NOW()
+               RETURNING challenge_id""",
+            (challenge_id, lease_token),
+        )
+        row = cur.fetchone()
+    if not row:
+        return False
+    import otp_core
+    if not otp_core.mark_otp_delivery(conn, challenge_id, "uncertain"):
+        raise RuntimeError("OTP challenge could not be marked uncertain")
     return True
