@@ -178,7 +178,8 @@ def decrypt_payload(ciphertext):
         uuid.UUID(challenge_id)
     except (ValueError, TypeError, AttributeError) as exc:
         raise OutboxPayloadError("OTP outbox challenge is invalid") from exc
-    if payload["purpose"] not in {"signup", "login", "verify_identity", "recovery"}:
+    purpose = payload["purpose"]
+    if not isinstance(purpose, str) or purpose not in {"signup", "login", "verify_identity", "recovery"}:
         raise OutboxPayloadError("OTP outbox purpose is invalid")
     if not isinstance(payload["recipient"], str) or not payload["recipient"]:
         raise OutboxPayloadError("OTP outbox recipient is invalid")
