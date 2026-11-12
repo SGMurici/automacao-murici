@@ -32,6 +32,7 @@ MIGRATIONS = (
     ROOT / "migrations" / "0004_customer_drive_oauth.sql",
     ROOT / "migrations" / "0005_otp_request_limits.sql",
     ROOT / "migrations" / "0006_session_authentication_freshness.sql",
+    ROOT / "migrations" / "0012_global_administrators.sql",
 )
 
 
