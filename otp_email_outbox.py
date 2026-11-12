@@ -164,13 +164,20 @@ def decrypt_payload(ciphertext):
     try:
         raw = _fernet().decrypt(ciphertext.encode("ascii"))
         payload = json.loads(raw.decode("utf-8"))
+    except OutboxConfigurationError:
+        raise
     except (InvalidToken, ValueError, TypeError, UnicodeError) as exc:
         raise OutboxPayloadError("OTP outbox payload is invalid") from exc
     required = {"challenge_id", "recipient", "code", "purpose", "expires_minutes"}
     if not isinstance(payload, dict) or set(payload) != required:
         raise OutboxPayloadError("OTP outbox payload schema is invalid")
-    if str(uuid.UUID(payload["challenge_id"])) == "":
+    challenge_id = payload["challenge_id"]
+    if not isinstance(challenge_id, str):
         raise OutboxPayloadError("OTP outbox challenge is invalid")
+    try:
+        uuid.UUID(challenge_id)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise OutboxPayloadError("OTP outbox challenge is invalid") from exc
     if payload["purpose"] not in {"signup", "login", "verify_identity", "recovery"}:
         raise OutboxPayloadError("OTP outbox purpose is invalid")
     if not isinstance(payload["recipient"], str) or not payload["recipient"]:
