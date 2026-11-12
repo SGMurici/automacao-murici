@@ -103,3 +103,12 @@ Recommended sender: a dedicated address such as \`nao-responda@auth.<controlled-
 ## Security boundary
 
 No production secrets, Render environment variables, sender-domain DNS, SES account, production schema, customer identity or administrator identity were changed by this implementation. SMTP delivery is mocked in the PostgreSQL integration tests.
+
+
+## OTP delivery uncertainty
+
+SMTP is not an exactly-once transport. If the connection drops during message submission or after the provider accepts the message but before its final response reaches KAPPA, the system cannot prove whether the email was delivered.
+
+The worker therefore commits an outbox `dispatching` state before SMTP. An ambiguous outcome is recorded as `uncertain`, not retried. The encrypted code payload is erased and the associated OTP challenge is consumed, so a possibly delivered code cannot be used. The user must request a new challenge after the normal rate-limit cooldown. This deliberately favors avoiding duplicate messages and invalid/late-code confusion over silently retrying an unknown delivery.
+
+A worker crash after entering `dispatching`, or a database failure after SMTP reports success but before the result is committed, also resolves to `uncertain` when the lease expires. Monitoring must alert on the worker's non-zero exit and uncertain counter.
