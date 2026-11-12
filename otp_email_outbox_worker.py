@@ -9,7 +9,7 @@ import email_delivery
 import otp_email_outbox
 
 
-def run_once(connection_factory, batch_size=10):
+def run_once(connection_factory, batch_size=1):
     stats = {"claimed": 0, "sent": 0, "retrying": 0, "failed": 0}
     with connection_factory() as conn:
         otp_email_outbox.expire_due(conn)
