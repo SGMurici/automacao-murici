@@ -28,6 +28,10 @@ class AccountNotEligibleForDeletion(Exception):
     """The account is not active and cannot start a new deletion request."""
 
 
+class GlobalAdministratorMustBeRevoked(Exception):
+    """A platform-wide grant must be revoked before account deletion."""
+
+
 def hash_deletion_receipt(receipt):
     if not isinstance(receipt, str) or len(receipt) < 32:
         raise ValueError("Comprovante de exclusão inválido.")
@@ -54,6 +58,21 @@ def request_account_deletion(conn, user_id):
             if user and user[0] == "deletion_pending":
                 raise DeletionAlreadyRequested()
             raise AccountNotEligibleForDeletion()
+
+        # A suspended grant still has an FK to app_users and therefore blocks
+        # physical deletion. Require an explicit revocation before queueing.
+        cur.execute(
+            """SELECT status, revoked_at
+               FROM global_administrators
+               WHERE user_id = %s
+               FOR UPDATE""",
+            (user_id,),
+        )
+        global_grant = cur.fetchone()
+        if global_grant and (
+            global_grant[0] != "revoked" or global_grant[1] is None
+        ):
+            raise GlobalAdministratorMustBeRevoked()
 
         cur.execute(
             """INSERT INTO account_deletion_requests
@@ -254,6 +273,29 @@ def process_primary_database_deletion(conn, request_id):
             (user_id,),
         )
         personal_tenant_ids = [row[0] for row in cur.fetchall()]
+
+        # Preserve the global grant's audit trail, but remove the revoked
+        # grant row before deleting its subject (migration 0012 uses RESTRICT).
+        cur.execute(
+            """SELECT status, revoked_at
+               FROM global_administrators
+               WHERE user_id = %s
+               FOR UPDATE""",
+            (user_id,),
+        )
+        global_grant = cur.fetchone()
+        if global_grant:
+            if global_grant[0] != "revoked" or global_grant[1] is None:
+                raise GlobalAdministratorMustBeRevoked()
+            cur.execute(
+                """DELETE FROM global_administrators
+                   WHERE user_id = %s
+                     AND status = 'revoked'
+                     AND revoked_at IS NOT NULL""",
+                (user_id,),
+            )
+            if cur.rowcount != 1:
+                raise GlobalAdministratorMustBeRevoked()
 
         # Remove user-attributed audit records rather than retaining metadata
         # that could identify the deleted account.
