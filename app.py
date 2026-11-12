@@ -3033,7 +3033,20 @@ def scheduler_run_cycle():
         otp_stats = otp_email_outbox_worker.run_once(
             get_db_connection, batch_size=1
         )
-        otp_result = {"status": "completed", **otp_stats}
+        if otp_stats.get("uncertain", 0):
+            otp_result = {"status": "uncertain", **otp_stats}
+            app.logger.warning(
+                "Entrega OTP com resultado incerto; reenvio automático bloqueado: %s",
+                otp_stats["uncertain"],
+            )
+        elif otp_stats.get("failed", 0):
+            otp_result = {"status": "failed", **otp_stats}
+            app.logger.error("Falhas terminais na outbox OTP: %s", otp_stats["failed"])
+        elif otp_stats.get("retrying", 0):
+            otp_result = {"status": "retrying", **otp_stats}
+            app.logger.warning("Entregas OTP serão reprocessadas: %s", otp_stats["retrying"])
+        else:
+            otp_result = {"status": "completed", **otp_stats}
     except Exception:
         app.logger.exception("Falha no processamento da outbox OTP")
         otp_result = {"status": "error"}
