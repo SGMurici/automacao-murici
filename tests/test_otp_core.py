@@ -105,6 +105,14 @@ class OtpCoreTests(unittest.TestCase):
         self.assertEqual(params[0], "sent")
         self.assertEqual(params[-1], "challenge-1")
 
+    def test_uncertain_delivery_consumes_challenge_without_sent_reference(self):
+        conn = FakeConnection([("challenge-1",)])
+        self.assertTrue(otp_core.mark_otp_delivery(conn, "challenge-1", "uncertain"))
+        query, params = conn.cursor_value.executed[0]
+        self.assertIn("delivery_status = %s", query)
+        self.assertIn("consumed_at = CASE WHEN %s IN ('failed', 'uncertain')", query)
+        self.assertEqual(params[0], "uncertain")
+
     def test_delivery_rejects_unknown_status(self):
         conn = FakeConnection()
         with self.assertRaises(ValueError):
