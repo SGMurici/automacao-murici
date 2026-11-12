@@ -15,7 +15,7 @@ class SchedulerResponseTests(unittest.TestCase):
         }
         with (
             patch.object(application, "require_publish_secret", return_value=None),
-            patch.object(application, "scheduler_publish_one", return_value=payload),
+            patch.object(application, "scheduler_run_cycle", return_value=payload),
         ):
             response = application.app.test_client().post("/scheduler/run")
 
