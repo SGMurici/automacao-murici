@@ -121,9 +121,13 @@ def expire_due(conn):
                FROM finalized
                WHERE c.id = finalized.challenge_id
                  AND c.delivery_status = 'pending'
-               RETURNING c.id"""
+               RETURNING finalized.delivery_status"""
         )
-        return cur.rowcount
+        outcomes = [row[0] for row in cur.fetchall()]
+        return {
+            "uncertain": outcomes.count("uncertain"),
+            "failed": outcomes.count("failed"),
+        }
 
 def claim_batch(conn, limit=10):
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
