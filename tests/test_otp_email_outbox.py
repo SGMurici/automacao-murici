@@ -135,6 +135,7 @@ class OtpEmailOutboxTests(unittest.TestCase):
                 conn, "challenge", "lease", "<id@example.test>"
             ))
         query = conn.cursor_value.executed[0][0]
+        self.assertIn("status = 'dispatching'", query)
         self.assertIn("lease_token = %s", query)
         self.assertIn("payload_ciphertext = NULL", query)
 
@@ -144,6 +145,13 @@ class OtpEmailOutboxTests(unittest.TestCase):
         query = conn.cursor_value.executed[0][0]
         self.assertIn("SET status = 'dispatching'", query)
         self.assertIn("status = 'processing'", query)
+
+    def test_expired_dispatching_lease_becomes_uncertain_not_retryable(self):
+        conn = OutboxConnection()
+        otp_email_outbox.expire_due(conn)
+        query = conn.cursor_value.executed[0][0]
+        self.assertIn("status = 'dispatching' AND lease_expires_at <= NOW()", query)
+        self.assertIn("status = 'uncertain'", query)
 
     def test_uncertain_delivery_erases_payload_and_consumes_challenge(self):
         conn = OutboxConnection([("challenge",)])
