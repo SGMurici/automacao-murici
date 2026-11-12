@@ -1866,6 +1866,15 @@ def api_request_account_deletion():
             "status": "erro",
             "mensagem": "Já existe uma solicitação de exclusão em andamento.",
         }), 409
+    except account_deletion_core.GlobalAdministratorMustBeRevoked:
+        return jsonify({
+            "status": "erro",
+            "mensagem": (
+                "A conta possui um privilégio de administrador global. "
+                "Um administrador autorizado deve revogar esse privilégio antes "
+                "de iniciar a exclusão da conta."
+            ),
+        }), 409
     except account_deletion_core.AccountNotEligibleForDeletion:
         return jsonify({
             "status": "erro",
