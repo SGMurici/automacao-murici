@@ -10,7 +10,8 @@ Conceder o primeiro privilégio de administrador da plataforma KAPPA sem confund
 2. Murici confirmou explicitamente qual conta verificada deve receber o privilégio.
 3. O operador obteve o UUID do usuário por uma consulta autenticada e controlada ao banco de ambiente correto.
 4. A migration `0012_global_administrators.sql` foi aplicada nesse ambiente.
-5. O procedimento será executado por conexão administrativa controlada, com registro do operador, horário, ambiente e justificativa.
+5. O procedimento será executado por conexão administrativa controlada, com registro do operador executor, aprovador, horário, ambiente, referência de aprovação e justificativa.
+6. O operador executor deve substituir os marcadores `<OPERADOR_CONFIRMADO>` e `<REFERENCIA_APROVACAO>` no comando de auditoria antes da execução.
 
 Não localizar usuário por e-mail presumido, não inferir UUID, não criar conta para contornar a ausência de identidade e não aceitar autoelevação por rota HTTP.
 
@@ -62,20 +63,34 @@ BEGIN
 END
 $$;
 
+-- O beneficiário NÃO é o ator que executa a concessão.
+-- actor_user_id fica NULL porque o primeiro administrador ainda não possui
+-- uma identidade global previamente autorizada. O executor e o aprovador
+-- são registrados separadamente em metadata, junto ao principal da conexão.
 INSERT INTO audit_events
     (id, actor_user_id, action, resource_type, resource_id,
      result, occurred_at, metadata)
 VALUES
-    (gen_random_uuid(), '<UUID_CONFIRMADO>'::uuid,
+    (gen_random_uuid(), NULL,
      'global_admin.bootstrap', 'global_administrator',
      '<UUID_CONFIRMADO>',
      'success', NOW(),
-     '{"method":"controlled_database_bootstrap","approved_by":"Murici"}'::jsonb);
+     jsonb_build_object(
+         'method', 'controlled_database_bootstrap',
+         'approved_by', 'Murici',
+         'executed_by', '<OPERADOR_CONFIRMADO>',
+         'approval_reference', '<REFERENCIA_APROVACAO>',
+         'db_session_user', session_user,
+         'application_name', current_setting('application_name', true),
+         'client_addr', inet_client_addr()::text
+     ));
 
 COMMIT;
 ```
 
-Se qualquer etapa falhar, a transação deve ser revertida. Se já existir registro revogado/suspenso, o `ON CONFLICT DO NOTHING` não o reativa; interrompa e faça revisão específica, sem atualizar estado automaticamente.
+Antes do `COMMIT`, confira se o executor e a referência de aprovação foram substituídos por valores reais e se o evento foi inserido. Se qualquer etapa falhar, reverta a transação. Se já existir registro revogado/suspenso, o `ON CONFLICT DO NOTHING` não o reativa; interrompa e faça revisão específica, sem atualizar estado automaticamente.
+
+**Semântica de auditoria:** `actor_user_id` identifica o ator representado por uma conta KAPPA; não deve receber o UUID do beneficiário só para preencher o campo. Como a primeira concessão é feita fora da aplicação e antes de existir um administrador global, o ator da operação é o principal operacional da conexão, registrado em `metadata.db_session_user` e `metadata.executed_by`. `approved_by` identifica quem autorizou a concessão; não substitui o executor.
 
 ## Verificação posterior
 
@@ -85,9 +100,17 @@ SELECT g.user_id, g.status, g.granted_at, g.granted_by,
 FROM global_administrators AS g
 JOIN app_users AS u ON u.id = g.user_id
 WHERE g.user_id = '<UUID_CONFIRMADO>'::uuid;
+
+SELECT actor_user_id, action, resource_type, resource_id,
+       result, occurred_at, metadata
+FROM audit_events
+WHERE action = 'global_admin.bootstrap'
+  AND resource_id = '<UUID_CONFIRMADO>'
+ORDER BY occurred_at DESC
+LIMIT 1;
 ```
 
-O resultado esperado é `g.status = 'active'`, `g.revoked_at IS NULL` e `user_status = 'active'`.
+O primeiro resultado esperado é `g.status = 'active'`, `g.revoked_at IS NULL` e `user_status = 'active'`. No segundo, `actor_user_id` deve ser NULL e os metadados devem identificar o executor, o aprovador, a referência de aprovação e o principal da sessão de banco.
 
 ## Limites
 
