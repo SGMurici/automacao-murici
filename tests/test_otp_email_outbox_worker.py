@@ -52,6 +52,42 @@ class OtpEmailOutboxWorkerTests(unittest.TestCase):
         mark_failure.assert_not_called()
         self.assertEqual(stats, {"claimed": 1, "sent": 0, "retrying": 0, "failed": 0, "uncertain": 1})
 
+    def test_pre_send_smtp_failure_remains_retryable(self):
+        job = {
+            "challenge_id": "123e4567-e89b-12d3-a456-426614174000",
+            "ciphertext": "encrypted-payload",
+            "lease_token": "lease-token",
+            "attempts": 1,
+        }
+        payload = {
+            "challenge_id": job["challenge_id"],
+            "recipient": "person@example.test",
+            "code": "00001234",
+            "purpose": "signup",
+            "expires_minutes": 10,
+        }
+        with (
+            patch.object(otp_email_outbox, "expire_due"),
+            patch.object(otp_email_outbox, "claim_batch", return_value=[job]),
+            patch.object(otp_email_outbox, "decrypt_payload", return_value=payload),
+            patch.object(otp_email_outbox, "mark_dispatching", return_value=True),
+            patch.object(otp_email_outbox, "mark_failure", return_value=True) as mark_failure,
+            patch.object(otp_email_outbox, "mark_uncertain") as mark_uncertain,
+            patch.object(
+                otp_email_outbox_worker.email_delivery,
+                "send_otp_email",
+                side_effect=otp_email_outbox_worker.email_delivery.EmailDeliveryError(),
+            ),
+        ):
+            stats = otp_email_outbox_worker.run_once(Connection)
+
+        mark_failure.assert_called_once_with(
+            unittest.mock.ANY, job["challenge_id"], job["lease_token"],
+            job["attempts"], False, "provider_transient",
+        )
+        mark_uncertain.assert_not_called()
+        self.assertEqual(stats, {"claimed": 1, "sent": 0, "retrying": 1, "failed": 0, "uncertain": 0})
+
     def test_challenge_mismatch_is_terminal_and_never_sent(self):
         job = {
             "challenge_id": "123e4567-e89b-12d3-a456-426614174000",
