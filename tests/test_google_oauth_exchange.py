@@ -78,6 +78,22 @@ class GoogleOAuthExchangeTests(unittest.TestCase):
                 post_form=self.post, get_json=self.get,
             )
 
+    def test_rejects_unrelated_google_scopes(self):
+        for unrelated_scope in (
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/drive.metadata.readonly",
+        ):
+            with self.subTest(scope=unrelated_scope):
+                self.token_payload["scope"] = "openid email " + exchange._SCOPE + " " + unrelated_scope
+                with self.assertRaises(exchange.GoogleOAuthExchangeError):
+                    exchange.exchange_authorization_code(
+                        code="code", code_verifier="v" * 50,
+                        redirect_uri="https://api.example.test/callback",
+                        client_id="id", client_secret="secret",
+                        post_form=self.post, get_json=self.get,
+                    )
+
     def test_rejects_missing_drive_file_scope(self):
         self.token_payload["scope"] = "openid email"
         with self.assertRaises(exchange.GoogleOAuthExchangeError):
