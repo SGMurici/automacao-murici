@@ -90,7 +90,7 @@ class OtpEmailOutboxTests(unittest.TestCase):
         query, params = conn.cursor_value.executed[0]
         self.assertIn("FOR UPDATE OF o SKIP LOCKED", query)
         self.assertIn("lease_expires_at <= NOW()", query)
-        self.assertEqual(params, (8, 5, 45))
+        self.assertEqual(params, (8, 5, 240))
 
     def test_mark_sent_requires_current_lease_and_erases_ciphertext(self):
         conn = OutboxConnection([("challenge",)])
