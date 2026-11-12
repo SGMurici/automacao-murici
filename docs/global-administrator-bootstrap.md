@@ -117,5 +117,5 @@ O primeiro resultado esperado é `g.status = 'active'`, `g.revoked_at IS NULL` e
 - Não executar em produção até autorização de rollout específica.
 - Não expor UUID, e-mail ou dados pessoais em logs, tickets ou frontend.
 - Não criar endpoint público de concessão, bootstrap ou autoelevação.
-- Revogar ou suspender a concessão global antes de permitir exclusão da conta que a possui.
+- Revogar a concessão global antes de permitir exclusão da conta que a possui. Suspender não basta: a FK `ON DELETE RESTRICT` mantém o vínculo até a revogação e remoção controlada do registro.
 - A existência desta tabela não significa que já exista console administrativo nem que as rotas administrativas estejam protegidas. Cada rota futura deve chamar `require_global_admin` após validar a sessão.
