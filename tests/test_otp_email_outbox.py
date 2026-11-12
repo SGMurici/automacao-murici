@@ -102,6 +102,22 @@ class OtpEmailOutboxTests(unittest.TestCase):
         self.assertIn("lease_token = %s", query)
         self.assertIn("payload_ciphertext = NULL", query)
 
+    def test_dispatching_is_a_committed_pre_send_state(self):
+        conn = OutboxConnection([("challenge",)])
+        self.assertTrue(otp_email_outbox.mark_dispatching(conn, "challenge", "lease"))
+        query = conn.cursor_value.executed[0][0]
+        self.assertIn("SET status = 'dispatching'", query)
+        self.assertIn("status = 'processing'", query)
+
+    def test_uncertain_delivery_erases_payload_and_consumes_challenge(self):
+        conn = OutboxConnection([("challenge",)])
+        with patch("otp_core.mark_otp_delivery", return_value=True) as mark_delivery:
+            self.assertTrue(otp_email_outbox.mark_uncertain(conn, "challenge", "lease"))
+        query = conn.cursor_value.executed[0][0]
+        self.assertIn("status = 'uncertain'", query)
+        self.assertIn("payload_ciphertext = NULL", query)
+        mark_delivery.assert_called_once_with(conn, "challenge", "uncertain")
+
     def test_failure_is_retryable_or_terminal_and_lease_bound(self):
         conn = OutboxConnection([("challenge",)])
         self.assertTrue(otp_email_outbox.mark_failure(
