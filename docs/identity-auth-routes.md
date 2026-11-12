@@ -97,7 +97,7 @@ Recommended sender: a dedicated address such as \`nao-responda@auth.<controlled-
 - Review SES DPA, subprocessors, data location, international transfer mechanism under LGPD and retention terms.
 - Verify the exact Cloudflare → Render proxy chain and CIDRs in a controlled non-production service before configuring \`TRUSTED_PROXY_HOPS\` and \`TRUSTED_PROXY_CIDRS\`.
 - Abandoned pending users are purged by the scheduler after 24 hours by default; `PENDING_SIGNUP_TTL_HOURS` can be set from 1 to 168. Define separate cleanup/retention for stale OTP challenge and limiter rows.
-- Apply migrations 0002, 0005, 0006, 0009 and 0010 only through the separately authorized production migration process.
+- Apply migrations 0002, 0005, 0006, 0009, 0010, 0011 and 0013 only through the separately authorized production migration process; preserve the repository's migration ordering and verify the target schema first.
 - Add recovery and email-change workflows only after signup/login are validated.
 
 ## Security boundary
