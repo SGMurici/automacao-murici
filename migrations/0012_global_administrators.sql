@@ -23,4 +23,4 @@ CREATE INDEX IF NOT EXISTS idx_global_administrators_active
     WHERE status = 'active' AND revoked_at IS NULL;
 
 COMMENT ON TABLE global_administrators IS
-    'Platform-wide administrators; separate from tenant_memberships roles. Bootstrap only through controlled operator procedure.';
+    'Platform-wide administrators are separate from tenant_memberships roles. Bootstrap only through a controlled operator procedure.';
