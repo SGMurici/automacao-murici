@@ -19,7 +19,7 @@ Each invocation performs:
 
 Each subsystem is isolated. A failure in OTP delivery is logged and included in the response but does not prevent editorial publishing. A cleanup failure does not prevent either queue from running. An editorial failure does not undo a completed OTP delivery.
 
-The OTP worker processes one item per invocation. This avoids claiming a sequential batch whose later jobs could lose their leases while earlier SMTP operations are still in progress. The worker's SMTP timeout is bounded by configuration; lease duration must remain longer than the maximum delivery operation.
+The OTP worker processes one item per invocation by default. This avoids claiming a sequential batch whose later jobs could lose their leases while earlier SMTP operations are still in progress. The outbox lease is 240 seconds, while each SMTP socket operation is bounded to at most 30 seconds by configuration; retain a conservative margin and revisit the lease if the SMTP flow or timeout policy changes. The worker CLI also defaults to a single item.
 
 ## Scheduling and cost boundary
 
