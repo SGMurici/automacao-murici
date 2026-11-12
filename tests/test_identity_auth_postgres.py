@@ -142,13 +142,18 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
                 otp_email_outbox_worker.run_once(self._application_db_connection)
                 with self._application_db_connection() as conn:
                     row = conn.execute(
-                        "SELECT status FROM otp_email_outbox WHERE challenge_id = %s",
+                        """SELECT status, (available_at <= NOW())
+                           FROM otp_email_outbox WHERE challenge_id = %s""",
                         (challenge_id,),
                     ).fetchone()
                 delivery_status = row[0] if row else None
-                if delivery_status in {"sent", "failed"} or delivery_status is None:
+                if (
+                    row is None
+                    or delivery_status in {"sent", "failed"}
+                    or (delivery_status == "pending" and not row[1])
+                ):
                     break
-            if delivery_status not in {None, "sent", "failed"}:
+            if delivery_status not in {None, "sent", "failed", "pending"}:
                 self.fail(
                     "OTP do cadastro não atingiu estado terminal no teste; "
                     f"estado final da outbox: {delivery_status!r}"
