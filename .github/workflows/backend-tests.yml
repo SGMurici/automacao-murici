@@ -6,6 +6,7 @@ on:
       - main
       - fix/foundation-batch-2026-11-10
       - 'fix/**'
+      - 'feat/**'
   push:
     branches:
       - fix/foundation-batch-2026-11-10

@@ -13,7 +13,7 @@ import identity_auth_core
 
 
 TERMINAL_ATTEMPTS = 8
-LEASE_SECONDS = 45
+LEASE_SECONDS = 240
 SMTP_TIMEOUT_MAX_SECONDS = 30
 
 
@@ -164,14 +164,22 @@ def decrypt_payload(ciphertext):
     try:
         raw = _fernet().decrypt(ciphertext.encode("ascii"))
         payload = json.loads(raw.decode("utf-8"))
+    except OutboxConfigurationError:
+        raise
     except (InvalidToken, ValueError, TypeError, UnicodeError) as exc:
         raise OutboxPayloadError("OTP outbox payload is invalid") from exc
     required = {"challenge_id", "recipient", "code", "purpose", "expires_minutes"}
     if not isinstance(payload, dict) or set(payload) != required:
         raise OutboxPayloadError("OTP outbox payload schema is invalid")
-    if str(uuid.UUID(payload["challenge_id"])) == "":
+    challenge_id = payload["challenge_id"]
+    if not isinstance(challenge_id, str):
         raise OutboxPayloadError("OTP outbox challenge is invalid")
-    if payload["purpose"] not in {"signup", "login", "verify_identity", "recovery"}:
+    try:
+        uuid.UUID(challenge_id)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise OutboxPayloadError("OTP outbox challenge is invalid") from exc
+    purpose = payload["purpose"]
+    if not isinstance(purpose, str) or purpose not in {"signup", "login", "verify_identity", "recovery"}:
         raise OutboxPayloadError("OTP outbox purpose is invalid")
     if not isinstance(payload["recipient"], str) or not payload["recipient"]:
         raise OutboxPayloadError("OTP outbox recipient is invalid")
