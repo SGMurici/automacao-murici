@@ -134,7 +134,25 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         )
         if response.status_code == 202:
             import otp_email_outbox_worker
-            otp_email_outbox_worker.run_once(self._application_db_connection)
+            challenge_id = response.json.get("challenge_id")
+            delivery_status = None
+            # The outbox is shared by this integration-test schema. Drain older
+            # due jobs one at a time until this specific challenge is delivered.
+            for _ in range(50):
+                otp_email_outbox_worker.run_once(self._application_db_connection)
+                with self._application_db_connection() as conn:
+                    row = conn.execute(
+                        "SELECT status FROM otp_email_outbox WHERE challenge_id = %s",
+                        (challenge_id,),
+                    ).fetchone()
+                delivery_status = row[0] if row else None
+                if delivery_status in {"sent", "failed"} or delivery_status is None:
+                    break
+            if delivery_status != "sent":
+                self.fail(
+                    "OTP do cadastro não foi entregue no teste; "
+                    f"estado final da outbox: {delivery_status!r}"
+                )
         return response
 
     def _verify_signup(self, email, code):
