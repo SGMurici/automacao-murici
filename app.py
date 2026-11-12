@@ -21,6 +21,7 @@ import identity_lookup
 import otp_core
 import email_delivery
 import otp_email_outbox
+import otp_email_outbox_worker
 import account_deletion_core
 
 
@@ -3021,6 +3022,51 @@ def cleanup_expired_pending_signups():
         return 0
 
 
+def scheduler_run_cycle():
+    """Run independent remote queues without allowing one queue to starve another.
+
+    OTP is processed first because its challenges have a short expiry. One job
+    per invocation keeps the SMTP operation within a single recoverable lease.
+    Editorial publishing retains its existing advisory lock and one-post limit.
+    """
+    try:
+        otp_stats = otp_email_outbox_worker.run_once(
+            get_db_connection, batch_size=1
+        )
+        otp_result = {"status": "completed", **otp_stats}
+    except Exception:
+        app.logger.exception("Falha no processamento da outbox OTP")
+        otp_result = {"status": "error"}
+
+    try:
+        purged_pending_signups = cleanup_expired_pending_signups()
+        cleanup_result = {
+            "status": "completed",
+            "removed": purged_pending_signups,
+        }
+        if purged_pending_signups:
+            app.logger.info(
+                "Cadastros pendentes expirados removidos: %s",
+                purged_pending_signups,
+            )
+    except Exception:
+        app.logger.exception("Falha na limpeza de cadastros pendentes expirados")
+        cleanup_result = {"status": "error"}
+
+    try:
+        result = scheduler_publish_one()
+    except Exception:
+        app.logger.exception("Falha no processamento da fila editorial")
+        result = {
+            "status": "error",
+            "mensagem": "Falha na execução da fila editorial.",
+        }
+
+    result["otp_delivery"] = otp_result
+    result["pending_signup_cleanup"] = cleanup_result
+    return result
+
+
 @app.post("/scheduler/run")
 def scheduler_run():
     """
@@ -3035,13 +3081,7 @@ def scheduler_run():
         return auth_error
 
     try:
-        purged_pending_signups = cleanup_expired_pending_signups()
-        if purged_pending_signups:
-            app.logger.info(
-                "Cadastros pendentes expirados removidos: %s",
-                purged_pending_signups,
-            )
-        result = scheduler_publish_one()
+        result = scheduler_run_cycle()
 
         if result["status"] == "publicado":
             return jsonify(result), 200
