@@ -18,6 +18,15 @@ class Connection:
 
 
 class OtpEmailOutboxWorkerTests(unittest.TestCase):
+    def test_expired_uncertain_lease_is_included_in_worker_stats(self):
+        with (
+            patch.object(otp_email_outbox, "expire_due", return_value={"uncertain": 1, "failed": 2}),
+            patch.object(otp_email_outbox, "claim_batch", return_value=[]),
+        ):
+            stats = otp_email_outbox_worker.run_once(Connection)
+        self.assertEqual(stats["uncertain"], 1)
+        self.assertEqual(stats["failed"], 2)
+
     def test_ambiguous_smtp_failure_is_uncertain_and_not_retried(self):
         job = {
             "challenge_id": "123e4567-e89b-12d3-a456-426614174000",
