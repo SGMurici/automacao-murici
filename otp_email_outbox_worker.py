@@ -21,7 +21,9 @@ def run_once(connection_factory, batch_size=1):
         try:
             payload = otp_email_outbox.decrypt_payload(job["ciphertext"])
             if payload["challenge_id"] != job["challenge_id"]:
-                raise otp_email_outbox.OutboxConfigurationError("OTP challenge mismatch")
+                # A valid ciphertext bound to another challenge is corrupt/misbound
+                # data, not a transient key/configuration failure. Never deliver it.
+                raise otp_email_outbox.OutboxPayloadError("OTP challenge mismatch")
             delivery = email_delivery.send_otp_email(
                 payload["recipient"], payload["code"], payload["purpose"],
                 expires_minutes=payload["expires_minutes"],
