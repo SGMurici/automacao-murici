@@ -84,7 +84,7 @@ class OtpEmailOutboxWorkerTests(unittest.TestCase):
             True,
             "payload_invalid",
         )
-        self.assertEqual(stats, {"claimed": 1, "sent": 0, "retrying": 0, "failed": 1})
+        self.assertEqual(stats, {"claimed": 1, "sent": 0, "retrying": 0, "failed": 1, "uncertain": 0})
 
 
 if __name__ == "__main__":
