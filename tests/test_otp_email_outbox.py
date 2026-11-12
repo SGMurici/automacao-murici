@@ -70,6 +70,24 @@ class OtpEmailOutboxTests(unittest.TestCase):
             self.assertNotIn(payload["code"], encrypted)
             self.assertEqual(otp_email_outbox.decrypt_payload(encrypted), payload)
 
+    def test_decrypt_payload_rejects_invalid_challenge_uuid_as_payload_error(self):
+        import json
+        from cryptography.fernet import Fernet
+        payload = {
+            "challenge_id": [],
+            "recipient": "person@example.test",
+            "code": "00001234",
+            "purpose": "signup",
+            "expires_minutes": 10,
+        }
+        encrypted = Fernet(self.key.encode()).encrypt(
+            json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
+        with patch.object(otp_email_outbox, "_fernet") as fernet_factory:
+            fernet_factory.return_value = Fernet(self.key.encode())
+            with self.assertRaises(otp_email_outbox.OutboxPayloadError):
+                otp_email_outbox.decrypt_payload(encrypted)
+
     def test_enqueue_writes_only_ciphertext(self):
         conn = OutboxConnection()
         with patch.object(otp_email_outbox, "_fernet") as fernet_factory:
