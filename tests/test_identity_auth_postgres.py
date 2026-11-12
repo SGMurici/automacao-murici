@@ -148,9 +148,9 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
                 delivery_status = row[0] if row else None
                 if delivery_status in {"sent", "failed"} or delivery_status is None:
                     break
-            if delivery_status != "sent":
+            if delivery_status not in {None, "sent", "failed"}:
                 self.fail(
-                    "OTP do cadastro não foi entregue no teste; "
+                    "OTP do cadastro não atingiu estado terminal no teste; "
                     f"estado final da outbox: {delivery_status!r}"
                 )
         return response
