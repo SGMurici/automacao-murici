@@ -132,6 +132,27 @@ class DriveBackupConnectionTests(unittest.TestCase):
         self.assertIn("user_id = %s AND tenant_id = %s", query)
         self.assertEqual(params[0:2], (self.encrypt("new-a"), self.encrypt("new-r")))
 
+    def test_refresh_normalizes_naive_token_expiry_to_utc(self):
+        conn = FakeConnection(one=("connection-1",))
+        expiry = datetime(2026, 11, 12, 18, 30)
+        self.assertTrue(drive.update_tokens(
+            conn, user_id="user-1", tenant_id="tenant-1",
+            connection_id="connection-1", access_token="new-a",
+            refresh_token="new-r", token_expires_at=expiry, encrypt=self.encrypt,
+        ))
+        _, params = conn.fake_cursor.calls[0]
+        self.assertEqual(params[2], expiry.replace(tzinfo=timezone.utc))
+
+    def test_refresh_rejects_invalid_expiry_before_database_write(self):
+        conn = FakeConnection()
+        with self.assertRaises(ValueError):
+            drive.update_tokens(
+                conn, user_id="user-1", tenant_id="tenant-1",
+                connection_id="connection-1", access_token="new-a",
+                refresh_token="new-r", token_expires_at="tomorrow", encrypt=self.encrypt,
+            )
+        self.assertEqual(conn.fake_cursor.calls, [])
+
     def test_revoke_erases_token_ciphertext_and_is_owner_scoped(self):
         conn = FakeConnection(one=("connection-1",))
         self.assertTrue(drive.revoke_connection(
