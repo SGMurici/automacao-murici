@@ -153,6 +153,11 @@ class OtpEmailOutboxTests(unittest.TestCase):
         self.assertIn("status = 'dispatching' AND lease_expires_at <= NOW()", query)
         self.assertIn("status = 'uncertain'", query)
 
+    def test_expire_due_reports_failed_and_uncertain_counts_separately(self):
+        conn = OutboxConnection([("uncertain",), ("failed",), ("uncertain",)])
+        result = otp_email_outbox.expire_due(conn)
+        self.assertEqual(result, {"uncertain": 2, "failed": 1})
+
     def test_uncertain_delivery_erases_payload_and_consumes_challenge(self):
         conn = OutboxConnection([("challenge",)])
         with patch("otp_core.mark_otp_delivery", return_value=True) as mark_delivery:
