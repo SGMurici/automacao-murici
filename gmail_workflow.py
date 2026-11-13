@@ -299,13 +299,6 @@ def merge_triage_summaries(summaries):
     return merged
 
 
-def summary_only_requested(value=None):
-    """Default to privacy-safe aggregate output; details require explicit opt-in."""
-    if value is None:
-        return True
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
 _UNCLASSIFIED_DIAGNOSTIC_SIGNALS = {
     "cadastro_validacao": (
         "confirme seu e-mail", "confirmar seu email", "verify your email",
