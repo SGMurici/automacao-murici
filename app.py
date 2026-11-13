@@ -1459,6 +1459,8 @@ def readiness():
             "linkedin_oauth_configured": bool(LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET),
             "google_oauth_configured": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
             "automatic_linkedin_analytics": LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED,
+            "gmail_monitor_configured": bool(GMAIL_MONITOR_SECRET),
+            "gmail_accounts_allowlisted": list(GMAIL_MONITORED_ACCOUNTS),
         },
         "secrets_exposed": False,
         "database_checked": False,
