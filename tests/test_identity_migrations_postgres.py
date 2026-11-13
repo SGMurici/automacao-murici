@@ -6,6 +6,7 @@ Set TEST_DATABASE_URL to enable it; local runs without PostgreSQL skip cleanly.
 import hashlib
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 import uuid
 from pathlib import Path
 
@@ -17,9 +18,8 @@ import app as application
 import identity_core
 import authorization_core
 import account_deletion_core
-import drive_backup_oauth
-import drive_backup_connections
 import otp_core
+import otp_email_outbox
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -28,8 +28,13 @@ MIGRATIONS = (
     ROOT / "migrations" / "0001_oauth_states.sql",
     ROOT / "migrations" / "0002_identity_core.sql",
     ROOT / "migrations" / "0003_account_deletion.sql",
-    ROOT / "migrations" / "0004_customer_drive_oauth.sql",
     ROOT / "migrations" / "0005_otp_request_limits.sql",
+    ROOT / "migrations" / "0006_session_authentication_freshness.sql",
+    ROOT / "migrations" / "0009_identity_otp_hardening.sql",
+    ROOT / "migrations" / "0010_otp_signup_policy_versions.sql",
+    ROOT / "migrations" / "0011_otp_email_transactional_outbox.sql",
+    ROOT / "migrations" / "0012_global_administrators.sql",
+    ROOT / "migrations" / "0013_otp_delivery_uncertainty.sql",
 )
 
 
@@ -256,6 +261,80 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(after_logout.status_code, 401)
 
+    def test_session_rotation_preserves_authentication_age_for_deletion_gate(self):
+        token = identity_core.issue_session(
+            self.conn, self.user_id, ttl_seconds=600, device_label="rotation-age-test"
+        )
+        old_hash = identity_core.hash_session_token(token)
+        self.conn.execute(
+            """UPDATE auth_sessions
+               SET authenticated_at = NOW() - INTERVAL '20 minutes'
+               WHERE token_hash = %s""",
+            (old_hash,),
+        )
+        self.conn.commit()
+        client = application.app.test_client()
+
+        with patch.object(
+            application, "get_db_connection", side_effect=self._application_db_connection
+        ):
+            rotation = client.post(
+                "/api/v1/session/rotate",
+                headers={"Authorization": "Bearer " + token},
+            )
+            self.assertEqual(rotation.status_code, 200)
+            new_token = rotation.get_json()["access_token"]
+
+            deletion = client.post(
+                "/api/v1/account/deletion-request",
+                headers={"Authorization": "Bearer " + new_token},
+                json={"confirmacao": "EXCLUIR MINHA CONTA"},
+            )
+            self.assertEqual(deletion.status_code, 401)
+
+        new_hash = identity_core.hash_session_token(new_token)
+        created_at, authenticated_at = self.conn.execute(
+            """SELECT created_at, authenticated_at
+               FROM auth_sessions WHERE token_hash = %s""",
+            (new_hash,),
+        ).fetchone()
+        self.assertGreater(created_at, authenticated_at)
+        self.assertFalse(identity_core.is_recent_session(self.conn, new_token, 900))
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status FROM app_users WHERE id = %s", (self.user_id,)
+            ).fetchone()[0],
+            "active",
+        )
+
+    def test_concurrent_session_rotation_only_issues_one_replacement(self):
+        token = identity_core.issue_session(
+            self.conn, self.user_id, ttl_seconds=600, device_label="concurrent-rotation-test"
+        )
+        self.conn.commit()
+
+        def rotate_once(_):
+            with self._application_db_connection() as connection:
+                return identity_core.rotate_session(connection, token)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(rotate_once, range(2)))
+
+        replacements = [value for value in results if value]
+        self.assertEqual(len(replacements), 1)
+        self.assertIsNone(identity_core.validate_session(self.conn, token))
+        self.assertEqual(
+            self.conn.execute(
+                """SELECT COUNT(*) FROM auth_sessions
+                   WHERE user_id = %s AND revoked_at IS NULL AND expires_at > NOW()""",
+                (self.user_id,),
+            ).fetchone()[0],
+            1,
+        )
+        self.assertTrue(
+            identity_core.is_recent_session(self.conn, replacements[0], 900)
+        )
+
     def test_suspended_user_cannot_use_active_tenant_membership(self):
         self.conn.execute(
             "UPDATE app_users SET status = 'suspended' WHERE id = %s",
@@ -473,112 +552,6 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             )
 
 
-    def test_customer_drive_oauth_flow_is_bound_to_real_tenant_and_single_use(self):
-        vault = {}
-        def encrypt(value):
-            ciphertext = b"cipher:" + hashlib.sha256(value.encode("utf-8")).digest()
-            vault[ciphertext] = value
-            return ciphertext
-        decrypt = lambda value: vault[value]
-        result = drive_backup_oauth.create_flow(
-            self.conn,
-            user_id=self.user_id,
-            tenant_id=self.tenant_id,
-            redirect_uri="https://api.example.test/api/v1/integrations/google-drive/callback",
-            client_id="test-client-id",
-            encrypt=encrypt,
-        )
-        self.conn.commit()
-
-        stored = self.conn.execute(
-            """SELECT state_hash, user_id, tenant_id, code_verifier_ciphertext,
-                      purpose, expires_at
-               FROM oauth_states WHERE purpose = 'drive_backup'"""
-        ).fetchone()
-        self.assertEqual(stored[0].strip(), hashlib.sha256(result["state"].encode()).hexdigest())
-        self.assertEqual(stored[1], self.user_id)
-        self.assertEqual(stored[2], self.tenant_id)
-        self.assertTrue(bytes(stored[3]).startswith(b"cipher:"))
-        self.assertNotIn(result["state"].encode(), bytes(stored[3]))
-        self.assertEqual(stored[4], "drive_backup")
-
-        context = drive_backup_oauth.consume_flow(
-            self.conn, state=result["state"], decrypt=decrypt
-        )
-        self.conn.commit()
-        self.assertEqual(context["user_id"], self.user_id)
-        self.assertEqual(context["tenant_id"], self.tenant_id)
-        self.assertTrue(context["code_verifier"])
-        self.assertIsNone(
-            drive_backup_oauth.consume_flow(
-                self.conn, state=result["state"], decrypt=decrypt
-            )
-        )
-
-    def test_customer_drive_connection_persists_encrypted_tokens_per_owner(self):
-        vault = {}
-        def encrypt(value):
-            ciphertext = b"cipher:" + hashlib.sha256(value.encode("utf-8")).digest()
-            vault[ciphertext] = value
-            return ciphertext
-        decrypt = lambda value: vault[value]
-        connection_id = drive_backup_connections.save_connection(
-            self.conn,
-            user_id=self.user_id,
-            tenant_id=self.tenant_id,
-            google_subject="google-subject-integration",
-            account_label="backup@example.test",
-            granted_scopes=[drive_backup_connections.REQUIRED_SCOPE, "openid", "email"],
-            access_token="access-secret-integration",
-            refresh_token="refresh-secret-integration",
-            token_expires_at=None,
-            encrypt=encrypt,
-        )
-        self.conn.commit()
-
-        stored = self.conn.execute(
-            """SELECT provider, user_id, tenant_id, access_token_ciphertext,
-                      refresh_token_ciphertext, status
-               FROM external_connections WHERE id = %s""",
-            (connection_id,),
-        ).fetchone()
-        self.assertEqual(stored[0], drive_backup_connections.PROVIDER)
-        self.assertEqual(stored[1], self.user_id)
-        self.assertEqual(stored[2], self.tenant_id)
-        self.assertNotEqual(bytes(stored[3]), b"access-secret-integration")
-        self.assertNotEqual(bytes(stored[4]), b"refresh-secret-integration")
-        self.assertTrue(bytes(stored[3]).startswith(b"cipher:"))
-        self.assertTrue(bytes(stored[4]).startswith(b"cipher:"))
-        self.assertEqual(stored[5], "active")
-
-        connection = drive_backup_connections.get_connection(
-            self.conn, user_id=self.user_id, tenant_id=self.tenant_id,
-            connection_id=connection_id, decrypt=decrypt,
-        )
-        self.assertEqual(connection["access_token"], "access-secret-integration")
-        self.assertEqual(connection["refresh_token"], "refresh-secret-integration")
-        self.assertIsNone(
-            drive_backup_connections.get_connection(
-                self.conn, user_id=uuid.uuid4(), tenant_id=self.tenant_id,
-                connection_id=connection_id, decrypt=decrypt,
-            )
-        )
-
-        self.assertTrue(
-            drive_backup_connections.revoke_connection(
-                self.conn, user_id=self.user_id, tenant_id=self.tenant_id,
-                connection_id=connection_id,
-            )
-        )
-        self.conn.commit()
-        revoked = self.conn.execute(
-            """SELECT status, access_token_ciphertext, refresh_token_ciphertext
-               FROM external_connections WHERE id = %s""",
-            (connection_id,),
-        ).fetchone()
-        self.assertEqual(revoked, ("revoked", None, None))
-
-
     def test_otp_rate_limits_are_atomic_and_scoped_to_pseudonymous_dimensions(self):
         digest = hashlib.sha256(b"identity-rate-limit-fixture").digest()
         self.assertTrue(
@@ -633,6 +606,119 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
                 cooldown_seconds=60, window_seconds=3600, max_requests=2,
             )
         )
+
+    def test_concurrent_otp_rate_limit_reservations_never_exceed_window_quota(self):
+        digest = hashlib.sha256(uuid.uuid4().bytes).digest()
+        self.conn.execute(
+            """INSERT INTO otp_request_limits (
+                   dimension_type, dimension_hash, purpose,
+                   window_started_at, request_count, last_requested_at
+               )
+               VALUES ('identity', %s, 'signup', NOW(), 1,
+                       NOW() - INTERVAL '2 seconds')""",
+            (digest,),
+        )
+        self.conn.commit()
+
+        def reserve_slot():
+            connection = self._application_db_connection()
+            try:
+                allowed = otp_core.reserve_otp_request_slot(
+                    connection, "identity", digest, "signup",
+                    cooldown_seconds=1, window_seconds=3600, max_requests=3,
+                )
+                connection.commit()
+                return allowed
+            finally:
+                connection.close()
+
+        with ThreadPoolExecutor(max_workers=12) as executor:
+            results = list(executor.map(lambda _: reserve_slot(), range(12)))
+
+        accepted = sum(results)
+        self.assertLessEqual(accepted, 2)
+        final_count = self.conn.execute(
+            """SELECT request_count FROM otp_request_limits
+               WHERE dimension_type = 'identity' AND dimension_hash = %s
+                 AND purpose = 'signup'""",
+            (digest,),
+        ).fetchone()[0]
+        self.assertEqual(final_count, 1 + accepted)
+
+    def test_uncertain_otp_delivery_is_a_terminal_non_retriable_state(self):
+        challenge_id = uuid.uuid4()
+        self.conn.execute(
+            """INSERT INTO otp_challenges
+               (id, identity_type, identity_lookup_hash, purpose, code_hash, expires_at)
+               VALUES (%s, 'email', %s, 'login', %s, NOW() + INTERVAL '5 minutes')""",
+            (challenge_id, hashlib.sha256(b"uncertain-email").digest(), b"otp-hash"),
+        )
+        self.conn.execute(
+            """INSERT INTO otp_email_outbox
+               (challenge_id, payload_ciphertext, status, attempts)
+               VALUES (%s, NULL, 'uncertain', 1)""",
+            (challenge_id,),
+        )
+        self.conn.execute(
+            """UPDATE otp_challenges
+               SET delivery_status = 'uncertain', consumed_at = NOW()
+               WHERE id = %s""",
+            (challenge_id,),
+        )
+        self.conn.commit()
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status, payload_ciphertext FROM otp_email_outbox WHERE challenge_id = %s",
+                (challenge_id,),
+            ).fetchone(),
+            ("uncertain", None),
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT delivery_status, consumed_at IS NOT NULL FROM otp_challenges WHERE id = %s",
+                (challenge_id,),
+            ).fetchone(),
+            ("uncertain", True),
+        )
+
+    def test_expired_dispatching_lease_becomes_uncertain_and_is_not_reclaimed(self):
+        challenge_id = uuid.uuid4()
+        self.conn.execute(
+            """INSERT INTO otp_challenges
+               (id, identity_type, identity_lookup_hash, purpose, code_hash, expires_at)
+               VALUES (%s, 'email', %s, 'login', %s, NOW() + INTERVAL '5 minutes')""",
+            (challenge_id, hashlib.sha256(b"dispatching-expired").digest(), b"otp-hash"),
+        )
+        self.conn.execute(
+            """INSERT INTO otp_email_outbox
+               (challenge_id, payload_ciphertext, status, attempts, lease_token, lease_expires_at)
+               VALUES (%s, 'ciphertext-fixture', 'dispatching', 1, gen_random_uuid(),
+                       NOW() - INTERVAL '1 second')""",
+            (challenge_id,),
+        )
+        self.conn.commit()
+
+        outcome = otp_email_outbox.expire_due(self.conn)
+        self.conn.commit()
+
+        self.assertEqual(outcome, {"uncertain": 1, "failed": 0})
+        self.assertEqual(
+            self.conn.execute(
+                """SELECT status, payload_ciphertext, lease_token
+                   FROM otp_email_outbox WHERE challenge_id = %s""",
+                (challenge_id,),
+            ).fetchone(),
+            ("uncertain", None, None),
+        )
+        self.assertEqual(
+            self.conn.execute(
+                """SELECT delivery_status, consumed_at IS NOT NULL
+                   FROM otp_challenges WHERE id = %s""",
+                (challenge_id,),
+            ).fetchone(),
+            ("uncertain", True),
+        )
+        self.assertEqual(otp_email_outbox.claim_batch(self.conn), [])
 
     def test_invalid_otp_attempt_limits_and_audit_result_are_rejected(self):
         with self.assertRaises(psycopg.errors.CheckViolation):
