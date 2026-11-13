@@ -5,9 +5,15 @@ on:
     branches:
       - main
       - fix/foundation-batch-2026-11-10
+      - 'fix/**'
+      - 'feat/**'
+      - 'integration/**'
   push:
     branches:
       - fix/foundation-batch-2026-11-10
+      - 'fix/**'
+      - 'feat/**'
+      - 'integration/**'
 
 permissions:
   contents: read
