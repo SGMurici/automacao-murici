@@ -523,6 +523,26 @@ def normalize_google_account_name(account_name):
     return "Drive5"
 
 
+def normalize_google_oauth_account_name(account_name):
+    """Allow only the two approved Gmail accounts plus the internal Drive5 account."""
+    if account_name is None or not str(account_name).strip():
+        return "Drive5"
+    normalized = str(account_name).strip()
+    allowed = {"SG", "Drive1", "Drive5"}
+    if normalized not in allowed:
+        raise ValueError("Conta Google não autorizada para este fluxo.")
+    return normalized
+
+
+def normalize_gmail_account_name(account_name):
+    """Restrict Gmail access to the explicitly approved SG and Drive1 mailboxes."""
+    normalized = str(account_name or "").strip().casefold()
+    allowed = {name.casefold(): name for name in GMAIL_MONITORED_ACCOUNTS}
+    if normalized not in allowed:
+        raise ValueError("Conta Gmail fora da lista autorizada.")
+    return allowed[normalized]
+
+
 def google_tokens_from_database(account_name="Drive5"):
     """Recupera tokens criptografados da conta Google informada."""
     account_name = normalize_google_account_name(account_name)
