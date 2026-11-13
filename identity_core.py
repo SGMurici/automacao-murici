@@ -25,8 +25,9 @@ def issue_session(conn, user_id, ttl_seconds=60 * 60 * 24 * 7, device_label=None
     with conn.cursor() as cur:
         cur.execute(
             """INSERT INTO auth_sessions
-               (token_hash, user_id, created_at, expires_at, last_seen_at, device_label)
-               SELECT %s, id, NOW(),
+               (token_hash, user_id, created_at, authenticated_at,
+                expires_at, last_seen_at, device_label)
+               SELECT %s, id, NOW(), NOW(),
                       NOW() + (%s * INTERVAL '1 second'), NOW(), %s
                FROM app_users
                WHERE id = %s AND status = 'active'
