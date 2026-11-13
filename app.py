@@ -2674,6 +2674,196 @@ def google_callback():
     )
 
 
+def gmail_access_token(account_name):
+    """Return a Gmail-readonly access token for one of the two approved mailboxes."""
+    account_name = normalize_gmail_account_name(account_name)
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise RuntimeError("Google OAuth não está configurado.")
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT access_token, refresh_token, token_expires_at
+                   FROM google_accounts
+                   WHERE account_name = %s AND provider = 'google'
+                   LIMIT 1""",
+                (account_name,),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise RuntimeError(f"Conta Gmail {account_name} ainda não foi autorizada.")
+    access_token = decrypt_value(row[0]) if row[0] else None
+    refresh_token = decrypt_value(row[1]) if row[1] else None
+    expires_at = row[2]
+    if not refresh_token:
+        raise RuntimeError(f"Refresh token Gmail de {account_name} não encontrado.")
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    if not access_token or expires_at is None or expires_at <= now + timedelta(minutes=5):
+        payload = urllib.parse.urlencode({
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            GOOGLE_TOKEN_URL,
+            data=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                token_data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f"Renovação Gmail recusada (HTTP {error.code}).") from None
+        except (urllib.error.URLError, TimeoutError):
+            raise RuntimeError("Não foi possível renovar a autorização Gmail.") from None
+        renewed_token = token_data.get("access_token")
+        expires_in = token_data.get("expires_in")
+        if not isinstance(renewed_token, str) or not renewed_token:
+            raise RuntimeError("Google não retornou access token Gmail renovado.")
+        if isinstance(expires_in, bool) or not isinstance(expires_in, int) or expires_in <= 0:
+            raise RuntimeError("Expiração do token Gmail inválida.")
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE google_accounts
+                       SET access_token = %s,
+                           token_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                           updated_at = NOW()
+                       WHERE account_name = %s AND provider = 'google'""",
+                    (encrypt_value(renewed_token), expires_in, account_name),
+                )
+                if cur.rowcount != 1:
+                    raise RuntimeError("Conta Gmail deixou de existir durante a renovação.")
+            conn.commit()
+        access_token = renewed_token
+    return access_token
+
+
+def gmail_api_request(account_name, url):
+    """Perform GET-only Gmail API requests; never expose provider response bodies."""
+    token = gmail_access_token(account_name)
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"Gmail {normalize_gmail_account_name(account_name)} respondeu HTTP {error.code}.") from None
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        raise RuntimeError("Falha de comunicação com a API Gmail.") from None
+
+
+def _gmail_triage_one_account(account_name, query, max_results):
+    account_name = normalize_gmail_account_name(account_name)
+    params = urllib.parse.urlencode({"q": query, "maxResults": max_results})
+    data = gmail_api_request(
+        account_name,
+        f"{GOOGLE_GMAIL_API_BASE}/messages?{params}",
+    )
+    items = []
+    for item in data.get("messages", [])[:max_results]:
+        message_id = item.get("id")
+        if not isinstance(message_id, str) or not message_id:
+            continue
+        encoded_id = urllib.parse.quote(message_id, safe="")
+        detail = gmail_api_request(
+            account_name,
+            f"{GOOGLE_GMAIL_API_BASE}/messages/{encoded_id}?format=full",
+        )
+        items.append(build_triage_item(detail, account_name))
+    return {
+        "status": "ok",
+        "count": len(items),
+        "summary": summarize_triage_items(items),
+        "messages": items,
+    }
+
+
+@app.post("/internal/gmail/triage/run")
+def internal_gmail_triage_run():
+    """Read and classify only SG/Drive1; response is always aggregate-only."""
+    if not GMAIL_MONITOR_SECRET:
+        return jsonify({"status": "erro", "mensagem": "Monitor Gmail não configurado."}), 503
+    supplied = request.headers.get("X-Gmail-Monitor-Secret", "")
+    if not supplied or not hmac.compare_digest(supplied, GMAIL_MONITOR_SECRET):
+        return jsonify({"status": "erro", "mensagem": "Não autorizado."}), 401
+
+    lock_conn = None
+    lock_acquired = False
+    try:
+        lock_conn = get_db_connection()
+        with lock_conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s);", (GMAIL_MONITOR_LOCK_KEY,))
+            row = cur.fetchone()
+            lock_acquired = bool(row and row[0])
+        if not lock_acquired:
+            return jsonify({"status": "busy", "mensagem": "Já existe uma triagem Gmail em execução."}), 409
+
+        query = "newer_than:7d -in:sent"
+        max_results = 2
+        report = {
+            "status": "ok",
+            "mode": "somente_leitura_com_triagem",
+            "accounts": {},
+        }
+        with ThreadPoolExecutor(max_workers=len(GMAIL_MONITORED_ACCOUNTS)) as executor:
+            futures = {
+                executor.submit(_gmail_triage_one_account, account, query, max_results): account
+                for account in GMAIL_MONITORED_ACCOUNTS
+            }
+            for future in as_completed(futures):
+                account = futures[future]
+                try:
+                    report["accounts"][account] = future.result()
+                except Exception:
+                    app.logger.warning("Falha na triagem Gmail da conta %s.", account)
+                    report["accounts"][account] = {
+                        "status": "erro",
+                        "count": 0,
+                        "summary": {"total": 0, "categories": {}, "priorities": {}, "unclassified_signals": {}},
+                        "message": f"Não foi possível consultar {account}; verifique a autorização Gmail.",
+                    }
+                    report["status"] = "parcial"
+
+        report["accounts"] = {
+            name: report["accounts"][name] for name in GMAIL_MONITORED_ACCOUNTS
+        }
+        # The caller cannot opt out: individual messages and identifiers never leave this function.
+        for account_result in report["accounts"].values():
+            account_result.pop("messages", None)
+        report["summary"] = merge_triage_summaries(
+            result.get("summary", {}) for result in report["accounts"].values()
+        )
+        app.logger.info(
+            "Triagem Gmail concluída: status=%s; contas=%s; total=%s; categorias=%s",
+            report["status"],
+            ",".join(GMAIL_MONITORED_ACCOUNTS),
+            report["summary"]["total"],
+            json.dumps(report["summary"]["categories"], sort_keys=True),
+        )
+        response = jsonify(report)
+        response.headers["Cache-Control"] = "no-store"
+        return response, (200 if report["status"] == "ok" else 207)
+    except Exception:
+        app.logger.exception("Falha na triagem Gmail.")
+        return safe_error_response("Falha na triagem Gmail. Consulte os logs do serviço.", 502)
+    finally:
+        if lock_conn is not None:
+            if lock_acquired:
+                try:
+                    with lock_conn.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_unlock(%s);", (GMAIL_MONITOR_LOCK_KEY,))
+                except Exception:
+                    app.logger.exception("Falha ao liberar bloqueio da triagem Gmail.")
+            lock_conn.close()
+
+
 @app.post("/linkedin/publish")
 def linkedin_publish():
     auth_error = require_publish_secret()
