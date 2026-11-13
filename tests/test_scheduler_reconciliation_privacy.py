@@ -66,7 +66,8 @@ class SchedulerReconciliationPrivacyTests(unittest.TestCase):
         self.assertNotIn(sentinel, response.get_data(as_text=True))
 
     def test_reconciliation_rejects_unauthorized_request_before_database_access(self):
-        auth_error = (application.jsonify({"status": "erro"}), 401)
+        auth_response = application.app.response_class('{"status":"erro"}', status=401, mimetype="application/json")
+        auth_error = (auth_response, 401)
         with (
             patch.object(application, "require_publish_secret", return_value=auth_error),
             patch.object(application, "get_db_connection") as database,
