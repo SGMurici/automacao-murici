@@ -2536,7 +2536,7 @@ def google_callback():
         }), 400
 
     try:
-        account_name = normalize_google_account_name(
+        account_name = normalize_google_oauth_account_name(
             oauth_context.get("account_name") or "Drive5"
         )
     except ValueError as error:
@@ -2579,9 +2579,27 @@ def google_callback():
             "mensagem": "Falha ao obter token do Google.",
         }), 502
 
+    expected_scope = (
+        GOOGLE_GMAIL_READONLY_SCOPE
+        if account_name in GMAIL_MONITORED_ACCOUNTS
+        else GOOGLE_DRIVE_READONLY_SCOPE
+    )
+    granted_scopes = token_data.get("scope")
+    if not isinstance(granted_scopes, str) or expected_scope not in granted_scopes.split():
+        return jsonify({
+            "status": "erro",
+            "mensagem": "O Google não concedeu o escopo somente leitura solicitado.",
+        }), 403
+
     access_token = token_data.get("access_token")
     refresh_token = token_data.get("refresh_token")
     expires_in = token_data.get("expires_in")
+
+    if account_name in GMAIL_MONITORED_ACCOUNTS and not refresh_token:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "O Google não retornou refresh token; reautorize com consentimento explícito.",
+        }), 400
 
     if not access_token:
         return jsonify(
