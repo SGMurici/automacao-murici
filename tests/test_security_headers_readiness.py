@@ -34,7 +34,7 @@ class SecurityHeadersAndReadinessTests(unittest.TestCase):
 
     def test_readiness_reports_only_names_and_never_checks_database(self):
         with (
-            patch.object(application.app, "secret_key", "sentinel-flask-secret"),
+            patch.dict(application.app.config, {"SECRET_KEY": "sentinel-flask-secret"}),
             patch.object(application, "DATABASE_URL", "sentinel-database-url"),
             patch.object(application, "LINKEDIN_CLIENT_ID", "sentinel-linkedin-id"),
             patch.object(application, "LINKEDIN_CLIENT_SECRET", "sentinel-linkedin-secret"),
@@ -63,7 +63,7 @@ class SecurityHeadersAndReadinessTests(unittest.TestCase):
 
     def test_readiness_returns_503_with_missing_setting_names_only(self):
         with (
-            patch.object(application.app, "secret_key", None),
+            patch.dict(application.app.config, {"SECRET_KEY": None}),
             patch.object(application, "DATABASE_URL", None),
             patch.object(application, "LINKEDIN_CLIENT_ID", None),
             patch.object(application, "LINKEDIN_CLIENT_SECRET", None),
