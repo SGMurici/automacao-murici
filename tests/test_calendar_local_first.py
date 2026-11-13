@@ -1,38 +1,41 @@
+import ast
 import unittest
-from unittest.mock import patch
+from pathlib import Path
 
-import app as application
+
+ROOT = Path(__file__).resolve().parents[1]
+APP_SOURCE = (ROOT / "app.py").read_text(encoding="utf-8")
+WORKFLOW_SOURCE = (ROOT / ".github" / "workflows" / "gmail-tests.yml").read_text(encoding="utf-8")
 
 
 class LocalFirstCalendarTests(unittest.TestCase):
-    def setUp(self):
-        self.client = application.app.test_client()
-        self.secret_key_patch = patch.dict(
-            application.app.config, {"SECRET_KEY": "test-flask-session-secret"}
+    def test_backend_python_syntax_remains_valid(self):
+        ast.parse(APP_SOURCE)
+
+    def test_google_calendar_scope_and_route_are_removed(self):
+        self.assertNotIn("calendar.readonly", APP_SOURCE)
+        self.assertNotIn("GOOGLE_CALENDAR_READONLY_SCOPE", APP_SOURCE)
+        self.assertNotIn('/google-calendar/check', APP_SOURCE)
+        self.assertNotIn("google_calendar_readonly_check", APP_SOURCE)
+
+    def test_google_oauth_rejects_calendar_purpose_but_keeps_gmail(self):
+        tree = ast.parse(APP_SOURCE)
+        google_login = next(
+            node for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "google_login"
         )
-        self.secret_key_patch.start()
-        self.addCleanup(self.secret_key_patch.stop)
-        self.client_id_patch = patch.object(application, "GOOGLE_CLIENT_ID", "test-google-client")
-        self.client_id_patch.start()
-        self.addCleanup(self.client_id_patch.stop)
+        source = ast.get_source_segment(APP_SOURCE, google_login) or ""
+        self.assertIn('purpose', source)
+        self.assertIn('"gmail"', source)
+        self.assertIn("GOOGLE_GMAIL_READONLY_SCOPE", source)
+        self.assertIn("calendário próprio", source)
+        self.assertNotIn("calendar.readonly", source)
 
-    def test_calendar_oauth_purpose_is_rejected(self):
-        response = self.client.get(
-            "/google/login?account=SG&purpose=calendar_readonly"
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("calendário próprio", response.get_json()["mensagem"])
-
-    def test_external_google_calendar_route_is_not_registered(self):
-        response = self.client.get("/google-calendar/check")
-        self.assertEqual(response.status_code, 404)
-
-    def test_gmail_oauth_purpose_remains_available(self):
-        with patch.object(application, "GOOGLE_REDIRECT_URI", "https://example.test/callback"):
-            response = self.client.get("/google/login?account=SG&purpose=gmail")
-        self.assertEqual(response.status_code, 302)
-        self.assertIn("gmail.readonly", response.headers["Location"])
-        self.assertNotIn("calendar.readonly", response.headers["Location"])
+    def test_gmail_triage_workflow_remains_and_calendar_job_is_removed(self):
+        self.assertIn("gmail-readonly-triage:", WORKFLOW_SOURCE)
+        self.assertNotIn("calendar-readonly-check:", WORKFLOW_SOURCE)
+        self.assertNotIn("/google-calendar/check", WORKFLOW_SOURCE)
 
 
 if __name__ == "__main__":
