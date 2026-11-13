@@ -2878,8 +2878,7 @@ def scheduler_reconciliation():
                         scheduled_for,
                         attempts,
                         linkedin_post_id,
-                        reconciliation_required_at,
-                        error_message
+                        reconciliation_required_at
                     FROM linkedin_publish_queue
                     WHERE status = 'incerto'
                     ORDER BY reconciliation_required_at ASC NULLS FIRST,
@@ -2899,7 +2898,6 @@ def scheduler_reconciliation():
                 "attempts": row[4],
                 "linkedin_post_id": row[5],
                 "reconciliation_required_at": row[6].isoformat() if row[6] else None,
-                "error_message": row[7],
             }
             for row in rows
         ]
