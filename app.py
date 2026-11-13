@@ -2,9 +2,14 @@ import os
 import json
 import secrets
 import hashlib
+import ipaddress
 import urllib.parse
 import urllib.request
 import urllib.error
+import uuid
+import hmac
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from datetime import datetime, timezone, timedelta
 
@@ -13,7 +18,16 @@ import psycopg
 from cryptography.fernet import Fernet
 
 import identity_core
+import identity_auth_core
+import authorization_core
+import identity_lookup
+import otp_core
+import email_delivery
+import otp_email_outbox
+import otp_email_outbox_worker
 import account_deletion_core
+import global_admin_core
+from gmail_workflow import build_triage_item, merge_triage_summaries, summarize_triage_items
 
 
 app = Flask(__name__)
@@ -51,8 +65,17 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 
 TOKEN_ENCRYPTION_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY")
+IDENTITY_ENCRYPTION_KEY = os.environ.get("IDENTITY_ENCRYPTION_KEY")
 
 PUBLISH_SECRET = os.environ.get("PUBLISH_SECRET")
+GMAIL_MONITOR_SECRET = os.environ.get("GMAIL_MONITOR_SECRET")
+GMAIL_MONITORED_ACCOUNTS = ("SG", "Drive1")
+GOOGLE_GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+GOOGLE_DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+GOOGLE_GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
+GMAIL_MONITOR_LOCK_KEY = 83746293
+
+AUTH_ROUTES_ENABLED = os.environ.get("AUTH_ROUTES_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 LINKEDIN_ACCOUNT_NAME = "LinkedIn Principal"
 
@@ -231,6 +254,19 @@ def encrypt_value(value):
     return fernet.encrypt(value.encode()).decode()
 
 
+def get_identity_fernet():
+    key = os.environ.get("IDENTITY_ENCRYPTION_KEY") or IDENTITY_ENCRYPTION_KEY
+    if not key:
+        raise RuntimeError("IDENTITY_ENCRYPTION_KEY nao configurado.")
+    return Fernet(key.encode("ascii"))
+
+
+def encrypt_identity_value(value):
+    if value is None:
+        return None
+    return get_identity_fernet().encrypt(value.encode("utf-8")).decode("ascii")
+
+
 def decrypt_value(value):
     if value is None:
         return None
@@ -363,6 +399,8 @@ def ensure_scheduler_tables():
 
                     locked_at TIMESTAMPTZ,
 
+                    reconciliation_required_at TIMESTAMPTZ,
+
                     published_at TIMESTAMPTZ,
 
                     linkedin_post_id TEXT,
@@ -410,13 +448,14 @@ def ensure_scheduler_tables():
             cur.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS
-                    uq_linkedin_publish_queue_active_post_number
+                    uq_linkedin_publish_queue_reserved_post_number
                 ON linkedin_publish_queue(post_number)
                 WHERE post_number IS NOT NULL
                   AND status IN (
                       'agendado',
                       'processando',
-                      'publicado'
+                      'publicado',
+                      'incerto'
                   );
                 """
             )
@@ -482,6 +521,26 @@ def normalize_google_account_name(account_name):
             "a conta Drive5."
         )
     return "Drive5"
+
+
+def normalize_google_oauth_account_name(account_name):
+    """Allow only the two approved Gmail accounts plus the internal Drive5 account."""
+    if account_name is None or not str(account_name).strip():
+        return "Drive5"
+    normalized = str(account_name).strip()
+    allowed = {"SG", "Drive1", "Drive5"}
+    if normalized not in allowed:
+        raise ValueError("Conta Google não autorizada para este fluxo.")
+    return normalized
+
+
+def normalize_gmail_account_name(account_name):
+    """Restrict Gmail access to the explicitly approved SG and Drive1 mailboxes."""
+    normalized = str(account_name or "").strip().casefold()
+    allowed = {name.casefold(): name for name in GMAIL_MONITORED_ACCOUNTS}
+    if normalized not in allowed:
+        raise ValueError("Conta Gmail fora da lista autorizada.")
+    return allowed[normalized]
 
 
 def google_tokens_from_database(account_name="Drive5"):
@@ -1108,6 +1167,46 @@ def parse_scheduled_for(value):
     return parsed.astimezone(timezone.utc)
 
 
+def scheduler_recover_expired_processing(lease_minutes=15):
+    """Move abandoned processing rows to an explicit, non-retryable state.
+
+    A worker crash can happen after the provider accepted a post but before
+    the local transaction records its ID. Therefore expiry is always treated
+    as uncertain and never as permission to publish again.
+    """
+    if isinstance(lease_minutes, bool) or not isinstance(lease_minutes, int) or lease_minutes <= 0:
+        raise ValueError("lease_minutes deve ser um inteiro positivo.")
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE linkedin_publish_queue
+                SET
+                    status = 'incerto',
+                    reconciliation_required_at = COALESCE(
+                        reconciliation_required_at, NOW()
+                    ),
+                    error_message = CASE
+                        WHEN linkedin_post_id IS NOT NULL
+                            THEN 'RECONCILIACAO NECESSARIA: existe identificador do LinkedIn; confirme o resultado externo antes de qualquer nova tentativa.'
+                        ELSE 'RESULTADO INCERTO: o lease expirou durante o processamento. Verifique o LinkedIn antes de qualquer nova tentativa.'
+                    END,
+                    locked_at = NULL,
+                    updated_at = NOW()
+                WHERE status = 'processando'
+                  AND locked_at IS NOT NULL
+                  AND locked_at <= NOW() - (%s * INTERVAL '1 minute')
+                RETURNING id;
+                """,
+                (lease_minutes,),
+            )
+            recovered_ids = [row[0] for row in cur.fetchall()]
+        conn.commit()
+
+    return len(recovered_ids)
+
+
 def scheduler_publish_one():
     """
     Localiza e processa no maximo uma publicacao vencida.
@@ -1135,6 +1234,8 @@ def scheduler_publish_one():
                 "mensagem": "Outra execucao do scheduler ja esta em andamento.",
             }
 
+        recovered_count = scheduler_recover_expired_processing()
+
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -1160,6 +1261,7 @@ def scheduler_publish_one():
                     return {
                         "status": "idle",
                         "mensagem": "Nenhuma publicacao vencida na fila.",
+                        "recuperadas_para_reconciliacao": recovered_count,
                     }
 
                 (
@@ -1233,6 +1335,7 @@ def scheduler_publish_one():
                 "post_number": post_number,
                 "linkedin_post_id": post_id,
                 "editorial_post_id": editorial_post_id,
+                "recuperadas_para_reconciliacao": recovered_count,
             }
 
         except Exception as error:
@@ -1256,12 +1359,12 @@ def scheduler_publish_one():
                 )
             else:
                 safe_message = (
-                    "A publicacao falhou e nao sera repetida automaticamente. "
-                    "Consulte os logs para identificar a causa."
+                    "Nao foi possivel confirmar o resultado da publicacao. "
+                    "Verifique o LinkedIn antes de qualquer nova tentativa."
                 )
                 stored_error = (
-                    "Falha antes da confirmacao da publicacao no LinkedIn. "
-                    "Consulte os logs do servidor para detalhes."
+                    "RESULTADO INCERTO: a chamada ao LinkedIn terminou sem confirmacao. "
+                    "Verifique a publicacao externamente antes de qualquer nova tentativa."
                 )
             try:
                 with get_db_connection() as conn:
@@ -1270,13 +1373,15 @@ def scheduler_publish_one():
                             """
                             UPDATE linkedin_publish_queue
                             SET
-                                status = 'erro',
+                                status = 'incerto',
                                 error_message = %s,
+                                linkedin_post_id = COALESCE(%s, linkedin_post_id),
+                                reconciliation_required_at = NOW(),
                                 updated_at = NOW(),
                                 locked_at = NULL
                             WHERE id = %s;
                             """,
-                            (stored_error, queue_id),
+                            (stored_error, locals().get("post_id"), queue_id),
                         )
                     conn.commit()
             except Exception:
@@ -1285,11 +1390,12 @@ def scheduler_publish_one():
                 )
 
             return {
-                "status": "erro",
+                "status": "incerto",
                 "mensagem": safe_message,
                 "queue_id": queue_id,
                 "post_number": post_number,
-                "reconciliacao_manual": bool(locals().get("post_id")),
+                "reconciliacao_manual": True,
+                "recuperadas_para_reconciliacao": recovered_count,
             }
 
     finally:
@@ -1353,10 +1459,362 @@ def readiness():
             "linkedin_oauth_configured": bool(LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET),
             "google_oauth_configured": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
             "automatic_linkedin_analytics": LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED,
+            "gmail_monitor_configured": bool(GMAIL_MONITOR_SECRET),
+            "gmail_accounts_allowlisted": list(GMAIL_MONITORED_ACCOUNTS),
         },
         "secrets_exposed": False,
         "database_checked": False,
     }), (200 if not missing else 503)
+
+
+
+def auth_routes_ready(require_email_delivery=True):
+    """Fail closed until the feature flag, independent keys and proxy allowlist are ready."""
+    if not AUTH_ROUTES_ENABLED:
+        return False
+    try:
+        pepper_names = (
+            "IDENTITY_LOOKUP_PEPPER",
+            "OTP_PEPPER",
+            "OTP_RATE_LIMIT_PEPPER",
+        )
+        peppers = [identity_auth_core.required_pepper(name, os.environ) for name in pepper_names]
+        if len(set(peppers)) != len(peppers):
+            return False
+        identity_key_value = os.environ.get("IDENTITY_ENCRYPTION_KEY") or IDENTITY_ENCRYPTION_KEY
+        identity_key = identity_key_value.encode("ascii") if identity_key_value else b""
+        if not identity_key or identity_key in peppers:
+            return False
+        Fernet(identity_key)
+        token_key_value = os.environ.get("TOKEN_ENCRYPTION_KEY") or TOKEN_ENCRYPTION_KEY
+        token_key = token_key_value.encode("ascii") if token_key_value else b""
+        if not token_key or identity_key == token_key or token_key in peppers:
+            return False
+        otp_email_outbox.validate_key_configuration()
+        if not os.environ.get("TERMS_POLICY_VERSION", "").strip():
+            return False
+        if not os.environ.get("PRIVACY_NOTICE_VERSION", "").strip():
+            return False
+        # SMTP configuration belongs to the isolated worker, not the HTTP API.
+        # The API only needs the independent outbox encryption key validated above.
+        hops = int(os.environ.get("TRUSTED_PROXY_HOPS", ""))
+        networks = identity_auth_core.trusted_proxy_networks(os.environ)
+        return 1 <= hops <= 5 and bool(networks)
+    except (KeyError, TypeError, ValueError, RuntimeError, email_delivery.EmailDeliveryError):
+        return False
+
+
+def trusted_auth_client_ip():
+    """Resolve the client IP only through an explicitly allowlisted proxy chain."""
+    try:
+        hops = int(os.environ.get("TRUSTED_PROXY_HOPS", ""))
+        if not 1 <= hops <= 5:
+            return None
+        networks = identity_auth_core.trusted_proxy_networks(os.environ)
+        peer = ipaddress.ip_address(request.remote_addr or "")
+        if not any(peer.version == network.version and peer in network for network in networks):
+            return None
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        values = [item.strip() for item in forwarded.split(",") if item.strip()]
+        if len(values) < hops:
+            return None
+        for proxy_value in values[-(hops - 1):] if hops > 1 else []:
+            proxy_ip = ipaddress.ip_address(proxy_value)
+            if not any(
+                proxy_ip.version == network.version and proxy_ip in network
+                for network in networks
+            ):
+                return None
+        candidate = ipaddress.ip_address(values[-hops])
+        if isinstance(candidate, ipaddress.IPv6Address) and candidate.ipv4_mapped:
+            candidate = candidate.ipv4_mapped
+        return candidate.compressed
+    except (ValueError, TypeError):
+        return None
+
+
+def _auth_pepper(name):
+    return identity_auth_core.required_pepper(name, os.environ)
+
+
+def _auth_accepted_response(challenge_id):
+    response = jsonify({
+        "status": "accepted",
+        "challenge_id": str(challenge_id),
+        "mensagem": "Se o endereço puder receber um código para esta operação, enviaremos uma mensagem.",
+    })
+    response.status_code = 202
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+def _optional_device_context(data):
+    device_id = data.get("device_id")
+    if device_id is None:
+        return None
+    if not isinstance(device_id, str) or len(device_id) > 64:
+        raise ValueError("Identificador do dispositivo inválido.")
+    try:
+        return str(uuid.UUID(device_id))
+    except (ValueError, AttributeError):
+        raise ValueError("Identificador do dispositivo inválido.") from None
+
+
+def request_auth_otp(purpose):
+    """Start signup/login OTP with generic response and layered abuse limits."""
+    if not auth_routes_ready(require_email_delivery=True):
+        return safe_error_response("Autenticação temporariamente indisponível.", 503)
+    if not request.is_json:
+        return jsonify({"status": "erro", "mensagem": "Envie os dados em JSON."}), 400
+    data = request.get_json(silent=True)
+    email = data.get("email") if isinstance(data, dict) else None
+    if not isinstance(email, str) or len(email) > 254:
+        return jsonify({"status": "erro", "mensagem": "Endereço de e-mail inválido."}), 400
+    if purpose == "signup" and (
+        data.get("terms_accepted") is not True
+        or data.get("privacy_notice_acknowledged") is not True
+    ):
+        return jsonify({
+            "status": "erro",
+            "mensagem": "É necessário aceitar os termos e confirmar a leitura do aviso de privacidade.",
+        }), 400
+
+    client_ip = trusted_auth_client_ip()
+    if not client_ip:
+        return safe_error_response("Não foi possível validar a origem da solicitação.", 503)
+
+    try:
+        device_id = _optional_device_context(data)
+        normalized_email = identity_lookup.normalize_identity("email", email)
+        identity_pepper = _auth_pepper("IDENTITY_LOOKUP_PEPPER")
+        otp_pepper = _auth_pepper("OTP_PEPPER")
+        rate_pepper = _auth_pepper("OTP_RATE_LIMIT_PEPPER")
+        identity_hash = identity_lookup.hash_identity_lookup(
+            "email", normalized_email, identity_pepper
+        )
+    except ValueError:
+        return jsonify({"status": "erro", "mensagem": "Endereço de e-mail ou dispositivo inválido."}), 400
+
+    response_challenge_id = str(uuid.uuid4())
+    challenge = None
+    try:
+        with get_db_connection() as conn:
+            allowed = identity_auth_core.reserve_request_limits(
+                conn, normalized_email, client_ip, device_id, purpose, rate_pepper
+            )
+            if allowed:
+                identity = identity_auth_core.find_email_identity(conn, identity_hash)
+                if purpose == "signup":
+                    if not identity:
+                        ciphertext = encrypt_identity_value(normalized_email).encode("utf-8")
+                        identity = identity_auth_core.ensure_pending_email_identity(
+                            conn, identity_hash, ciphertext
+                        )
+                    eligible = bool(
+                        identity
+                        and identity["user_status"] == "pending"
+                        and identity["verified_at"] is None
+                    )
+                else:
+                    eligible = bool(
+                        identity
+                        and identity["user_status"] == "active"
+                        and identity["verified_at"] is not None
+                    )
+
+                if eligible:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """UPDATE otp_challenges
+                               SET consumed_at = NOW()
+                               WHERE identity_type = 'email'
+                                 AND identity_lookup_hash = %s
+                                 AND purpose = %s
+                                 AND consumed_at IS NULL
+                                 AND delivery_status IN ('pending', 'sent')""",
+                            (identity_hash, purpose),
+                        )
+                    challenge = otp_core.create_otp_challenge(
+                        conn,
+                        "email",
+                        identity_hash,
+                        purpose,
+                        otp_pepper,
+                        ttl_seconds=600,
+                        max_attempts=5,
+                        user_id=identity["user_id"],
+                        terms_policy_version=(
+                            os.environ["TERMS_POLICY_VERSION"].strip()
+                            if purpose == "signup" else None
+                        ),
+                        privacy_notice_version=(
+                            os.environ["PRIVACY_NOTICE_VERSION"].strip()
+                            if purpose == "signup" else None
+                        ),
+                    )
+                    response_challenge_id = challenge["challenge_id"]
+                    # The challenge and encrypted delivery intent commit atomically.
+                    otp_email_outbox.enqueue(
+                        conn, challenge["challenge_id"], normalized_email,
+                        challenge["code"], purpose, expires_minutes=10,
+                    )
+            conn.commit()
+    except Exception:
+        app.logger.exception("Falha interna ao preparar desafio de autenticação")
+        return safe_error_response("Não foi possível iniciar a autenticação.")
+
+    # Delivery is asynchronous. The outbox row was committed with the challenge.
+    return _auth_accepted_response(response_challenge_id)
+
+
+def verify_auth_otp(purpose):
+    """Consume one challenge and activate/login the user transactionally."""
+    if not auth_routes_ready(require_email_delivery=False):
+        return safe_error_response("Autenticação temporariamente indisponível.", 503)
+    if not request.is_json:
+        return jsonify({"status": "erro", "mensagem": "Envie os dados em JSON."}), 400
+    data = request.get_json(silent=True)
+    challenge_id = data.get("challenge_id") if isinstance(data, dict) else None
+    code = data.get("code") if isinstance(data, dict) else None
+    try:
+        challenge_id = str(uuid.UUID(str(challenge_id)))
+    except (ValueError, TypeError, AttributeError):
+        return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+    if not isinstance(code, str) or len(code) != 8 or not code.isascii() or not code.isdigit():
+        return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+
+    client_ip = trusted_auth_client_ip()
+    if not client_ip:
+        return safe_error_response("Não foi possível validar a origem da solicitação.", 503)
+    try:
+        device_id = _optional_device_context(data)
+        otp_pepper = _auth_pepper("OTP_PEPPER")
+        rate_pepper = _auth_pepper("OTP_RATE_LIMIT_PEPPER")
+    except ValueError:
+        return jsonify({"status": "erro", "mensagem": "Dados de autenticação inválidos."}), 400
+
+    device_label = data.get("device_label")
+    if device_label is not None:
+        if not isinstance(device_label, str) or len(device_label) > 120:
+            return jsonify({"status": "erro", "mensagem": "Dispositivo inválido."}), 400
+        device_label = device_label.strip() or None
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT user_id, identity_type, identity_lookup_hash,
+                              terms_policy_version, privacy_notice_version
+                       FROM otp_challenges
+                       WHERE id = %s AND purpose = %s
+                       FOR UPDATE""",
+                    (challenge_id, purpose),
+                )
+                challenge_row = cur.fetchone()
+            if not challenge_row:
+                return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+
+            user_id, identity_type, identity_hash, terms_version, privacy_version = challenge_row
+            allowed = identity_auth_core.reserve_verification_limits(
+                conn, bytes(identity_hash).hex(), client_ip, device_id,
+                purpose, rate_pepper,
+            )
+            if not allowed:
+                return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+
+            if not otp_core.verify_otp_challenge(
+                conn, challenge_id, purpose, code, otp_pepper
+            ):
+                return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT u.id, u.status, ui.verified_at
+                       FROM user_identities AS ui
+                       JOIN app_users AS u ON u.id = ui.user_id
+                       WHERE ui.user_id = %s
+                         AND ui.identity_type = %s
+                         AND ui.identity_lookup_hash = %s
+                       FOR UPDATE OF ui, u""",
+                    (user_id, identity_type, identity_hash),
+                )
+                identity_row = cur.fetchone()
+            if not identity_row:
+                return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+
+            if purpose == "signup":
+                if identity_row[1] != "pending" or identity_row[2] is not None:
+                    return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+                if not terms_version or not privacy_version:
+                    return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+                tenant_id = identity_auth_core.activate_verified_signup(
+                    conn, user_id, bytes(identity_hash), data.get("display_name")
+                )
+                if not tenant_id:
+                    return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+                authorization_core.record_consent_event(
+                    conn, user_id, "terms_of_service", terms_version,
+                    "granted", "signup", tenant_id=tenant_id,
+                )
+                authorization_core.record_audit_event(
+                    conn, "privacy_notice.acknowledged", "success",
+                    actor_user_id=user_id,
+                    metadata={"policy_version": privacy_version},
+                )
+                authorization_core.record_audit_event(
+                    conn, "identity.signup", "success", actor_user_id=user_id,
+                    tenant_id=tenant_id, resource_type="user",
+                    resource_id=str(user_id),
+                )
+            elif purpose == "login":
+                if identity_row[1] != "active" or identity_row[2] is None:
+                    return jsonify({"status": "erro", "mensagem": "Código inválido ou expirado."}), 400
+                authorization_core.record_audit_event(
+                    conn, "identity.login", "success", actor_user_id=user_id,
+                    resource_type="user", resource_id=str(user_id),
+                )
+            else:
+                return jsonify({"status": "erro", "mensagem": "Finalidade inválida."}), 400
+
+            token = identity_core.issue_session(
+                conn, user_id, ttl_seconds=604800, device_label=device_label
+            )
+            conn.commit()
+
+        response = jsonify({
+            "status": "ok",
+            "token_type": "Bearer",
+            "access_token": token,
+            "expires_in": 604800,
+            "usuario": {"id": str(user_id)},
+        })
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        return response
+    except Exception:
+        app.logger.exception("Falha interna ao verificar desafio de autenticação")
+        return safe_error_response("Não foi possível concluir a autenticação.")
+
+
+@app.post("/api/v1/auth/signup/request")
+def api_signup_request():
+    return request_auth_otp("signup")
+
+
+@app.post("/api/v1/auth/signup/verify")
+def api_signup_verify():
+    return verify_auth_otp("signup")
+
+
+@app.post("/api/v1/auth/login/request")
+def api_login_request():
+    return request_auth_otp("login")
+
+
+@app.post("/api/v1/auth/login/verify")
+def api_login_verify():
+    return verify_auth_otp("login")
 
 
 def bearer_session_token():
@@ -1417,6 +1875,67 @@ def api_current_user():
     except Exception:
         app.logger.exception("Falha ao consultar identidade autenticada")
         return safe_error_response("Não foi possível validar a sessão.")
+
+
+@app.get("/api/v1/admin/session")
+def api_global_admin_session():
+    """Expose a minimal admin capability check to an authenticated global admin."""
+    token = bearer_session_token()
+    if not token:
+        return jsonify({"status": "erro", "mensagem": "Autenticação necessária."}), 401
+
+    try:
+        with get_db_connection() as conn:
+            user_id = identity_core.validate_session(conn, token)
+            if not user_id:
+                return jsonify({"status": "erro", "mensagem": "Sessão inválida ou expirada."}), 401
+
+            if not identity_core.is_recent_session(conn, token, max_age_seconds=900):
+                authorization_core.record_audit_event(
+                    conn,
+                    action="global_admin.session.read",
+                    result="denied",
+                    actor_user_id=user_id,
+                    resource_type="admin_session",
+                    metadata={"scope": "global_admin", "reason": "reauthentication_required"},
+                )
+                return jsonify({
+                    "status": "erro",
+                    "mensagem": "Confirme novamente sua identidade para acessar a administração global.",
+                }), 401
+
+            try:
+                global_admin_core.require_global_admin(conn, user_id)
+            except PermissionError:
+                authorization_core.record_audit_event(
+                    conn,
+                    action="global_admin.session.read",
+                    result="denied",
+                    actor_user_id=user_id,
+                    resource_type="admin_session",
+                    metadata={"scope": "global_admin"},
+                )
+                return jsonify({"status": "erro", "mensagem": "Acesso administrativo não autorizado."}), 403
+
+            authorization_core.record_audit_event(
+                conn,
+                action="global_admin.session.read",
+                result="success",
+                actor_user_id=user_id,
+                resource_type="admin_session",
+                metadata={"scope": "global_admin"},
+            )
+
+        response = jsonify({
+            "status": "ok",
+            "usuario": {"id": str(user_id)},
+            "administrador_global": True,
+        })
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception:
+        app.logger.exception("Falha ao validar sessão administrativa global")
+        return safe_error_response("Não foi possível validar a sessão administrativa.")
 
 
 @app.post("/api/v1/session/rotate")
@@ -1491,6 +2010,15 @@ def api_request_account_deletion():
         return jsonify({
             "status": "erro",
             "mensagem": "Já existe uma solicitação de exclusão em andamento.",
+        }), 409
+    except account_deletion_core.GlobalAdministratorMustBeRevoked:
+        return jsonify({
+            "status": "erro",
+            "mensagem": (
+                "A conta possui um privilégio de administrador global. "
+                "Um administrador autorizado deve revogar esse privilégio antes "
+                "de iniciar a exclusão da conta."
+            ),
         }), 409
     except account_deletion_core.AccountNotEligibleForDeletion:
         return jsonify({
@@ -1927,8 +2455,11 @@ def linkedin_callback():
     )
 
 
-@app.get("/google/login")
+@app.post("/google/login")
 def google_login():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
     session_error = require_session_secret()
     if session_error:
         return session_error
@@ -1940,8 +2471,9 @@ def google_login():
             }
         ), 500
 
+    payload = request.get_json(silent=True) or {}
     try:
-        account_name = normalize_google_account_name(request.args.get("account", "Drive5"))
+        account_name = normalize_google_oauth_account_name(payload.get("account", "Drive5"))
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
 
@@ -1958,7 +2490,11 @@ def google_login():
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "response_type": "code",
-        "scope": "https://www.googleapis.com/auth/drive.readonly",
+        "scope": (
+            GOOGLE_GMAIL_READONLY_SCOPE
+            if account_name in GMAIL_MONITORED_ACCOUNTS
+            else GOOGLE_DRIVE_READONLY_SCOPE
+        ),
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -2006,7 +2542,7 @@ def google_callback():
         }), 400
 
     try:
-        account_name = normalize_google_account_name(
+        account_name = normalize_google_oauth_account_name(
             oauth_context.get("account_name") or "Drive5"
         )
     except ValueError as error:
@@ -2049,9 +2585,27 @@ def google_callback():
             "mensagem": "Falha ao obter token do Google.",
         }), 502
 
+    expected_scope = (
+        GOOGLE_GMAIL_READONLY_SCOPE
+        if account_name in GMAIL_MONITORED_ACCOUNTS
+        else GOOGLE_DRIVE_READONLY_SCOPE
+    )
+    granted_scopes = token_data.get("scope")
+    if not isinstance(granted_scopes, str) or expected_scope not in granted_scopes.split():
+        return jsonify({
+            "status": "erro",
+            "mensagem": "O Google não concedeu o escopo somente leitura solicitado.",
+        }), 403
+
     access_token = token_data.get("access_token")
     refresh_token = token_data.get("refresh_token")
     expires_in = token_data.get("expires_in")
+
+    if account_name in GMAIL_MONITORED_ACCOUNTS and not refresh_token:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "O Google não retornou refresh token; reautorize com consentimento explícito.",
+        }), 400
 
     if not access_token:
         return jsonify(
@@ -2124,6 +2678,196 @@ def google_callback():
             "expira_em": "armazenado no banco",
         }
     )
+
+
+def gmail_access_token(account_name):
+    """Return a Gmail-readonly access token for one of the two approved mailboxes."""
+    account_name = normalize_gmail_account_name(account_name)
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise RuntimeError("Google OAuth não está configurado.")
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT access_token, refresh_token, token_expires_at
+                   FROM google_accounts
+                   WHERE account_name = %s AND provider = 'google'
+                   LIMIT 1""",
+                (account_name,),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise RuntimeError(f"Conta Gmail {account_name} ainda não foi autorizada.")
+    access_token = decrypt_value(row[0]) if row[0] else None
+    refresh_token = decrypt_value(row[1]) if row[1] else None
+    expires_at = row[2]
+    if not refresh_token:
+        raise RuntimeError(f"Refresh token Gmail de {account_name} não encontrado.")
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    if not access_token or expires_at is None or expires_at <= now + timedelta(minutes=5):
+        payload = urllib.parse.urlencode({
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            GOOGLE_TOKEN_URL,
+            data=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                token_data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f"Renovação Gmail recusada (HTTP {error.code}).") from None
+        except (urllib.error.URLError, TimeoutError):
+            raise RuntimeError("Não foi possível renovar a autorização Gmail.") from None
+        renewed_token = token_data.get("access_token")
+        expires_in = token_data.get("expires_in")
+        if not isinstance(renewed_token, str) or not renewed_token:
+            raise RuntimeError("Google não retornou access token Gmail renovado.")
+        if isinstance(expires_in, bool) or not isinstance(expires_in, int) or expires_in <= 0:
+            raise RuntimeError("Expiração do token Gmail inválida.")
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE google_accounts
+                       SET access_token = %s,
+                           token_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                           updated_at = NOW()
+                       WHERE account_name = %s AND provider = 'google'""",
+                    (encrypt_value(renewed_token), expires_in, account_name),
+                )
+                if cur.rowcount != 1:
+                    raise RuntimeError("Conta Gmail deixou de existir durante a renovação.")
+            conn.commit()
+        access_token = renewed_token
+    return access_token
+
+
+def gmail_api_request(account_name, url):
+    """Perform GET-only Gmail API requests; never expose provider response bodies."""
+    token = gmail_access_token(account_name)
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"Gmail {normalize_gmail_account_name(account_name)} respondeu HTTP {error.code}.") from None
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        raise RuntimeError("Falha de comunicação com a API Gmail.") from None
+
+
+def _gmail_triage_one_account(account_name, query, max_results):
+    account_name = normalize_gmail_account_name(account_name)
+    params = urllib.parse.urlencode({"q": query, "maxResults": max_results})
+    data = gmail_api_request(
+        account_name,
+        f"{GOOGLE_GMAIL_API_BASE}/messages?{params}",
+    )
+    items = []
+    for item in data.get("messages", [])[:max_results]:
+        message_id = item.get("id")
+        if not isinstance(message_id, str) or not message_id:
+            continue
+        encoded_id = urllib.parse.quote(message_id, safe="")
+        detail = gmail_api_request(
+            account_name,
+            f"{GOOGLE_GMAIL_API_BASE}/messages/{encoded_id}?format=full",
+        )
+        items.append(build_triage_item(detail, account_name))
+    return {
+        "status": "ok",
+        "count": len(items),
+        "summary": summarize_triage_items(items),
+        "messages": items,
+    }
+
+
+@app.post("/internal/gmail/triage/run")
+def internal_gmail_triage_run():
+    """Read and classify only SG/Drive1; response is always aggregate-only."""
+    if not GMAIL_MONITOR_SECRET:
+        return jsonify({"status": "erro", "mensagem": "Monitor Gmail não configurado."}), 503
+    supplied = request.headers.get("X-Gmail-Monitor-Secret", "")
+    if not supplied or not hmac.compare_digest(supplied, GMAIL_MONITOR_SECRET):
+        return jsonify({"status": "erro", "mensagem": "Não autorizado."}), 401
+
+    lock_conn = None
+    lock_acquired = False
+    try:
+        lock_conn = get_db_connection()
+        with lock_conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s);", (GMAIL_MONITOR_LOCK_KEY,))
+            row = cur.fetchone()
+            lock_acquired = bool(row and row[0])
+        if not lock_acquired:
+            return jsonify({"status": "busy", "mensagem": "Já existe uma triagem Gmail em execução."}), 409
+
+        query = "newer_than:7d -in:sent"
+        max_results = 2
+        report = {
+            "status": "ok",
+            "mode": "somente_leitura_com_triagem",
+            "accounts": {},
+        }
+        with ThreadPoolExecutor(max_workers=len(GMAIL_MONITORED_ACCOUNTS)) as executor:
+            futures = {
+                executor.submit(_gmail_triage_one_account, account, query, max_results): account
+                for account in GMAIL_MONITORED_ACCOUNTS
+            }
+            for future in as_completed(futures):
+                account = futures[future]
+                try:
+                    report["accounts"][account] = future.result()
+                except Exception:
+                    app.logger.warning("Falha na triagem Gmail da conta %s.", account)
+                    report["accounts"][account] = {
+                        "status": "erro",
+                        "count": 0,
+                        "summary": {"total": 0, "categories": {}, "priorities": {}, "unclassified_signals": {}},
+                        "message": f"Não foi possível consultar {account}; verifique a autorização Gmail.",
+                    }
+                    report["status"] = "parcial"
+
+        report["accounts"] = {
+            name: report["accounts"][name] for name in GMAIL_MONITORED_ACCOUNTS
+        }
+        # The caller cannot opt out: individual messages and identifiers never leave this function.
+        for account_result in report["accounts"].values():
+            account_result.pop("messages", None)
+        report["summary"] = merge_triage_summaries(
+            result.get("summary", {}) for result in report["accounts"].values()
+        )
+        app.logger.info(
+            "Triagem Gmail concluída: status=%s; contas=%s; total=%s; categorias=%s",
+            report["status"],
+            ",".join(GMAIL_MONITORED_ACCOUNTS),
+            report["summary"]["total"],
+            json.dumps(report["summary"]["categories"], sort_keys=True),
+        )
+        response = jsonify(report)
+        response.headers["Cache-Control"] = "no-store"
+        return response, (200 if report["status"] == "ok" else 207)
+    except Exception:
+        app.logger.exception("Falha na triagem Gmail.")
+        return safe_error_response("Falha na triagem Gmail. Consulte os logs do serviço.", 502)
+    finally:
+        if lock_conn is not None:
+            if lock_acquired:
+                try:
+                    with lock_conn.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_unlock(%s);", (GMAIL_MONITOR_LOCK_KEY,))
+                except Exception:
+                    app.logger.exception("Falha ao liberar bloqueio da triagem Gmail.")
+            lock_conn.close()
 
 
 @app.post("/linkedin/publish")
@@ -2433,6 +3177,107 @@ def scheduler_queue():
         return safe_error_response("Falha ao adicionar a publicacao na fila. Consulte os logs do servidor.")
 
 
+@app.post("/scheduler/recover")
+def scheduler_recover():
+    """Watchdog endpoint for abandoned publication leases.
+
+    Uses the same session-level advisory lock as the dispatcher so it cannot
+    classify a still-running provider call as abandoned.
+    """
+    auth_error = require_publish_secret()
+
+    if auth_error:
+        return auth_error
+
+    lock_conn = None
+    lock_acquired = False
+    try:
+        ensure_scheduler_tables()
+        lock_conn = get_db_connection()
+        with lock_conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s);", (SCHEDULER_LOCK_KEY,))
+            lock_row = cur.fetchone()
+            lock_acquired = bool(lock_row and lock_row[0])
+
+        if not lock_acquired:
+            return jsonify({
+                "status": "busy",
+                "mensagem": "O dispatcher esta em execucao; tente novamente depois.",
+            }), 409
+
+        recovered_count = scheduler_recover_expired_processing()
+        return jsonify({
+            "status": "ok",
+            "recuperadas_para_reconciliacao": recovered_count,
+            "mensagem": "Watchdog concluido; resultados incertos exigem reconciliacao antes de retry.",
+        }), 200
+
+    except Exception:
+        app.logger.exception("Falha na recuperacao de leases do scheduler")
+        return safe_error_response("Falha na recuperacao da fila. Consulte os logs do servidor.")
+
+    finally:
+        if lock_conn is not None:
+            if lock_acquired:
+                try:
+                    with lock_conn.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_unlock(%s);", (SCHEDULER_LOCK_KEY,))
+                except Exception:
+                    app.logger.exception("Falha ao liberar bloqueio do watchdog")
+            lock_conn.close()
+
+
+@app.get("/scheduler/reconciliation")
+def scheduler_reconciliation():
+    """List uncertain queue items for controlled external reconciliation."""
+    auth_error = require_publish_secret()
+
+    if auth_error:
+        return auth_error
+
+    try:
+        ensure_scheduler_tables()
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        id,
+                        post_number,
+                        title,
+                        scheduled_for,
+                        attempts,
+                        linkedin_post_id,
+                        reconciliation_required_at
+                    FROM linkedin_publish_queue
+                    WHERE status = 'incerto'
+                    ORDER BY reconciliation_required_at ASC NULLS FIRST,
+                             scheduled_for ASC,
+                             id ASC
+                    LIMIT 100;
+                    """
+                )
+                rows = cur.fetchall()
+
+        items = [
+            {
+                "queue_id": row[0],
+                "post_number": row[1],
+                "title": row[2],
+                "scheduled_for": row[3].isoformat() if row[3] else None,
+                "attempts": row[4],
+                "linkedin_post_id": row[5],
+                "reconciliation_required_at": row[6].isoformat() if row[6] else None,
+            }
+            for row in rows
+        ]
+        return jsonify({"status": "ok", "itens": items, "limite": 100}), 200
+
+    except Exception:
+        app.logger.exception("Falha ao consultar publicacoes incertas")
+        return safe_error_response("Falha ao consultar itens para reconciliacao. Consulte os logs do servidor.")
+
+
 @app.get("/scheduler/status")
 def scheduler_status():
     """
@@ -2520,6 +3365,89 @@ def scheduler_status():
         return safe_error_response("Falha ao consultar a fila. Consulte os logs do servidor.")
 
 
+def cleanup_expired_pending_signups():
+    """Purge unverified pending accounts after the configured retention window."""
+    try:
+        ttl_hours = int(os.environ.get("PENDING_SIGNUP_TTL_HOURS", "24"))
+        if not 1 <= ttl_hours <= 168:
+            raise ValueError("Prazo de retenção de cadastro pendente inválido.")
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('app_users')")
+                if not cur.fetchone()[0]:
+                    return 0
+                cur.execute(
+                    """DELETE FROM app_users
+                       WHERE status = 'pending'
+                         AND created_at <= NOW() - (%s * INTERVAL '1 hour')
+                       RETURNING id""",
+                    (ttl_hours,),
+                )
+                deleted = cur.fetchall()
+        return len(deleted)
+    except Exception:
+        app.logger.error("Falha ao limpar cadastros pendentes expirados.")
+        return 0
+
+
+def scheduler_run_cycle():
+    """Run independent remote queues without allowing one queue to starve another.
+
+    OTP is processed first because its challenges have a short expiry. One job
+    per invocation keeps the SMTP operation within a single recoverable lease.
+    Editorial publishing retains its existing advisory lock and one-post limit.
+    """
+    try:
+        otp_stats = otp_email_outbox_worker.run_once(
+            get_db_connection, batch_size=1
+        )
+        if otp_stats.get("uncertain", 0):
+            otp_result = {"status": "uncertain", **otp_stats}
+            app.logger.warning(
+                "Entrega OTP com resultado incerto; reenvio automático bloqueado: %s",
+                otp_stats["uncertain"],
+            )
+        elif otp_stats.get("failed", 0):
+            otp_result = {"status": "failed", **otp_stats}
+            app.logger.error("Falhas terminais na outbox OTP: %s", otp_stats["failed"])
+        elif otp_stats.get("retrying", 0):
+            otp_result = {"status": "retrying", **otp_stats}
+            app.logger.warning("Entregas OTP serão reprocessadas: %s", otp_stats["retrying"])
+        else:
+            otp_result = {"status": "completed", **otp_stats}
+    except Exception:
+        app.logger.exception("Falha no processamento da outbox OTP")
+        otp_result = {"status": "error"}
+
+    try:
+        purged_pending_signups = cleanup_expired_pending_signups()
+        cleanup_result = {
+            "status": "completed",
+            "removed": purged_pending_signups,
+        }
+        if purged_pending_signups:
+            app.logger.info(
+                "Cadastros pendentes expirados removidos: %s",
+                purged_pending_signups,
+            )
+    except Exception:
+        app.logger.exception("Falha na limpeza de cadastros pendentes expirados")
+        cleanup_result = {"status": "error"}
+
+    try:
+        result = scheduler_publish_one()
+    except Exception:
+        app.logger.exception("Falha no processamento da fila editorial")
+        result = {
+            "status": "error",
+            "mensagem": "Falha na execução da fila editorial.",
+        }
+
+    result["otp_delivery"] = otp_result
+    result["pending_signup_cleanup"] = cleanup_result
+    return result
+
+
 @app.post("/scheduler/run")
 def scheduler_run():
     """
@@ -2534,7 +3462,7 @@ def scheduler_run():
         return auth_error
 
     try:
-        result = scheduler_publish_one()
+        result = scheduler_run_cycle()
 
         if result["status"] == "publicado":
             return jsonify(result), 200
@@ -2544,6 +3472,9 @@ def scheduler_run():
 
         if result["status"] == "busy":
             return jsonify(result), 409
+
+        if result["status"] == "incerto":
+            return jsonify(result), 202
 
         return jsonify(result), 500
 

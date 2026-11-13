@@ -1,17 +1,18 @@
 """Provider-agnostic, single-use OTP challenge primitives.
 
-Delivery adapters must send the returned code and then mark delivery as sent.
-Never expose the raw code through a public API or write it to logs.
-The caller owns and commits the database transaction.
+All OTP lifecycle and resend-limit behavior lives in this module. Delivery
+adapters receive the raw code once; only keyed digests are stored. The caller
+owns and commits/rolls back the database transaction.
 """
 import hashlib
 import hmac
+import ipaddress
 import re
 import secrets
 import uuid
 
 
-OTP_CODE_DIGITS = 6
+OTP_CODE_DIGITS = 8
 MIN_TTL_SECONDS = 60
 MAX_TTL_SECONDS = 900
 MIN_PEPPER_BYTES = 32
@@ -27,13 +28,19 @@ def _validate_pepper(pepper):
 
 def _validate_identity_hash(identity_lookup_hash):
     if not isinstance(identity_lookup_hash, bytes) or len(identity_lookup_hash) != 32:
-        raise ValueError("Hash de identidade deve ser SHA-256 em bytes.")
+        raise ValueError("Digest de identidade deve conter 32 bytes.")
     return identity_lookup_hash
 
 
-def _code_digest(challenge_id, code, pepper):
+def _code_digest(challenge_id, purpose, code, pepper):
     pepper = _validate_pepper(pepper)
-    message = f"{challenge_id}:{code}".encode("ascii")
+    if purpose not in VALID_PURPOSES:
+        raise ValueError("Finalidade do OTP inválida.")
+    if not isinstance(challenge_id, str) or not challenge_id:
+        raise ValueError("Desafio OTP inválido.")
+    if not isinstance(code, str) or re.fullmatch(r"[0-9]{8}", code, flags=re.ASCII) is None:
+        raise ValueError("Código OTP inválido.")
+    message = f"kappa-otp-v1:{challenge_id}:{purpose}:{code}".encode("utf-8")
     return hmac.new(pepper, message, hashlib.sha256).digest()
 
 
@@ -43,10 +50,13 @@ def create_otp_challenge(
     identity_lookup_hash,
     purpose,
     pepper,
-    ttl_seconds=300,
+    ttl_seconds=600,
     max_attempts=5,
+    user_id=None,
+    terms_policy_version=None,
+    privacy_notice_version=None,
 ):
-    """Create a challenge and return its raw code once for a private delivery adapter."""
+    """Create a challenge and return its raw eight-digit code once for delivery."""
     pepper = _validate_pepper(pepper)
     identity_lookup_hash = _validate_identity_hash(identity_lookup_hash)
     if identity_type not in VALID_IDENTITY_TYPES:
@@ -61,29 +71,43 @@ def create_otp_challenge(
         raise ValueError("Limite de tentativas deve ser inteiro.")
     if not 1 <= max_attempts <= 10:
         raise ValueError("Limite de tentativas fora do intervalo permitido.")
+    if (terms_policy_version is None) != (privacy_notice_version is None):
+        raise ValueError("Versões de políticas devem ser informadas em conjunto.")
+    if terms_policy_version is not None:
+        for value in (terms_policy_version, privacy_notice_version):
+            if not isinstance(value, str) or not value.strip() or len(value.strip()) > 40:
+                raise ValueError("Versão de política inválida.")
+        terms_policy_version = terms_policy_version.strip()
+        privacy_notice_version = privacy_notice_version.strip()
+        if purpose != "signup":
+            raise ValueError("Versões de política só se aplicam ao cadastro.")
 
     challenge_id = str(uuid.uuid4())
     code = f"{secrets.randbelow(10 ** OTP_CODE_DIGITS):0{OTP_CODE_DIGITS}d}"
-    digest = _code_digest(challenge_id, code, pepper)
+    digest = _code_digest(challenge_id, purpose, code, pepper)
     with conn.cursor() as cur:
         cur.execute(
             """INSERT INTO otp_challenges (
-                   id, identity_type, identity_lookup_hash, purpose,
-                   code_hash, expires_at, max_attempts, delivery_status
+                   id, user_id, identity_type, identity_lookup_hash, purpose,
+                   code_hash, expires_at, max_attempts, delivery_status,
+                   terms_policy_version, privacy_notice_version
                )
                VALUES (
-                   %s, %s, %s, %s, %s,
-                   NOW() + (%s * INTERVAL '1 second'), %s, 'pending'
+                   %s, %s, %s, %s, %s, %s,
+                   NOW() + (%s * INTERVAL '1 second'), %s, 'pending', %s, %s
                )
                RETURNING id""",
             (
                 challenge_id,
+                user_id,
                 identity_type,
                 identity_lookup_hash,
                 purpose,
                 digest,
                 ttl_seconds,
                 max_attempts,
+                terms_policy_version,
+                privacy_notice_version,
             ),
         )
         row = cur.fetchone()
@@ -92,35 +116,61 @@ def create_otp_challenge(
     return {"challenge_id": str(row[0]), "code": code}
 
 
-def mark_otp_delivery(conn, challenge_id, delivery_status):
-    """Mark a pending challenge sent/failed after the delivery adapter responds."""
-    if delivery_status not in {"sent", "failed"}:
+def mark_otp_delivery(conn, challenge_id, delivery_status, provider_reference=None):
+    """Finalize delivery; failed or uncertain delivery consumes the challenge."""
+    if delivery_status not in {"sent", "failed", "uncertain"}:
         raise ValueError("Estado de entrega OTP inválido.")
+    if provider_reference is not None:
+        if delivery_status != "sent":
+            raise ValueError("Referência só pode ser registrada após envio confirmado.")
+        if (
+            not isinstance(provider_reference, str)
+            or not provider_reference.strip()
+            or len(provider_reference) > 160
+        ):
+            raise ValueError("Referência de entrega inválida.")
+        provider_reference = provider_reference.strip()
     with conn.cursor() as cur:
         cur.execute(
             """UPDATE otp_challenges
-               SET delivery_status = %s
+               SET delivery_attempted_at = COALESCE(delivery_attempted_at, NOW()),
+                   delivery_status = %s,
+                   sent_at = CASE WHEN %s = 'sent' THEN NOW() ELSE NULL END,
+                   provider_reference = CASE WHEN %s = 'sent' THEN %s ELSE NULL END,
+                   consumed_at = CASE WHEN %s IN ('failed', 'uncertain') THEN NOW() ELSE consumed_at END,
+                   resend_after = CASE WHEN %s = 'sent'
+                       THEN NOW() + (60 * INTERVAL '1 second') ELSE resend_after END
                WHERE id = %s
                  AND delivery_status = 'pending'
                  AND consumed_at IS NULL
                  AND expires_at > NOW()
                RETURNING id""",
-            (delivery_status, challenge_id),
+            (
+                delivery_status,
+                delivery_status,
+                delivery_status,
+                provider_reference,
+                delivery_status,
+                delivery_status,
+                challenge_id,
+            ),
         )
         return cur.fetchone() is not None
 
 
-def verify_otp_challenge(conn, challenge_id, code, pepper):
-    """Verify a sent, unexpired challenge once, consuming it atomically on success."""
+def verify_otp_challenge(conn, challenge_id, purpose, code, pepper):
+    """Verify a sent challenge only for its expected purpose, consuming it atomically."""
     pepper = _validate_pepper(pepper)
-    if not isinstance(code, str) or re.fullmatch(r"[0-9]{6}", code) is None:
+    if purpose not in VALID_PURPOSES:
+        raise ValueError("Finalidade do OTP inválida.")
+    if not isinstance(code, str) or re.fullmatch(r"[0-9]{8}", code, flags=re.ASCII) is None:
         return False
     if not isinstance(challenge_id, str) or not challenge_id:
         return False
 
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT code_hash, (expires_at > NOW()), consumed_at,
+            """SELECT code_hash, purpose, (expires_at > NOW()), consumed_at,
                       failed_attempts, max_attempts, delivery_status
                FROM otp_challenges
                WHERE id = %s
@@ -130,16 +180,20 @@ def verify_otp_challenge(conn, challenge_id, code, pepper):
         row = cur.fetchone()
         if not row:
             return False
-        stored_hash, unexpired, consumed_at, failed_attempts, max_attempts, delivery_status = row
+        (
+            stored_hash, stored_purpose, unexpired, consumed_at,
+            failed_attempts, max_attempts, delivery_status,
+        ) = row
         if (
             not unexpired
+            or stored_purpose != purpose
             or consumed_at is not None
             or delivery_status != "sent"
             or failed_attempts >= max_attempts
         ):
             return False
 
-        candidate = _code_digest(challenge_id, code, pepper)
+        candidate = _code_digest(challenge_id, purpose, code, pepper)
         if hmac.compare_digest(bytes(stored_hash), candidate):
             cur.execute(
                 """UPDATE otp_challenges
@@ -239,15 +293,18 @@ def reserve_otp_request_slot(
         return cur.fetchone() is not None
 
 
-def hash_otp_rate_limit_dimension(dimension_type, dimension_value, pepper):
+def hash_otp_rate_limit_dimension(dimension_type, dimension_value, pepper, context="request"):
     """Return a keyed pseudonymous digest for an OTP abuse-limit dimension.
 
-    Normalize the value according to its type before calling this helper.
-    The same backend-only pepper should be shared by all app instances.
+    Normalize identity values with identity_lookup.normalize_identity before
+    calling. IP addresses are canonicalized here. Device IDs must be stable
+    app-generated opaque values, never hardware identifiers.
     """
     valid_dimensions = {"identity", "ip", "device"}
     if dimension_type not in valid_dimensions:
         raise ValueError("Dimensão de limitação OTP inválida.")
+    if context not in {"request", "verify"}:
+        raise ValueError("Contexto de limitação OTP inválido.")
     pepper = _validate_pepper(pepper)
     if (
         not isinstance(dimension_value, str)
@@ -255,5 +312,20 @@ def hash_otp_rate_limit_dimension(dimension_type, dimension_value, pepper):
         or len(dimension_value) > 512
     ):
         raise ValueError("Valor da dimensão OTP inválido.")
-    message = f"{dimension_type}:{dimension_value.strip()}".encode("utf-8")
+    normalized_value = dimension_value.strip()
+    if dimension_type == "ip":
+        if "%" in normalized_value:
+            raise ValueError("IP com identificador de escopo não é permitido.")
+        try:
+            address = ipaddress.ip_address(normalized_value)
+        except ValueError as error:
+            raise ValueError("Endereço IP inválido para limitação OTP.") from error
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        normalized_value = address.compressed
+
+    if context == "request":
+        message = f"kappa-otp-rate-limit-v1:{dimension_type}:{normalized_value}".encode("utf-8")
+    else:
+        message = f"kappa-otp-rate-limit-v1:verify:{dimension_type}:{normalized_value}".encode("utf-8")
     return hmac.new(pepper, message, hashlib.sha256).digest()
