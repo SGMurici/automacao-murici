@@ -71,13 +71,14 @@ def exchange_authorization_code(
         raise GoogleOAuthExchangeError("Tipo de token Google inesperado.")
     if isinstance(expires_in, bool) or not isinstance(expires_in, int) or expires_in <= 0:
         raise GoogleOAuthExchangeError("Expiração do token Google inválida.")
-    if _SCOPE not in scopes:
-        raise GoogleOAuthExchangeError("Google não concedeu o escopo mínimo do backup.")
-    if any(scope in {
-        "https://www.googleapis.com/auth/drive",
-        "https://www.googleapis.com/auth/drive.readonly",
-    } for scope in scopes):
-        raise GoogleOAuthExchangeError("Google concedeu escopo mais amplo que o permitido.")
+    from drive_backup_connections import validate_granted_scopes
+
+    try:
+        scopes = validate_granted_scopes(scopes)
+    except ValueError:
+        raise GoogleOAuthExchangeError(
+            "Google concedeu permissões fora do escopo mínimo do backup."
+        ) from None
 
     userinfo_status, userinfo = get_json(
         USERINFO_URL,

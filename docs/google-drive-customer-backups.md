@@ -158,3 +158,15 @@ Foi criado `drive_backup_connections.py` para reutilizar `external_connections` 
 `google_oauth_exchange.refresh_google_access_token` foi adicionado. O adaptador valida que a conexão já possui `drive.file`, renova o access token, valida token type/expiração e preserva o refresh token anterior quando o Google não envia um novo. Se o Google rotacionar o refresh token, o novo valor é devolvido para persistência cifrada imediata. Falhas como `invalid_grant`, escopo ausente/ampliado ou resposta inválida não devem apagar credenciais; a conexão deve ficar em `reauthorization_required` e solicitar nova autorização. Testes cobrem renovação, rotação, expansão de escopo e refresh revogado.
 
 **Regra operacional:** atualizar os dois ciphertexts e `token_expires_at` na mesma transação PostgreSQL. Nunca sobrescrever o refresh token válido com valor nulo ou persistir apenas o access token novo.
+
+
+## Correção de menor privilégio — allowlist de escopos (12/11/2026)
+
+A validação de consentimento agora usa allowlist estrita, não apenas bloqueio de dois escopos amplos. São aceitos somente:
+- `https://www.googleapis.com/auth/drive.file` — acesso aos arquivos criados/abertos pelo app;
+- `openid` — identificador OpenID;
+- `email` e `https://www.googleapis.com/auth/userinfo.email` — aliases de escopo de e-mail.
+
+Qualquer escopo adicional é recusado, inclusive Gmail, Calendar, Drive metadata e outros produtos Google. A mesma função central é usada na troca inicial do authorization code, no refresh e antes de persistir a conexão. Entradas não textuais ou vazias também são recusadas.
+
+A allowlist não amplia o consentimento atual nem executa reautorização. O fluxo permanece inativo até implementação/revisão das rotas Flask e UX Android.
