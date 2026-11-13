@@ -1,0 +1,57 @@
+# OTP and editorial scheduler orchestration
+
+## Purpose
+
+The existing authenticated `POST /scheduler/run` endpoint is the single remote dispatch entry point for two independent queues:
+
+1. OTP email outbox delivery, which is time-sensitive.
+2. LinkedIn editorial publishing, which must preserve its existing one-publication-per-run semantics.
+
+Local reminders, counters, calendar alerts, and other personal time-based behavior belong to the Android device and must not depend on this remote scheduler.
+
+## Dispatch order and isolation
+
+Each invocation performs:
+
+1. Claim and process at most one OTP outbox item.
+2. Run expired pending-signup cleanup.
+3. Process at most one due LinkedIn publication using the existing scheduler and advisory lock.
+
+Each subsystem is isolated. A failure in OTP delivery is logged and included in the response but does not prevent editorial publishing. A cleanup failure does not prevent either queue from running. An editorial failure does not undo a completed OTP delivery.
+
+The OTP worker processes one item per invocation by default. This avoids claiming a sequential batch whose later jobs could lose their leases while earlier SMTP operations are still in progress. The outbox lease is 240 seconds, while each SMTP socket operation is bounded to at most 30 seconds by configuration; retain a conservative margin and revisit the lease if the SMTP flow or timeout policy changes. The worker CLI also defaults to a single item.
+
+## Scheduling and cost boundary
+
+The currently documented Render Cronjob runs every 15 minutes and only the editorial queue was connected to it before this change. OTP challenges expire after 10 minutes, so the existing cadence cannot be the sole OTP delivery trigger.
+
+This PR changes application dispatch code only. It does not change the Render Cronjob schedule, command, service, secrets, environment variables, SMTP credentials, provider, DNS, migrations in a persistent database, or production deployment.
+
+A one-minute cadence is the next candidate for a controlled non-production measurement and rollout decision. The prior cost estimate for the existing 0.5 CPU / 512 MB Cronjob was approximately USD 1/month minimum service charge, subject to current Render pricing and measured runtime. No schedule change is authorized by this code change.
+
+## Operational requirements before activation
+
+- Confirm the current Render service still points to the expected branch and command.
+- Verify the combined endpoint in a non-production environment with both queues populated.
+- Test OTP delivery latency, expired challenge handling, retries, and worker overlap.
+- Confirm an OTP failure cannot starve editorial publishing and vice versa.
+- Measure execution duration and failure rates at the proposed cadence.
+- Keep `AUTH_ROUTES_ENABLED=false` until authentication, origin/session transport, legal policy versions, and provider configuration are approved.
+- Do not enable real SMTP delivery or change the Cronjob cadence without a separate rollout authorization.
+
+## Verification status
+
+The PR adds unit tests for dispatch order and failure isolation, plus the existing scheduler response regression test. GitHub Actions verification for this PR's exact HEAD must be confirmed before considering the code validated. No production change has been made.
+ 
+
+## Ambiguous SMTP delivery — at-most-once safety
+
+The OTP outbox now separates the pre-send `processing` state from `dispatching`. The worker commits `dispatching` immediately before invoking SMTP. Once in that state, an expired lease is finalized as `uncertain`; it is never reclaimed for automatic resend.
+
+- Connection, TLS, authentication, decryption and configuration failures before SMTP DATA remain retryable.
+- Any exception raised during `send_message` is treated conservatively as uncertain because the provider may have accepted DATA while its final reply was lost.
+- A successful SMTP return followed by a database finalization failure is also not retried. The dispatch lease expires and is converted to uncertain.
+- The uncertain state consumes the OTP challenge, erases its encrypted delivery payload and prevents verification. A new challenge must be requested after the existing rate-limit cooldown.
+- The worker reports uncertain deliveries separately and exits non-zero so monitoring can alert. It does not expose recipient, code, or provider response details.
+
+Migration `0013_otp_delivery_uncertainty.sql` extends the OTP challenge and outbox state constraints. Apply it only through the separately authorized migration process. No production migration or scheduler change is part of this PR.
