@@ -1,6 +1,7 @@
 import os
 import json
 import secrets
+import hashlib
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -10,6 +11,9 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, redirect, request, session
 import psycopg
 from cryptography.fernet import Fernet
+
+import identity_core
+import account_deletion_core
 
 
 app = Flask(__name__)
@@ -24,6 +28,19 @@ app.config.update(
     ),
     MAX_CONTENT_LENGTH=1 * 1024 * 1024,
 )
+
+
+@app.after_request
+def add_security_headers(response):
+    """Apply defensive HTTP headers consistently to every response."""
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Cache-Control", "no-store")
+    response.headers.setdefault("Content-Security-Policy", "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'")
+    return response
+
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -112,6 +129,86 @@ def require_session_secret():
             "mensagem": "Configuracao de sessao indisponivel no servidor.",
         }), 500
     return None
+
+
+def consume_oauth_state(state_key, received_state):
+    """
+    Valida e remove o state do snapshot de sessao atual.
+
+    A sessao Flask padrao e assinada no cliente; isto nao oferece
+    protecao anti-replay global contra a reutilizacao de um cookie antigo.
+    Para essa garantia, sera necessario armazenamento server-side com TTL.
+    """
+    expected_state = session.pop(state_key, None)
+
+    if not isinstance(received_state, str) or not received_state:
+        return False
+    if not isinstance(expected_state, str) or not expected_state:
+        return False
+
+    try:
+        received_bytes = received_state.encode("ascii")
+        expected_bytes = expected_state.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+
+    return secrets.compare_digest(received_bytes, expected_bytes)
+
+
+def get_oauth_browser_id():
+    """Vincula o fluxo OAuth ao navegador que o iniciou."""
+    browser_id = session.get("oauth_browser_id")
+    if not isinstance(browser_id, str) or len(browser_id) < 32:
+        browser_id = secrets.token_urlsafe(32)
+        session["oauth_browser_id"] = browser_id
+    return browser_id
+
+
+def create_server_oauth_state(provider, state, browser_id, account_name=None):
+    """Persiste somente o hash do state; o valor bruto segue apenas ao provedor."""
+    if provider not in {"google", "linkedin"}:
+        raise ValueError("Provedor OAuth inválido.")
+    if not isinstance(state, str) or not state or not isinstance(browser_id, str) or not browser_id:
+        raise ValueError("Contexto OAuth inválido.")
+    state_hash = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM oauth_states WHERE expires_at <= NOW();")
+            cur.execute(
+                """INSERT INTO oauth_states
+                   (state_hash, provider, browser_session_id, account_name, created_at, expires_at)
+                   VALUES (%s, %s, %s, %s, NOW(), NOW() + INTERVAL '10 minutes')""",
+                (state_hash, provider, browser_id, account_name),
+            )
+        conn.commit()
+    return state
+
+
+def consume_server_oauth_state(provider, received_state, browser_id):
+    """Consome state em uma única operação SQL, com TTL, provedor e navegador vinculados."""
+    if provider not in {"google", "linkedin"}:
+        return None
+    if not isinstance(received_state, str) or not received_state:
+        return None
+    if not isinstance(browser_id, str) or not browser_id:
+        return None
+    state_hash = hashlib.sha256(received_state.encode("utf-8")).hexdigest()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """DELETE FROM oauth_states
+                   WHERE state_hash = %s
+                     AND provider = %s
+                     AND browser_session_id = %s
+                     AND expires_at > NOW()
+                   RETURNING account_name""",
+                (state_hash, provider, browser_id),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    if not row:
+        return None
+    return {"provider": provider, "account_name": row[0]}
 
 
 def safe_error_response(message="Falha interna. Consulte os logs do servidor.", status=500):
@@ -949,7 +1046,21 @@ def require_publish_secret():
             401,
         )
 
-    if not secrets.compare_digest(provided_secret, PUBLISH_SECRET):
+    try:
+        provided_secret_bytes = provided_secret.encode("ascii")
+        expected_secret_bytes = PUBLISH_SECRET.encode("ascii")
+    except UnicodeEncodeError:
+        return (
+            jsonify(
+                {
+                    "status": "erro",
+                    "mensagem": "Chave de publicacao invalida.",
+                }
+            ),
+            403,
+        )
+
+    if not secrets.compare_digest(provided_secret_bytes, expected_secret_bytes):
         return (
             jsonify(
                 {
@@ -1210,6 +1321,226 @@ def health():
     )
 
 
+@app.get("/readiness")
+def readiness():
+    """Return configuration readiness without exposing secret values or touching the database."""
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
+
+    required_settings = {
+        "FLASK_SECRET_KEY": app.secret_key,
+        "DATABASE_URL": DATABASE_URL,
+        "LINKEDIN_CLIENT_ID": LINKEDIN_CLIENT_ID,
+        "LINKEDIN_CLIENT_SECRET": LINKEDIN_CLIENT_SECRET,
+        "GOOGLE_CLIENT_ID": GOOGLE_CLIENT_ID,
+        "GOOGLE_CLIENT_SECRET": GOOGLE_CLIENT_SECRET,
+        "TOKEN_ENCRYPTION_KEY": TOKEN_ENCRYPTION_KEY,
+        "PUBLISH_SECRET": PUBLISH_SECRET,
+    }
+    configured = sorted(
+        name for name, value in required_settings.items()
+        if isinstance(value, str) and value.strip()
+    )
+    missing = sorted(set(required_settings) - set(configured))
+
+    return jsonify({
+        "status": "ready" if not missing else "configuration_incomplete",
+        "configured_count": len(configured),
+        "required_count": len(required_settings),
+        "missing_settings": missing,
+        "features": {
+            "linkedin_oauth_configured": bool(LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET),
+            "google_oauth_configured": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
+            "automatic_linkedin_analytics": LINKEDIN_ANALYTICS_AUTOMATIC_ENABLED,
+        },
+        "secrets_exposed": False,
+        "database_checked": False,
+    }), (200 if not missing else 503)
+
+
+def bearer_session_token():
+    """Lê token opaco somente do cabeçalho Authorization: Bearer."""
+    authorization = request.headers.get("Authorization", "")
+    scheme, separator, token = authorization.partition(" ")
+    if (
+        not separator
+        or scheme.lower() != "bearer"
+        or not token
+        or token.strip() != token
+        or len(token) > 512
+    ):
+        return None
+    return token
+
+
+@app.get("/api/v1/me")
+def api_current_user():
+    """Retorna somente o usuário autenticado e seus tenants ativos."""
+    token = bearer_session_token()
+    if not token:
+        return jsonify({"status": "erro", "mensagem": "Autenticação necessária."}), 401
+
+    try:
+        with get_db_connection() as conn:
+            user_id = identity_core.validate_session(conn, token)
+            if not user_id:
+                return jsonify({"status": "erro", "mensagem": "Sessão inválida ou expirada."}), 401
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT t.id, t.tenant_type, t.display_name, m.role
+                       FROM tenant_memberships AS m
+                       JOIN tenants AS t ON t.id = m.tenant_id
+                       WHERE m.user_id = %s
+                         AND m.status = 'active'
+                       ORDER BY t.created_at, t.id""",
+                    (user_id,),
+                )
+                memberships = cur.fetchall()
+
+        response = jsonify({
+            "status": "ok",
+            "usuario": {"id": str(user_id)},
+            "tenants": [
+                {
+                    "id": str(row[0]),
+                    "tipo": row[1],
+                    "nome": row[2],
+                    "papel": row[3],
+                }
+                for row in memberships
+            ],
+        })
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception:
+        app.logger.exception("Falha ao consultar identidade autenticada")
+        return safe_error_response("Não foi possível validar a sessão.")
+
+
+@app.post("/api/v1/session/rotate")
+def api_rotate_session():
+    """Troca um token válido por outro token opaco, revogando o anterior."""
+    token = bearer_session_token()
+    if not token:
+        return jsonify({"status": "erro", "mensagem": "Autenticação necessária."}), 401
+
+    try:
+        with get_db_connection() as conn:
+            new_token = identity_core.rotate_session(conn, token)
+            if not new_token:
+                return jsonify({"status": "erro", "mensagem": "Sessão inválida ou expirada."}), 401
+
+        response = jsonify({
+            "status": "ok",
+            "token_type": "Bearer",
+            "access_token": new_token,
+            "expires_in": 604800,
+        })
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception:
+        app.logger.exception("Falha ao rotacionar sessão autenticada")
+        return safe_error_response("Não foi possível renovar a sessão.")
+
+
+@app.post("/api/v1/account/deletion-request")
+def api_request_account_deletion():
+    """Queue deletion after explicit confirmation and immediately lock account access."""
+    token = bearer_session_token()
+    if not token:
+        return jsonify({"status": "erro", "mensagem": "Autenticação necessária."}), 401
+    if not request.is_json:
+        return jsonify({"status": "erro", "mensagem": "Envie a confirmação em JSON."}), 400
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or data.get("confirmacao") != account_deletion_core.CONFIRMATION_PHRASE:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Confirmação inválida. Digite EXCLUIR MINHA CONTA para continuar.",
+        }), 400
+
+    try:
+        with get_db_connection() as conn:
+            user_id = identity_core.validate_session(conn, token)
+            if not user_id:
+                return jsonify({"status": "erro", "mensagem": "Sessão inválida ou expirada."}), 401
+            if not identity_core.is_recent_session(conn, token, max_age_seconds=900):
+                return jsonify({
+                    "status": "erro",
+                    "mensagem": "Por segurança, confirme novamente sua identidade e tente excluir a conta em até 15 minutos.",
+                }), 401
+            deletion = account_deletion_core.request_account_deletion(conn, user_id)
+
+        response = jsonify({
+            "status": "requested",
+            "mensagem": (
+                "Solicitação registrada. O acesso à conta foi bloqueado e as sessões "
+                "foram revogadas. A exclusão só será considerada concluída após a "
+                "confirmação de todos os sistemas e etapas de retenção aplicáveis."
+            ),
+            "request_id": deletion["request_id"],
+            "comprovante_exclusao": deletion["receipt"],
+            "aviso": "Guarde este comprovante; ele será exibido somente nesta resposta.",
+        })
+        response.status_code = 202
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except account_deletion_core.DeletionAlreadyRequested:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Já existe uma solicitação de exclusão em andamento.",
+        }), 409
+    except account_deletion_core.AccountNotEligibleForDeletion:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "A conta não está em situação que permita iniciar uma nova exclusão.",
+        }), 409
+    except Exception:
+        app.logger.exception("Falha ao registrar solicitação de exclusão de conta")
+        return safe_error_response("Não foi possível registrar a solicitação de exclusão.")
+
+
+@app.get("/api/v1/account/deletion-status")
+def api_account_deletion_status():
+    """Expose only deletion progress to a holder of the one-time receipt."""
+    receipt = request.headers.get("X-Deletion-Receipt", "")
+    if not receipt:
+        return jsonify({"status": "erro", "mensagem": "Comprovante de exclusão necessário."}), 401
+    try:
+        with get_db_connection() as conn:
+            deletion_status = account_deletion_core.get_deletion_status(conn, receipt)
+        if not deletion_status:
+            return jsonify({"status": "erro", "mensagem": "Comprovante inválido ou expirado."}), 404
+        response = jsonify(deletion_status)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception:
+        app.logger.exception("Falha ao consultar status de exclusão de conta")
+        return safe_error_response("Não foi possível consultar o status da exclusão.")
+
+
+@app.post("/api/v1/logout")
+def api_logout():
+    """Revoga a sessão apresentada no cabeçalho Bearer."""
+    token = bearer_session_token()
+    if not token:
+        return jsonify({"status": "erro", "mensagem": "Autenticação necessária."}), 401
+
+    try:
+        with get_db_connection() as conn:
+            user_id = identity_core.validate_session(conn, token)
+            if not user_id:
+                return jsonify({"status": "erro", "mensagem": "Sessão inválida ou expirada."}), 401
+            identity_core.revoke_session(conn, token)
+
+        return jsonify({"status": "ok", "mensagem": "Sessão encerrada."})
+    except Exception:
+        app.logger.exception("Falha ao encerrar sessão autenticada")
+        return safe_error_response("Não foi possível encerrar a sessão.")
+
+
 @app.get("/db-test")
 def db_test():
     auth_error = require_publish_secret()
@@ -1410,7 +1741,11 @@ def linkedin_login():
         ), 500
 
     state = secrets.token_urlsafe(32)
-    session["linkedin_oauth_state"] = state
+    try:
+        create_server_oauth_state("linkedin", state, get_oauth_browser_id())
+    except Exception:
+        app.logger.exception("Falha ao iniciar state OAuth do LinkedIn")
+        return safe_error_response("Não foi possível iniciar a autorização do LinkedIn.", 503)
 
     params = {
         "response_type": "code",
@@ -1434,45 +1769,32 @@ def linkedin_callback():
     session_error = require_session_secret()
     if session_error:
         return session_error
-    error = request.args.get("error")
+    state = request.args.get("state")
+    try:
+        oauth_context = consume_server_oauth_state(
+            "linkedin", state, session.get("oauth_browser_id")
+        )
+    except Exception:
+        app.logger.exception("Falha ao consumir state OAuth do LinkedIn")
+        return safe_error_response("Não foi possível validar a autorização do LinkedIn.", 503)
+    if not oauth_context:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Estado OAuth ausente, expirado ou já utilizado.",
+        }), 403
 
-    if error:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Autorizacao do LinkedIn recusada.",
-                "detalhe": error,
-            }
-        ), 400
+    if request.args.get("error"):
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Autorização do LinkedIn recusada.",
+        }), 400
 
     code = request.args.get("code")
-    state = request.args.get("state")
-
-    expected_state = session.get("linkedin_oauth_state")
-
     if not code:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Codigo de autorizacao nao recebido.",
-            }
-        ), 400
-
-    if not state or not expected_state:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Estado OAuth ausente.",
-            }
-        ), 400
-
-    if not secrets.compare_digest(state, expected_state):
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Estado OAuth invalido.",
-            }
-        ), 403
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Código de autorização não recebido.",
+        }), 400
 
     token_payload = urllib.parse.urlencode(
         {
@@ -1503,20 +1825,13 @@ def linkedin_callback():
             )
 
     except urllib.error.HTTPError as error:
-        body = error.read().decode("utf-8")
-
-        try:
-            detail = json.loads(body)
-        except json.JSONDecodeError:
-            detail = body
-
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Falha ao obter token do LinkedIn.",
-                "detalhe": detail,
-            }
-        ), 400
+        app.logger.warning(
+            "LinkedIn token endpoint respondeu HTTP %s", error.code
+        )
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Falha ao obter token do LinkedIn.",
+        }), 502
 
     access_token = token_data.get("access_token")
     expires_in = token_data.get("expires_in")
@@ -1540,13 +1855,13 @@ def linkedin_callback():
     )
 
     if userinfo_status != 200:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Nao foi possivel obter o Member ID.",
-                "detalhe": userinfo_data,
-            }
-        ), 400
+        app.logger.warning(
+            "LinkedIn userinfo respondeu HTTP %s", userinfo_status
+        )
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Não foi possível obter o identificador da conta LinkedIn.",
+        }), 502
 
     member_id = userinfo_data.get("sub")
 
@@ -1631,8 +1946,13 @@ def google_login():
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
 
     state = secrets.token_urlsafe(32)
-    session["google_oauth_state"] = state
-    session["google_oauth_account"] = account_name
+    try:
+        create_server_oauth_state(
+            "google", state, get_oauth_browser_id(), account_name=account_name
+        )
+    except Exception:
+        app.logger.exception("Falha ao iniciar state OAuth do Google")
+        return safe_error_response("Não foi possível iniciar a autorização do Google.", 503)
 
     params = {
         "client_id": GOOGLE_CLIENT_ID,
@@ -1658,48 +1978,37 @@ def google_callback():
     session_error = require_session_secret()
     if session_error:
         return session_error
-    error = request.args.get("error")
+    state = request.args.get("state")
+    try:
+        oauth_context = consume_server_oauth_state(
+            "google", state, session.get("oauth_browser_id")
+        )
+    except Exception:
+        app.logger.exception("Falha ao consumir state OAuth do Google")
+        return safe_error_response("Não foi possível validar a autorização do Google.", 503)
+    if not oauth_context:
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Estado OAuth ausente, expirado ou já utilizado.",
+        }), 403
 
-    if error:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Autorizacao do Google recusada.",
-                "detalhe": error,
-            }
-        ), 400
+    if request.args.get("error"):
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Autorização do Google recusada.",
+        }), 400
 
     code = request.args.get("code")
-    state = request.args.get("state")
-
-    expected_state = session.get("google_oauth_state")
-
     if not code:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Codigo de autorizacao do Google nao recebido.",
-            }
-        ), 400
-
-    if not state or not expected_state:
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Estado OAuth do Google ausente.",
-            }
-        ), 400
-
-    if not secrets.compare_digest(state, expected_state):
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Estado OAuth do Google invalido.",
-            }
-        ), 403
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Código de autorização do Google não recebido.",
+        }), 400
 
     try:
-        account_name = normalize_google_account_name(session.get("google_oauth_account", "Drive5"))
+        account_name = normalize_google_account_name(
+            oauth_context.get("account_name") or "Drive5"
+        )
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
 
@@ -1732,20 +2041,13 @@ def google_callback():
             )
 
     except urllib.error.HTTPError as error:
-        body = error.read().decode("utf-8")
-
-        try:
-            detail = json.loads(body)
-        except json.JSONDecodeError:
-            detail = body
-
-        return jsonify(
-            {
-                "status": "erro",
-                "mensagem": "Falha ao obter token do Google.",
-                "detalhe": detail,
-            }
-        ), 400
+        app.logger.warning(
+            "Google token endpoint respondeu HTTP %s", error.code
+        )
+        return jsonify({
+            "status": "erro",
+            "mensagem": "Falha ao obter token do Google.",
+        }), 502
 
     access_token = token_data.get("access_token")
     refresh_token = token_data.get("refresh_token")
@@ -1807,9 +2109,6 @@ def google_callback():
             )
 
         conn.commit()
-
-    session.pop("google_oauth_state", None)
-    session.pop("google_oauth_account", None)
 
     return jsonify(
         {
