@@ -23,6 +23,7 @@ import email_delivery
 import otp_email_outbox
 import otp_email_outbox_worker
 import account_deletion_core
+import global_admin_core
 
 
 app = Flask(__name__)
@@ -1791,6 +1792,53 @@ def api_current_user():
     except Exception:
         app.logger.exception("Falha ao consultar identidade autenticada")
         return safe_error_response("Não foi possível validar a sessão.")
+
+
+@app.get("/api/v1/admin/session")
+def api_global_admin_session():
+    """Expose a minimal admin capability check to an authenticated global admin."""
+    token = bearer_session_token()
+    if not token:
+        return jsonify({"status": "erro", "mensagem": "Autenticação necessária."}), 401
+
+    try:
+        with get_db_connection() as conn:
+            user_id = identity_core.validate_session(conn, token)
+            if not user_id:
+                return jsonify({"status": "erro", "mensagem": "Sessão inválida ou expirada."}), 401
+
+            try:
+                global_admin_core.require_global_admin(conn, user_id)
+            except PermissionError:
+                authorization_core.record_audit_event(
+                    conn,
+                    action="global_admin.session.read",
+                    result="denied",
+                    actor_user_id=user_id,
+                    resource_type="admin_session",
+                    metadata={"scope": "global_admin"},
+                )
+                return jsonify({"status": "erro", "mensagem": "Acesso administrativo não autorizado."}), 403
+
+            authorization_core.record_audit_event(
+                conn,
+                action="global_admin.session.read",
+                result="success",
+                actor_user_id=user_id,
+                resource_type="admin_session",
+                metadata={"scope": "global_admin"},
+            )
+
+        response = jsonify({
+            "status": "ok",
+            "usuario": {"id": str(user_id)},
+            "administrador_global": True,
+        })
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception:
+        app.logger.exception("Falha ao validar sessão administrativa global")
+        return safe_error_response("Não foi possível validar a sessão administrativa.")
 
 
 @app.post("/api/v1/session/rotate")
