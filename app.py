@@ -2467,7 +2467,7 @@ def google_login():
         ), 500
 
     try:
-        account_name = normalize_google_account_name(request.args.get("account", "Drive5"))
+        account_name = normalize_google_oauth_account_name(request.args.get("account", "Drive5"))
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
 
@@ -2484,7 +2484,11 @@ def google_login():
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "response_type": "code",
-        "scope": "https://www.googleapis.com/auth/drive.readonly",
+        "scope": (
+            GOOGLE_GMAIL_READONLY_SCOPE
+            if account_name in GMAIL_MONITORED_ACCOUNTS
+            else GOOGLE_DRIVE_READONLY_SCOPE
+        ),
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
