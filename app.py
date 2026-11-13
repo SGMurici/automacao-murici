@@ -1858,6 +1858,20 @@ def api_global_admin_session():
             if not user_id:
                 return jsonify({"status": "erro", "mensagem": "Sessão inválida ou expirada."}), 401
 
+            if not identity_core.is_recent_session(conn, token, max_age_seconds=900):
+                authorization_core.record_audit_event(
+                    conn,
+                    action="global_admin.session.read",
+                    result="denied",
+                    actor_user_id=user_id,
+                    resource_type="admin_session",
+                    metadata={"scope": "global_admin", "reason": "reauthentication_required"},
+                )
+                return jsonify({
+                    "status": "erro",
+                    "mensagem": "Confirme novamente sua identidade para acessar a administração global.",
+                }), 401
+
             try:
                 global_admin_core.require_global_admin(conn, user_id)
             except PermissionError:
