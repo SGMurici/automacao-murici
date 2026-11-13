@@ -9,22 +9,28 @@ from datetime import datetime, timezone
 
 PROVIDER = "google_drive_backup"
 REQUIRED_SCOPE = "https://www.googleapis.com/auth/drive.file"
-FORBIDDEN_BROAD_SCOPES = {
-    "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/drive.readonly",
+ALLOWED_SCOPES = {
+    REQUIRED_SCOPE,
+    "openid",
+    "email",
+    "https://www.googleapis.com/auth/userinfo.email",
 }
 
 
 def validate_granted_scopes(scopes):
+    """Enforce an allowlist: Drive backup must never inherit unrelated Google access."""
     if isinstance(scopes, str):
         scopes = scopes.split()
     if not isinstance(scopes, (list, tuple, set)):
         raise ValueError("Escopos OAuth inválidos.")
-    normalized = {scope.strip() for scope in scopes if isinstance(scope, str) and scope.strip()}
+    if any(not isinstance(scope, str) or not scope.strip() for scope in scopes):
+        raise ValueError("Escopos OAuth inválidos.")
+    normalized = {scope.strip() for scope in scopes}
     if REQUIRED_SCOPE not in normalized:
         raise ValueError("A autorização não concedeu o escopo mínimo do backup.")
-    if normalized & FORBIDDEN_BROAD_SCOPES:
-        raise ValueError("A autorização concedeu escopo amplo demais para o backup.")
+    unexpected = normalized - ALLOWED_SCOPES
+    if unexpected:
+        raise ValueError("A autorização concedeu permissões fora do escopo do backup.")
     return sorted(normalized)
 
 
@@ -148,6 +154,10 @@ def update_tokens(
 ):
     access_ciphertext = _ciphertext(encrypt, _required_text(access_token, "access_token"))
     refresh_ciphertext = _ciphertext(encrypt, _required_text(refresh_token, "refresh_token"))
+    if token_expires_at is not None and not isinstance(token_expires_at, datetime):
+        raise ValueError("token_expires_at deve ser datetime ou None.")
+    if token_expires_at and token_expires_at.tzinfo is None:
+        token_expires_at = token_expires_at.replace(tzinfo=timezone.utc)
     with conn.cursor() as cur:
         cur.execute(
             """UPDATE external_connections
