@@ -66,6 +66,7 @@ class GlobalAdminRouteTests(unittest.TestCase):
         with (
             patch.object(application, "get_db_connection", return_value=connection),
             patch.object(application.identity_core, "validate_session", return_value="tenant-admin"),
+            patch.object(application.identity_core, "is_recent_session", return_value=True),
             patch.object(
                 application.global_admin_core,
                 "require_global_admin",
@@ -86,6 +87,7 @@ class GlobalAdminRouteTests(unittest.TestCase):
         with (
             patch.object(application, "get_db_connection", return_value=connection),
             patch.object(application.identity_core, "validate_session", return_value="global-admin"),
+            patch.object(application.identity_core, "is_recent_session", return_value=True),
             patch.object(application.global_admin_core, "require_global_admin", return_value=True),
             patch.object(application.authorization_core, "record_audit_event") as audit,
         ):
