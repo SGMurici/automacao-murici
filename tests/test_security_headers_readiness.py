@@ -21,6 +21,7 @@ class SecurityHeadersAndReadinessTests(unittest.TestCase):
         self.assertEqual(response.headers.get("Referrer-Policy"), "strict-origin-when-cross-origin")
         self.assertEqual(response.headers.get("Permissions-Policy"), "camera=(), microphone=(), geolocation=()")
         self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        self.assertEqual(response.headers.get("Content-Security-Policy"), "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'")
 
     def test_readiness_requires_operational_secret(self):
         response = self.client.get("/readiness")
