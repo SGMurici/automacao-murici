@@ -7,6 +7,9 @@ import urllib.parse
 import urllib.request
 import urllib.error
 import uuid
+import hmac
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from datetime import datetime, timezone, timedelta
 
@@ -24,6 +27,7 @@ import otp_email_outbox
 import otp_email_outbox_worker
 import account_deletion_core
 import global_admin_core
+from gmail_workflow import build_triage_item, merge_triage_summaries, summarize_triage_items
 
 
 app = Flask(__name__)
@@ -64,6 +68,12 @@ TOKEN_ENCRYPTION_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY")
 IDENTITY_ENCRYPTION_KEY = os.environ.get("IDENTITY_ENCRYPTION_KEY")
 
 PUBLISH_SECRET = os.environ.get("PUBLISH_SECRET")
+GMAIL_MONITOR_SECRET = os.environ.get("GMAIL_MONITOR_SECRET")
+GMAIL_MONITORED_ACCOUNTS = ("SG", "Drive1")
+GOOGLE_GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+GOOGLE_DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+GOOGLE_GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
+GMAIL_MONITOR_LOCK_KEY = 83746293
 
 AUTH_ROUTES_ENABLED = os.environ.get("AUTH_ROUTES_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
