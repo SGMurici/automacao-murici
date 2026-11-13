@@ -40,6 +40,27 @@ class GlobalAdminRouteTests(unittest.TestCase):
         require_admin.assert_not_called()
         audit.assert_not_called()
 
+    def test_stale_session_requires_reauthentication_before_global_admin_lookup(self):
+        connection = FakeConnection()
+        with (
+            patch.object(application, "get_db_connection", return_value=connection),
+            patch.object(application.identity_core, "validate_session", return_value="global-admin"),
+            patch.object(application.identity_core, "is_recent_session", return_value=False),
+            patch.object(application.global_admin_core, "require_global_admin") as require_admin,
+            patch.object(application.authorization_core, "record_audit_event") as audit,
+        ):
+            response = self.client.get(
+                "/api/v1/admin/session",
+                headers={"Authorization": "Bearer " + self.token},
+            )
+        self.assertEqual(response.status_code, 401)
+        require_admin.assert_not_called()
+        self.assertEqual(audit.call_args.kwargs["result"], "denied")
+        self.assertEqual(
+            audit.call_args.kwargs["metadata"]["reason"],
+            "reauthentication_required",
+        )
+
     def test_tenant_admin_without_global_grant_is_denied_and_audited(self):
         connection = FakeConnection()
         with (
