@@ -117,6 +117,15 @@ class GmailPrivacyRouteTests(unittest.TestCase):
             self.assertNotIn("messages", account)
         self.assertTrue(connection.closed)
 
+    def test_google_oauth_initiation_requires_publish_secret_before_state_creation(self):
+        with (
+            patch.object(application, "PUBLISH_SECRET", "expected-secret"),
+            patch.object(application, "create_server_oauth_state") as create_state,
+        ):
+            response = self.client.post("/google/login", json={"account": "SG"})
+        self.assertEqual(response.status_code, 401)
+        create_state.assert_not_called()
+
     def test_gmail_account_allowlist_excludes_drive2_and_drive5(self):
         self.assertEqual(application.normalize_gmail_account_name("SG"), "SG")
         self.assertEqual(application.normalize_gmail_account_name("drive1"), "Drive1")
@@ -129,6 +138,7 @@ class GmailPrivacyRouteTests(unittest.TestCase):
         for account in ("SG", "Drive1"):
             with self.subTest(account=account):
                 with (
+                    patch.object(application, "PUBLISH_SECRET", "expected-secret"),
                     patch.object(application, "require_session_secret", return_value=None),
                     patch.object(application, "GOOGLE_CLIENT_ID", "client-id"),
                     patch.object(application, "GOOGLE_AUTH_URL", "https://accounts.google.com/o/oauth2/v2/auth"),
@@ -136,7 +146,11 @@ class GmailPrivacyRouteTests(unittest.TestCase):
                     patch.object(application, "get_oauth_browser_id", return_value="browser-id"),
                     patch.object(application, "create_server_oauth_state") as create_state,
                 ):
-                    response = self.client.get(f"/google/login?account={account}")
+                    response = self.client.post(
+                        "/google/login",
+                        json={"account": account},
+                        headers={"X-Publish-Secret": "expected-secret"},
+                    )
                 self.assertEqual(response.status_code, 302)
                 query = parse_qs(urlparse(response.location).query)
                 self.assertEqual(query["scope"], [application.GOOGLE_GMAIL_READONLY_SCOPE])
@@ -144,6 +158,7 @@ class GmailPrivacyRouteTests(unittest.TestCase):
 
     def test_drive5_oauth_remains_drive_readonly_and_never_requests_calendar(self):
         with (
+            patch.object(application, "PUBLISH_SECRET", "expected-secret"),
             patch.object(application, "require_session_secret", return_value=None),
             patch.object(application, "GOOGLE_CLIENT_ID", "client-id"),
             patch.object(application, "GOOGLE_AUTH_URL", "https://accounts.google.com/o/oauth2/v2/auth"),
@@ -151,7 +166,11 @@ class GmailPrivacyRouteTests(unittest.TestCase):
             patch.object(application, "get_oauth_browser_id", return_value="browser-id"),
             patch.object(application, "create_server_oauth_state"),
         ):
-            response = self.client.get("/google/login?account=Drive5")
+            response = self.client.post(
+                "/google/login",
+                json={"account": "Drive5"},
+                headers={"X-Publish-Secret": "expected-secret"},
+            )
         self.assertEqual(response.status_code, 302)
         query = parse_qs(urlparse(response.location).query)
         self.assertEqual(query["scope"], [application.GOOGLE_DRIVE_READONLY_SCOPE])
