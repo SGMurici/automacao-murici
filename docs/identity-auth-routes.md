@@ -97,9 +97,18 @@ Recommended sender: a dedicated address such as \`nao-responda@auth.<controlled-
 - Review SES DPA, subprocessors, data location, international transfer mechanism under LGPD and retention terms.
 - Verify the exact Cloudflare → Render proxy chain and CIDRs in a controlled non-production service before configuring \`TRUSTED_PROXY_HOPS\` and \`TRUSTED_PROXY_CIDRS\`.
 - Abandoned pending users are purged by the scheduler after 24 hours by default; `PENDING_SIGNUP_TTL_HOURS` can be set from 1 to 168. Define separate cleanup/retention for stale OTP challenge and limiter rows.
-- Apply migrations 0002, 0005, 0006, 0009 and 0010 only through the separately authorized production migration process.
+- Apply migrations 0002, 0005, 0006, 0009, 0010, 0011 and 0013 only through the separately authorized production migration process; preserve the repository's migration ordering and verify the target schema first.
 - Add recovery and email-change workflows only after signup/login are validated.
 
 ## Security boundary
 
 No production secrets, Render environment variables, sender-domain DNS, SES account, production schema, customer identity or administrator identity were changed by this implementation. SMTP delivery is mocked in the PostgreSQL integration tests.
+
+
+## OTP delivery uncertainty
+
+SMTP is not an exactly-once transport. If the connection drops during message submission or after the provider accepts the message but before its final response reaches KAPPA, the system cannot prove whether the email was delivered.
+
+The worker therefore commits an outbox `dispatching` state before SMTP. An ambiguous outcome is recorded as `uncertain`, not retried. The encrypted code payload is erased and the associated OTP challenge is consumed, so a possibly delivered code cannot be used. The user must request a new challenge after the normal rate-limit cooldown. This deliberately favors avoiding duplicate messages and invalid/late-code confusion over silently retrying an unknown delivery.
+
+A worker crash after entering `dispatching`, or a database failure after SMTP reports success but before the result is committed, also resolves to `uncertain` when the lease expires. Monitoring must alert on the worker's non-zero exit and uncertain counter.

@@ -27,7 +27,11 @@ PURPOSE_SUBJECTS = {
 
 
 class EmailDeliveryError(RuntimeError):
-    """Sanitized delivery/configuration failure."""
+    """Definite pre-acceptance or provider-rejection failure; retry policy is safe."""
+
+
+class EmailDeliveryUncertain(EmailDeliveryError):
+    """SMTP send phase failed without proving whether the provider accepted DATA."""
 
 
 def _required_env(name):
@@ -109,7 +113,7 @@ def build_otp_message(to_email, code, purpose, expires_minutes=10, sender=None):
 
 
 def send_otp_email(to_email, code, purpose, expires_minutes=10):
-    """Send one OTP email over mandatory TLS; return a non-secret message ID."""
+    """Send one OTP email; distinguish pre-send failures from ambiguous SMTP DATA."""
     config = _smtp_config()
     recipient = normalize_email_address(to_email)
     message = build_otp_message(
@@ -130,14 +134,28 @@ def send_otp_email(to_email, code, purpose, expires_minutes=10):
             client.ehlo()
         if config["username"]:
             client.login(config["username"], config["password"])
-        refused = client.send_message(message, from_addr=config["sender"], to_addrs=[recipient])
+    except (smtplib.SMTPException, OSError, ssl.SSLError, TimeoutError):
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+        raise EmailDeliveryError("Não foi possível preparar a conexão segura de e-mail.") from None
+
+    try:
+        try:
+            refused = client.send_message(
+                message, from_addr=config["sender"], to_addrs=[recipient]
+            )
+        except Exception:
+            # send_message includes SMTP DATA. A disconnect/timeout after the
+            # message body may mean the provider accepted it but its reply was lost.
+            raise EmailDeliveryUncertain(
+                "O provedor pode ter aceitado a mensagem; o envio não será repetido automaticamente."
+            ) from None
         if refused:
             raise EmailDeliveryError("Provedor recusou o destinatário.")
         return {"message_id": message["Message-ID"]}
-    except EmailDeliveryError:
-        raise
-    except (smtplib.SMTPException, OSError, ssl.SSLError, TimeoutError):
-        raise EmailDeliveryError("Não foi possível entregar o e-mail de verificação.") from None
     finally:
         if client is not None:
             try:

@@ -22,6 +22,7 @@ MIGRATIONS = (
     ROOT / "migrations" / "0009_identity_otp_hardening.sql",
     ROOT / "migrations" / "0010_otp_signup_policy_versions.sql",
     ROOT / "migrations" / "0011_otp_email_transactional_outbox.sql",
+    ROOT / "migrations" / "0013_otp_delivery_uncertainty.sql",
 )
 
 
@@ -401,7 +402,7 @@ class IdentityOtpHardeningPostgresTests(unittest.TestCase):
         )
         self.conn.commit()
 
-        self.assertEqual(otp_email_outbox.expire_due(self.conn), 1)
+        self.assertEqual(otp_email_outbox.expire_due(self.conn), {"uncertain": 0, "failed": 1})
         self.conn.commit()
         outbox = self.conn.execute(
             "SELECT status, payload_ciphertext, last_error_code FROM otp_email_outbox WHERE challenge_id = %s",

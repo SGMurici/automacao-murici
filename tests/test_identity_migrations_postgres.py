@@ -21,6 +21,7 @@ import account_deletion_core
 import drive_backup_oauth
 import drive_backup_connections
 import otp_core
+import otp_email_outbox
 
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
@@ -32,6 +33,10 @@ MIGRATIONS = (
     ROOT / "migrations" / "0004_customer_drive_oauth.sql",
     ROOT / "migrations" / "0005_otp_request_limits.sql",
     ROOT / "migrations" / "0006_session_authentication_freshness.sql",
+    ROOT / "migrations" / "0009_identity_otp_hardening.sql",
+    ROOT / "migrations" / "0010_otp_signup_policy_versions.sql",
+    ROOT / "migrations" / "0011_otp_email_transactional_outbox.sql",
+    ROOT / "migrations" / "0013_otp_delivery_uncertainty.sql",
 )
 
 
@@ -747,6 +752,81 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             (digest,),
         ).fetchone()[0]
         self.assertEqual(final_count, 1 + accepted)
+
+    def test_uncertain_otp_delivery_is_a_terminal_non_retriable_state(self):
+        challenge_id = uuid.uuid4()
+        self.conn.execute(
+            """INSERT INTO otp_challenges
+               (id, identity_type, identity_lookup_hash, purpose, code_hash, expires_at)
+               VALUES (%s, 'email', %s, 'login', %s, NOW() + INTERVAL '5 minutes')""",
+            (challenge_id, hashlib.sha256(b"uncertain-email").digest(), b"otp-hash"),
+        )
+        self.conn.execute(
+            """INSERT INTO otp_email_outbox
+               (challenge_id, payload_ciphertext, status, attempts)
+               VALUES (%s, NULL, 'uncertain', 1)""",
+            (challenge_id,),
+        )
+        self.conn.execute(
+            """UPDATE otp_challenges
+               SET delivery_status = 'uncertain', consumed_at = NOW()
+               WHERE id = %s""",
+            (challenge_id,),
+        )
+        self.conn.commit()
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status, payload_ciphertext FROM otp_email_outbox WHERE challenge_id = %s",
+                (challenge_id,),
+            ).fetchone(),
+            ("uncertain", None),
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT delivery_status, consumed_at IS NOT NULL FROM otp_challenges WHERE id = %s",
+                (challenge_id,),
+            ).fetchone(),
+            ("uncertain", True),
+        )
+
+    def test_expired_dispatching_lease_becomes_uncertain_and_is_not_reclaimed(self):
+        challenge_id = uuid.uuid4()
+        self.conn.execute(
+            """INSERT INTO otp_challenges
+               (id, identity_type, identity_lookup_hash, purpose, code_hash, expires_at)
+               VALUES (%s, 'email', %s, 'login', %s, NOW() + INTERVAL '5 minutes')""",
+            (challenge_id, hashlib.sha256(b"dispatching-expired").digest(), b"otp-hash"),
+        )
+        self.conn.execute(
+            """INSERT INTO otp_email_outbox
+               (challenge_id, payload_ciphertext, status, attempts, lease_token, lease_expires_at)
+               VALUES (%s, 'ciphertext-fixture', 'dispatching', 1, gen_random_uuid(),
+                       NOW() - INTERVAL '1 second')""",
+            (challenge_id,),
+        )
+        self.conn.commit()
+
+        outcome = otp_email_outbox.expire_due(self.conn)
+        self.conn.commit()
+
+        self.assertEqual(outcome, {"uncertain": 1, "failed": 0})
+        self.assertEqual(
+            self.conn.execute(
+                """SELECT status, payload_ciphertext, lease_token
+                   FROM otp_email_outbox WHERE challenge_id = %s""",
+                (challenge_id,),
+            ).fetchone(),
+            ("uncertain", None, None),
+        )
+        self.assertEqual(
+            self.conn.execute(
+                """SELECT delivery_status, consumed_at IS NOT NULL
+                   FROM otp_challenges WHERE id = %s""",
+                (challenge_id,),
+            ).fetchone(),
+            ("uncertain", True),
+        )
+        self.assertEqual(otp_email_outbox.claim_batch(self.conn), [])
 
     def test_invalid_otp_attempt_limits_and_audit_result_are_rejected(self):
         with self.assertRaises(psycopg.errors.CheckViolation):

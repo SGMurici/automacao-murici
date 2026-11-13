@@ -117,8 +117,8 @@ def create_otp_challenge(
 
 
 def mark_otp_delivery(conn, challenge_id, delivery_status, provider_reference=None):
-    """Finalize delivery; failed delivery consumes the challenge."""
-    if delivery_status not in {"sent", "failed"}:
+    """Finalize delivery; failed or uncertain delivery consumes the challenge."""
+    if delivery_status not in {"sent", "failed", "uncertain"}:
         raise ValueError("Estado de entrega OTP inválido.")
     if provider_reference is not None:
         if delivery_status != "sent":
@@ -137,7 +137,7 @@ def mark_otp_delivery(conn, challenge_id, delivery_status, provider_reference=No
                    delivery_status = %s,
                    sent_at = CASE WHEN %s = 'sent' THEN NOW() ELSE NULL END,
                    provider_reference = CASE WHEN %s = 'sent' THEN %s ELSE NULL END,
-                   consumed_at = CASE WHEN %s = 'failed' THEN NOW() ELSE consumed_at END,
+                   consumed_at = CASE WHEN %s IN ('failed', 'uncertain') THEN NOW() ELSE consumed_at END,
                    resend_after = CASE WHEN %s = 'sent'
                        THEN NOW() + (60 * INTERVAL '1 second') ELSE resend_after END
                WHERE id = %s

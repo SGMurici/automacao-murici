@@ -34,6 +34,23 @@ class SchedulerDispatcherTests(unittest.TestCase):
         self.assertEqual(result["otp_delivery"]["sent"], 1)
         self.assertEqual(result["pending_signup_cleanup"]["removed"], 2)
 
+    def test_uncertain_otp_delivery_is_reported_without_blocking_other_queues(self):
+        with (
+            patch.object(
+                application.otp_email_outbox_worker,
+                "run_once",
+                return_value={"claimed": 1, "sent": 0, "retrying": 0, "failed": 0, "uncertain": 1},
+            ),
+            patch.object(application, "cleanup_expired_pending_signups", return_value=0),
+            patch.object(application, "scheduler_publish_one", return_value={"status": "idle"}),
+        ):
+            result = application.scheduler_run_cycle()
+
+        self.assertEqual(result["status"], "idle")
+        self.assertEqual(result["otp_delivery"]["status"], "uncertain")
+        self.assertEqual(result["otp_delivery"]["uncertain"], 1)
+        self.assertEqual(result["pending_signup_cleanup"]["status"], "completed")
+
     def test_otp_failure_does_not_block_editorial_or_cleanup(self):
         with (
             patch.object(
