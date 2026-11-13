@@ -36,6 +36,7 @@ MIGRATIONS = (
     ROOT / "migrations" / "0009_identity_otp_hardening.sql",
     ROOT / "migrations" / "0010_otp_signup_policy_versions.sql",
     ROOT / "migrations" / "0011_otp_email_transactional_outbox.sql",
+    ROOT / "migrations" / "0012_global_administrators.sql",
     ROOT / "migrations" / "0013_otp_delivery_uncertainty.sql",
 )
 
