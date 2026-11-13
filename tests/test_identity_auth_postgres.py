@@ -101,7 +101,7 @@ class IdentityAuthRouteIntegrationTests(unittest.TestCase):
         )
         self.db_patch.start()
         self.mail_patch = patch(
-            "app.email_delivery.send_otp_email",
+            "email_delivery.send_otp_email",
             return_value={"message_id": "<otp-test@example.test>"},
         )
         self.send_mail = self.mail_patch.start()
