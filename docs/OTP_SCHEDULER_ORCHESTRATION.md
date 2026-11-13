@@ -42,3 +42,16 @@ A one-minute cadence is the next candidate for a controlled non-production measu
 ## Verification status
 
 The PR adds unit tests for dispatch order and failure isolation, plus the existing scheduler response regression test. GitHub Actions verification for this PR's exact HEAD must be confirmed before considering the code validated. No production change has been made.
+ 
+
+## Ambiguous SMTP delivery — at-most-once safety
+
+The OTP outbox now separates the pre-send `processing` state from `dispatching`. The worker commits `dispatching` immediately before invoking SMTP. Once in that state, an expired lease is finalized as `uncertain`; it is never reclaimed for automatic resend.
+
+- Connection, TLS, authentication, decryption and configuration failures before SMTP DATA remain retryable.
+- Any exception raised during `send_message` is treated conservatively as uncertain because the provider may have accepted DATA while its final reply was lost.
+- A successful SMTP return followed by a database finalization failure is also not retried. The dispatch lease expires and is converted to uncertain.
+- The uncertain state consumes the OTP challenge, erases its encrypted delivery payload and prevents verification. A new challenge must be requested after the existing rate-limit cooldown.
+- The worker reports uncertain deliveries separately and exits non-zero so monitoring can alert. It does not expose recipient, code, or provider response details.
+
+Migration `0013_otp_delivery_uncertainty.sql` extends the OTP challenge and outbox state constraints. Apply it only through the separately authorized migration process. No production migration or scheduler change is part of this PR.

@@ -105,6 +105,18 @@ class EmailDeliveryTests(unittest.TestCase):
             email_delivery.send_otp_email("user@example.test", "00123456", "signup")
         self.assertNotIn("secret details", str(raised.exception))
 
+    @patch("email_delivery.smtplib.SMTP")
+    def test_send_phase_timeout_is_uncertain_not_retryable(self, smtp_cls):
+        client = MagicMock()
+        client.send_message.side_effect = TimeoutError("lost final SMTP response")
+        smtp_cls.return_value = client
+
+        with self.assertRaises(email_delivery.EmailDeliveryUncertain):
+            email_delivery.send_otp_email("user@example.test", "00123456", "signup")
+
+        client.send_message.assert_called_once()
+        client.quit.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
