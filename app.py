@@ -2455,8 +2455,11 @@ def linkedin_callback():
     )
 
 
-@app.get("/google/login")
+@app.post("/google/login")
 def google_login():
+    auth_error = require_publish_secret()
+    if auth_error:
+        return auth_error
     session_error = require_session_secret()
     if session_error:
         return session_error
@@ -2468,8 +2471,9 @@ def google_login():
             }
         ), 500
 
+    payload = request.get_json(silent=True) or {}
     try:
-        account_name = normalize_google_oauth_account_name(request.args.get("account", "Drive5"))
+        account_name = normalize_google_oauth_account_name(payload.get("account", "Drive5"))
     except ValueError as error:
         return jsonify({"status": "erro", "mensagem": str(error)}), 400
 
