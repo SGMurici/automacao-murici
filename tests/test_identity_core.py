@@ -1,5 +1,6 @@
 import hashlib
 import unittest
+from datetime import datetime, timezone
 
 import identity_core
 
@@ -52,6 +53,7 @@ class IdentitySessionTests(unittest.TestCase):
         self.assertGreaterEqual(len(token), 32)
         query, params = conn.fake_cursor.calls[0]
         self.assertIn("INSERT INTO auth_sessions", query)
+        self.assertIn("authenticated_at", query)
         self.assertIn("status = 'active'", query)
         self.assertEqual(params[0], hashlib.sha256(token.encode()).hexdigest())
         self.assertNotIn(token, params)
@@ -78,7 +80,7 @@ class IdentitySessionTests(unittest.TestCase):
         conn = FakeConnection(one=(1,))
         self.assertTrue(identity_core.is_recent_session(conn, "r" * 48, 900))
         query, params = conn.fake_cursor.calls[0]
-        self.assertIn("s.created_at >=", query)
+        self.assertIn("s.authenticated_at >=", query)
         self.assertIn("u.status = 'active'", query)
         self.assertEqual(params, (hashlib.sha256(("r" * 48).encode()).hexdigest(), 900))
 
@@ -89,7 +91,8 @@ class IdentitySessionTests(unittest.TestCase):
         self.assertEqual(conn.fake_cursor.calls, [])
 
     def test_rotate_session_revokes_old_and_creates_new(self):
-        conn = FakeConnection(one=("user-123",))
+        auth_time = datetime(2026, 11, 10, 10, 0, tzinfo=timezone.utc)
+        conn = FakeConnection(one=("user-123", auth_time))
         old_token = "o" * 48
         new_token = identity_core.rotate_session(conn, old_token, ttl_seconds=900)
         self.assertIsInstance(new_token, str)
@@ -98,9 +101,17 @@ class IdentitySessionTests(unittest.TestCase):
         insert_query, insert_params = conn.fake_cursor.calls[1]
         self.assertIn("SET revoked_at = NOW()", update_query)
         self.assertIn("replaced_by_token_hash", update_query)
+        self.assertIn("RETURNING s.user_id, s.authenticated_at", update_query)
         self.assertEqual(update_params[1], hashlib.sha256(old_token.encode()).hexdigest())
         self.assertIn("INSERT INTO auth_sessions", insert_query)
-        self.assertEqual(insert_params[0], hashlib.sha256(new_token.encode()).hexdigest())
+        self.assertIn("authenticated_at", insert_query)
+        self.assertEqual(insert_params, (
+            hashlib.sha256(new_token.encode()).hexdigest(),
+            "user-123",
+            auth_time,
+            900,
+            None,
+        ))
 
     def test_revoked_or_expired_session_cannot_be_rotated(self):
         conn = FakeConnection(one=None)

@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - fix/foundation-batch-2026-11-10
+      - 'fix/**'
 
 permissions:
   contents: read
