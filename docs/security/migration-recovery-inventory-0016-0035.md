@@ -126,3 +126,21 @@ On disposable Neon branch `br-delicate-snow-b6qpdscm`:
 - `neondb_owner` has direct DML/SELECT privileges on the sensitive tables and BYPASSRLS. It is an administrative owner role, not an acceptable application runtime identity.
 
 Static Python review of `otp_email_outbox.py` on PR #34 branch found direct SQL DML in `enqueue`, `expire_due`, `claim_batch`, `mark_dispatching`, `mark_sent`, `mark_failure`, and `mark_uncertain`. The module does not invoke the six `kappa_otp_outbox_*` wrappers. Therefore the least-privilege worker login is correctly denied direct DML but the inspected Python worker has not yet been refactored to use its allowed capability wrappers. Do not point this worker at the least-privilege login until that adapter refactor and integration tests are complete.
+
+
+### OTP wrapper-to-adapter contract — static mapping
+
+The six functions in 0032 can replace the worker's direct DML, but the current Python API must be adapted:
+
+| Existing Python operation | Capability wrapper | Adapter requirement |
+|---|---|---|
+| `expire_due(conn)` | `kappa_otp_outbox_expire_due()` | Read returned `uncertain` and `failed` counts; wrapper also finalizes challenge state. |
+| `claim_batch(conn, limit)` | `kappa_otp_outbox_claim_one()` | Wrapper claims exactly one row and increments attempts; loop up to configured batch size in Python, each claim in its own short transaction. |
+| `mark_dispatching(conn, challenge_id, lease_token)` | `kappa_otp_outbox_mark_dispatching(uuid,uuid,integer)` | Carry `attempts` from the claim result and pass it to the wrapper. |
+| `mark_sent(conn, challenge_id, lease_token, provider_reference)` | `kappa_otp_outbox_mark_sent(uuid,uuid,integer,text)` | Pass claimed `attempts`; remove the second `otp_core.mark_otp_delivery` update because wrapper finalizes challenge atomically. |
+| `mark_failure(...)` | `kappa_otp_outbox_mark_failure(uuid,uuid,integer,boolean,text)` | Pass claimed `attempts`; remove duplicate challenge update on terminal failure. |
+| `mark_uncertain(...)` | `kappa_otp_outbox_mark_uncertain(uuid,uuid,integer)` | Pass claimed `attempts`; remove duplicate challenge update. |
+
+The producer-side `enqueue` remains a separate trust boundary. Do not grant the worker enqueue capability; create/use an authenticated OTP producer capability for inserting a challenge and outbox record atomically. Split producer and worker interfaces if needed so the worker process cannot call enqueue.
+
+The wrapper signatures and return types were read from 0032; no adapter code was changed and no SQL was executed.
