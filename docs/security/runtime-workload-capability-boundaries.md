@@ -23,7 +23,7 @@ Four LOGIN roles were created in one transaction on the disposable branch:
 | `kappa_otp_worker_runtime_login` | true | true | all false |
 | `kappa_analytics_runtime_login` | true | true | all false |
 
-All four have no direct table privileges, no sequence privileges, no function EXECUTE privileges, and no memberships in executor/capability-owner roles at this checkpoint. Passwords have not been provisioned. They cannot be used by an application until the workload contract is complete and a credential is issued out-of-band. This is intentional fail-closed staging.
+At initial creation, all four had no direct table privileges, no sequence privileges, no function EXECUTE privileges, and no memberships in executor/capability-owner roles. This was superseded by a later narrow OTP-only membership: `kappa_otp_worker_runtime_login` is a member of `kappa_otp_outbox_worker_executor`; web, scheduler and analytics have no executor memberships. A later read-only catalog check found a non-null password verifier for all four roles, contrary to the initial script comment that no passwords were set. Provenance is unresolved; do not authenticate with or configure these roles until reconciled. This remains fail-closed staging.
 
 The exact provisioning SQL is in `ops/homologation/provision_runtime_login_roles.sql`. It is explicitly homologation-only and must not be treated as a production migration.
 
@@ -36,7 +36,7 @@ The exact provisioning SQL is in `ops/homologation/provision_runtime_login_roles
 - Capability owners for OAuth, event and OTP outbox remain NOLOGIN.
 - The 23 SECURITY DEFINER functions observed have `search_path=pg_catalog`, no PUBLIC EXECUTE, and executor-specific ACLs.
 - No RLS policies were found; RLS/FORCE RLS is disabled on all 40 public tables.
-- The new runtime logins intentionally have not been granted these executor roles yet. Memberships will be added only after each workload's function allowlist is reviewed and the application code no longer performs direct DML.
+- The new runtime logins have not been granted broad executor roles. The only current membership is the narrow OTP worker executor membership described above; web, scheduler and analytics remain without memberships. Additional memberships require reviewed function allowlists and removal of direct DML.
 
 ## Capability mapping still required
 
