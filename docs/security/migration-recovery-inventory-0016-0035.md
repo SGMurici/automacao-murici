@@ -1,0 +1,168 @@
+# KAPPA / OTP migration recovery inventory — 0016–0035
+
+Snapshot date: 2026-11-26  
+Repository target: `SGMurici/automacao-murici`  
+Canonical directory: `migrations/`  
+Recovery branch: `recovery/kappa-migrations-0016-0035-2026-11-26`
+
+## Important status
+
+This document records the local read-only Desktop Commander inventory and the subsequent byte-preserving import. **All 20 SQL source files 0016–0035 are now committed in the canonical `migrations/` directory** on recovery branch `recovery/kappa-migrations-0016-0035-2026-11-26`. The transfer used base64 file bytes and the destination Git blob ID was compared with the source Git blob ID for every file: 20/20 identical. SHA-256 values remain listed below and in `migrations/SHA256SUMS.kappa-otp-0016-0035`. This confirms transfer integrity, not historical execution or approval to apply.
+
+The local files were reported under:
+
+`C:/Users/Pichau/Documents/AutomacaoMurici/automacao-murici-backend-review/migrations/`
+
+Additional copies of 0016–0020 were reported under:
+
+- `C:/Users/Pichau/Documents/AutomacaoMurici/automacao-murici-backend-combined-review-2026-11-16/migrations/`
+- `C:/Users/Pichau/Documents/AutomacaoMurici/automacao-murici-backend-release-review-2026-11-16/migrations/`
+
+## Inventory and provenance
+
+SHA-256 values below are the values reported by the local read-only scan. For 0017–0019 and 0021–0034, they match the corresponding `source_sha256` values in the disposable Neon homologation ledger. This is a byte-level hash match to the recorded source hash, not proof that a migration runner executed those exact files.
+
+| Migration | Bytes | SHA-256 | Local copies | Ledger status / provenance |
+|---|---:|---|---:|---|
+| `0016_kappa_central_event_bus.sql` | 2,782 | `1a06bc75fff2f5f359a1f3761da657c8a57b52e85f293700091204171c31c2ab` | 3 | No ledger row; source provenance pending |
+| `0017_scope_connection_purpose_to_gmail.sql` | 1,128 | `c2ae3881a81974297c3697784953a78e066cd8ad5ec31ebc9f137ae5222bab2c` | 3 | Hash matches ledger; `reconciled / manual_equivalent_sql` |
+| `0018_bind_gmail_oauth_tickets_to_connection.sql` | 518 | `f7092ea88420607ae1f85c11443fbecdea26407cd83043703055440cd5be9449` | 3 | Hash matches ledger; `reconciled / manual_equivalent_sql` |
+| `0019_expand_external_connection_status.sql` | 152 | `7eae2f61362929e89ab5c20330a12bb69ac47202c2be0df0fea1fce32fa25119` | 3 | Hash matches ledger; `reconciled / manual_equivalent_sql` |
+| `0020_consent_acknowledgement.sql` | 335 | `85cb76219b47a422d3213de11596ed7d4f6343c2f5e4c2c4cf2741cd31d839db` | 3 | No ledger row; source provenance pending |
+| `0021_client_microsoft_oauth.sql` | 1,896 | `ce0cccd8a03aee260a75fb5bb2627354b18a23cab1de45e850acd37082594066` | 1 | Hash matches ledger; `reconciled / manual_equivalent_sql` |
+| `0022_linkedin_tenant_queue.sql` | 1,526 | `728fb338ff136f435da49b9fe0d4c6f8040599b526c7de86324dbed720be19c3` | 1 | Hash matches ledger; `reconciled / manual_equivalent_sql` |
+| `0023_client_linkedin_oauth.sql` | 1,744 | `1e203e27c361b4e22714f411e30d39b106efcba699e4213e056737a088dfc6b3` | 1 | Hash matches ledger; `reconciled / manual_equivalent_sql` |
+| `0024_linkedin_tenant_publication_result.sql` | 428 | `38d07e0019b54e6f85fa464c511d83a57ca3594ea203c24706c9a1d4b92f2f6a` | 1 | Hash matches ledger; `reconciled / manual_equivalent_sql` |
+| `0025_linkedin_post_analytics.sql` | 631 | `baf7449ae5a1778f71fc87b18a566044a3d814f9c6fb19b12040f2614dc1b92e` | 1 | Hash matches ledger; `reconciled / manual_equivalent_sql` |
+| `0026_linkedin_analytics_oauth.sql` | 2,944 | `4f904f15dfcd94fbbbe03b50040399ba664880741f6b4fa7072621876c89ae945` | 1 | Hash matches ledger; `reconciled / manual_equivalent_sql` |
+| `0027_linkedin_analytics_composite_tenant_fks.sql` | 1,939 | `e0a6514165c337fffe88cafe043289aa72ef211b915900ce4668f0ac805be63b` | 1 | Hash matches ledger; `reconciled / manual_equivalent_sql` |
+| `0028_oauth_ticket_tenant_provider_fks.sql` | 2,954 | `29343abcd874e78464a3a3238b3b427ce76f5dabba2e360f09090be6d1fd83ab` | 1 | Hash matches ledger; `reconciled / manual_equivalent_sql` |
+| `0029_linkedin_queue_snapshot_tenant_fks.sql` | 1,964 | `7b976415eafabb862b20efa6289282a2e6074e4341128cfb4f9e4f2551e788bf` | 1 | Hash matches ledger; `reconciled / manual_equivalent_sql` |
+| `0030_oauth_one_time_capabilities.sql` | 15,659 | `77cb5fb04b46fd40b0d3a4be04c29d37673faa2ea7be6bca97bcae4dda3ffd58` | 1 | Hash matches ledger; `applied / segmented_sql_transaction` |
+| `0031_event_bus_worker_capabilities.sql` | 12,413 | `08b0addaf4e8ec2c351674942a0d97e4c1db920c50e574c30c906bf5dda3d8d3` | 1 | Hash matches ledger; `applied / segmented_sql_transaction` |
+| `0032_otp_outbox_worker_capabilities.sql` | 18,053 | `8283699515b0a718516557eb6881323f1ee1be4431855f8af7c8ae789441501e` | 1 | Hash matches ledger; `applied / segmented_sql_transaction` |
+| `0033_calendar_sync_enqueue_capability.sql` | 6,834 | `1c5b266a2b741f2b93b4dfc3a0960b221afddb0b51957dc01f2418969c042473` | 1 | Hash matches ledger; `applied / segmented_sql_transaction` |
+| `0034_oauth_state_creation_capabilities.sql` | 10,106 | `d102ed2d566aa99c8bc45b48f2f3ef0bafb7d27fc13ee5f1dd35570ba7b67951` | 1 | Hash matches ledger; `applied / segmented_sql_transaction` |
+| `0035_external_connection_capabilities.sql` | 27,107 | `7af3bd23d416f5e7499c61834668080fc1c8dd5666fe27c286dc3454e06e574c` | 1 | No ledger row; source provenance pending |
+
+## Ledger interpretation
+
+- 0017–0029: ledger status `reconciled`, execution mode `manual_equivalent_sql`; the source hash matches, but the record does not prove byte-for-byte execution by a migration runner.
+- 0030–0034: ledger status `applied`, execution mode `segmented_sql_transaction`; the recorded source hash matches the local file hash, while execution was recorded as segmented SQL in a transaction, not as a checksum-aware migration-runner application.
+- 0016, 0020 and 0035: no row was found in the queried homologation ledger. Do not infer that they were applied.
+- The ledger is from a disposable Neon homologation branch, not production/default.
+
+## Import result and remaining execution gate
+
+- Imported to `migrations/` on commit `10517d64f480178a7e851c9b18e3049c5111ca36`.
+- All 20 destination Git blob IDs match the corresponding source Git blob IDs; the 20 SHA-256 values are recorded in `migrations/SHA256SUMS.kappa-otp-0016-0035`.
+- `migrations/.gitattributes` disables line-ending conversion for SQL files.
+- The recovery inventory is now versioned, but it is not an execution manifest. Review actual target catalog/data and role prerequisites before applying any file.
+- Review the 0016, 0020 and 0035 provenance separately; missing ledger rows do not prove non-application.
+- Do not run these files by glob. Use an explicitly reviewed per-environment plan, and do not re-run 0030–0034 on the homologation branch where the ledger already marks them applied.
+
+## Safety
+
+This register is documentation only. No SQL was executed, no Neon ledger was modified, no schema/role/grant/RLS change was made, and no Render or Vercel service was changed.
+
+
+## Follow-up static and catalog audit — 2026-11-26
+
+### Checksum correction
+
+A read-back of `migrations/0028_oauth_ticket_tenant_provider_fks.sql` and an independent SHA-256 calculation over the GitHub-served file content confirmed the correct digest is:
+
+`29343abcd874e78464a3a3238b3b427ce76f5dabba2e360f09090be6d1fd83ab`
+
+The original `SHA256SUMS.kappa-otp-0016-0035` entry omitted the `b` before `e6`. It was corrected in commit `abb069d3e9e0fd06acfc2a16ac1e73dda45c1184`. The corrected entry was read back from GitHub and matches the independently calculated digest. No SQL source file was changed.
+
+### Read-only Neon catalog recheck
+
+Target: project `sweet-dust-48417314`, disposable branch `br-delicate-snow-b6qpdscm`.
+
+- Ledger rows were present for 0017–0019 and 0021–0034 with the states previously recorded; no ledger rows for 0016, 0020 or 0035.
+- `kappa_domain_events` exists with 8 rows; `kappa_event_deliveries` exists with 9 rows. 0016 must not be reapplied to this branch. Its missing ledger row requires provenance reconciliation, not execution.
+- `consent_events_decision_check` still permits only `granted`, `denied`, `revoked`; `consent_events` has 0 rows. 0020 is a plausible isolated-branch candidate, but remains unapplied and requires explicit target-specific approval.
+- The 15 named external-connection capability functions introduced by 0035 are absent from this branch. 0035 remains unapplied here.
+
+### Security finding — 0035 remains BLOCKED (P0)
+
+Static review of `kappa_oauth_connection_context_valid(uuid,uuid)` in 0035 shows it reads `app.user_id`, `app.tenant_id` and `app.actor_role` from caller-settable PostgreSQL GUCs and then validates that the supplied user has an active tenant membership matching the supplied role. The function does not derive identity from or validate a bearer/session record in `auth_sessions`. A caller able to set these GUCs can potentially impersonate another active tenant member when invoking the granted SECURITY DEFINER capabilities. Keep the API executor from receiving these EXECUTE grants until the identity context is derived from a trusted, validated session and independent negative spoofing tests pass.
+
+This finding is consistent with the broader P0 noted for 0033/0034 OAuth state/capability functions. It is not a reason to rewrite the recovered source files in place; create a separately reviewed corrective migration after the trust boundary is designed and tested.
+
+### CI / review state
+
+At the time of this audit, the recovery PR has no submitted reviews or inline review threads. The latest checksum-correction commit has no PR-triggered workflow runs and no combined status checks returned by GitHub. This is not a passing CI result; static review and independent QA remain required.
+
+No SQL was executed and no Neon objects, roles, grants, RLS settings, Render/Vercel services, secrets or production resources were changed.
+
+
+### Application integration check — static review of PR #34 branch
+
+Reviewed `app.py`, `identity_core.py`, `identity_auth_core.py`, `otp_core.py`, `authorization_core.py` and `otp_email_outbox.py` on `fix/remove-runtime-ddl-2026-11-26`.
+
+- `app.py` calls `identity_core.validate_session(conn, token)` on the inspected authenticated routes, but contains no references to the `kappa_*` capability functions and no `set_config` / `current_setting` setup for `app.user_id`, `app.tenant_id` or `app.actor_role`.
+- The inspected identity and OTP Python modules also contain no GUC-setting bridge.
+- The inspected source therefore does not demonstrate that the authenticated bearer identity is transferred into a trusted database context for 0033–0035. It also does not show the new capability wrappers replacing the existing direct-DML paths.
+- This is a static integration gap, not proof of runtime exploitability by itself. The database-side GUC trust issue remains P0 because the SECURITY DEFINER functions accept caller-set identity context; do not grant them to a callable runtime until the bridge is designed to derive the user/tenant/role from a validated session and adversarial tests verify it.
+
+Exact caller-GUC consumers found:
+- 0033: `kappa_enqueue_calendar_sync_request` (reads `app.tenant_id`, `app.user_id`, `app.actor_role`).
+- 0034: `kappa_create_google_oauth_state`, `kappa_create_microsoft_oauth_state`, `kappa_create_linkedin_oauth_state`, `kappa_create_linkedin_analytics_oauth_state`.
+- 0035: `kappa_oauth_connection_context_valid`, called by all 14 provider connection read/write/revoke capabilities in that migration.
+
+Required remediation design: one trusted session-context capability must validate the bearer/session hash against `auth_sessions`, verify active user and tenant membership, and set transaction-local identity context from that database-derived result. Caller-provided user/tenant/role parameters must not be treated as proof. Test absent, expired, revoked, cross-tenant and spoofed GUC cases with actual workload roles before exposing the wrappers.
+
+
+### Runtime-role and OTP worker ACL recheck — read-only
+
+On disposable Neon branch `br-delicate-snow-b6qpdscm`:
+
+- `kappa_otp_worker_runtime_login` is LOGIN, NO SUPERUSER/CREATEDB/CREATEROLE/BYPASSRLS, and is a member of `kappa_otp_outbox_worker_executor` only.
+- `kappa_otp_runtime_homologation` exists but is NOLOGIN and has no memberships.
+- `kappa_web_runtime_login`, `kappa_scheduler_runtime_login`, and `kappa_analytics_runtime_login` are LOGIN roles with no memberships in this snapshot.
+- `kappa_otp_worker_runtime_login` has no direct SELECT/INSERT/UPDATE privilege on `otp_email_outbox`, no UPDATE on `otp_challenges), and no SELECT on `app_users`; it does have EXECUTE on all six OTP outbox wrappers. `kappa_web_runtime_login` has no EXECUTE on those six wrappers.
+- `neondb_owner` has direct DML/SELECT privileges on the sensitive tables and BYPASSRLS. It is an administrative owner role, not an acceptable application runtime identity.
+
+Static Python review of `otp_email_outbox.py` on PR #34 branch found direct SQL DML in `enqueue`, `expire_due`, `claim_batch`, `mark_dispatching`, `mark_sent`, `mark_failure`, and `mark_uncertain`. The module does not invoke the six `kappa_otp_outbox_*` wrappers. Therefore the least-privilege worker login is correctly denied direct DML but the inspected Python worker has not yet been refactored to use its allowed capability wrappers. Do not point this worker at the least-privilege login until that adapter refactor and integration tests are complete.
+
+
+### OTP wrapper-to-adapter contract — static mapping
+
+The six functions in 0032 can replace the worker's direct DML, but the current Python API must be adapted:
+
+| Existing Python operation | Capability wrapper | Adapter requirement |
+|---|---|---|
+| `expire_due(conn)` | `kappa_otp_outbox_expire_due()` | Read returned `uncertain` and `failed` counts; wrapper also finalizes challenge state. |
+| `claim_batch(conn, limit)` | `kappa_otp_outbox_claim_one()` | Wrapper claims exactly one row and increments attempts; loop up to configured batch size in Python, each claim in its own short transaction. |
+| `mark_dispatching(conn, challenge_id, lease_token)` | `kappa_otp_outbox_mark_dispatching(uuid,uuid,integer)` | Carry `attempts` from the claim result and pass it to the wrapper. |
+| `mark_sent(conn, challenge_id, lease_token, provider_reference)` | `kappa_otp_outbox_mark_sent(uuid,uuid,integer,text)` | Pass claimed `attempts`; remove the second `otp_core.mark_otp_delivery` update because wrapper finalizes challenge atomically. |
+| `mark_failure(...)` | `kappa_otp_outbox_mark_failure(uuid,uuid,integer,boolean,text)` | Pass claimed `attempts`; remove duplicate challenge update on terminal failure. |
+| `mark_uncertain(...)` | `kappa_otp_outbox_mark_uncertain(uuid,uuid,integer)` | Pass claimed `attempts`; remove duplicate challenge update. |
+
+The producer-side `enqueue` remains a separate trust boundary. Do not grant the worker enqueue capability; create/use an authenticated OTP producer capability for inserting a challenge and outbox record atomically. Split producer and worker interfaces if needed so the worker process cannot call enqueue.
+
+The wrapper signatures and return types were read from 0032; no adapter code was changed and no SQL was executed.
+
+
+### Structural reconciliation of 0016 — catalog evidence
+
+A read-only catalog comparison on `br-delicate-snow-b6qpdscm` confirms that the two tables created by 0016 match the source migration's declared columns, types/lengths, defaults, nullability, primary/unique/foreign/check constraints and indexes:
+
+- `kappa_domain_events`: 7 columns; `event_type varchar(100)`, `idempotency_key varchar(160)`; payload-object check; unique `(tenant_id,idempotency_key)); FK to `tenants(id)); tenant/time index.
+- `kappa_event_deliveries`: 12 columns; `consumer_key varchar(40)`, `status varchar(20)`, `last_error_code varchar(60)`; event/consumer unique; FK to `kappa_domain_events`; consumer/status/attempts/lease/delivered checks; due, lease and backlog indexes.
+- Existing rows: 8 domain events and 9 delivery records.
+
+This is strong structural evidence that 0016's schema is present on this branch, but not proof that the exact SQL file was executed. Since there is live data and no ledger row, do not reapply; reconcile historical execution/provenance instead.
+
+### 0020 disposition
+
+The source 0020 only changes `consent_events_decision_check` to additionally allow `acknowledged`. The current catalog check excludes that value and the table currently has zero rows. This makes 0020 a narrow candidate for the disposable homologation branch, but no write was authorized or performed. Confirm product/legal semantics of acknowledgement versus consent before any application, and record the target branch explicitly.
+
+
+### RLS and event-consumer boundary recheck — read-only
+
+- The disposable homologation branch has 40 public ordinary tables; RLS is enabled on 0/40 and FORCE RLS on 0/40. This is not acceptable as a general tenant-isolation control. Keep runtime direct table DML denied and do not treat this branch as a production-ready security posture. Any production rollout needs an explicit RLS/capability authorization design and independent tenant-isolation tests.
+- 0031 `kappa_claim_event_delivery(p_consumer,p_limit)` accepts any of five consumer keys (`push_notifications`, `calendar_sync`, `gmail_integrations`, `analytics`, `lyla_assistant`) and grants the same `kappa_event_worker_executor` role EXECUTE on claim/ack/retry/recovery wrappers. The function enforces a limit of exactly one, but the executor is not bound to one consumer identity. If one runtime receives this role, it can request all five consumer queues. Split executor identities/capabilities per consumer or validate a server-derived worker identity before connecting any event worker.
+- The role snapshot contains `kappa_event_worker_executor` and `kappa_event_api_enqueue_executor` as NOLOGIN roles but no dedicated LOGIN event-worker role. Runtime provisioning and per-consumer trust boundary remain open; do not create memberships by assumption.
