@@ -99,7 +99,7 @@ The initial blanket statement that all four runtime logins had no memberships wa
 - `kappa_otp_worker_runtime_login` is a member of `kappa_otp_outbox_worker_executor` with INHERIT and SET enabled. Effective checks show EXECUTE on `kappa_otp_outbox_claim_one()`, while direct UPDATE on `otp_email_outbox` and direct DML on `app_users` remain false.
 - `kappa_web_runtime_login` has no executor membership. Temporary grants to OAuth and event enqueue executors were revoked after confirming that the OAuth create functions rely on caller-set `app.user_id`, `app.tenant_id`, and `app.actor_role` GUCs. Do not grant these until a trusted bearer/session capability derives the principal and tenant inside the database.
 - `kappa_scheduler_runtime_login` and `kappa_analytics_runtime_login` remain without memberships or direct privileges.
-- No passwords have been provisioned. Neon password reset was not available for these SQL-created roles because they have no Neon API password record. Do not configure them in Render.
+- Earlier notes stated that no passwords had been provisioned and Neon password reset was unavailable for these SQL-created roles. A subsequent read-only catalog check found a non-null password verifier for all four roles. The origin is unresolved; do not authenticate with them or configure them in Render until reconciled.
 - A smoke-test attempt to `SET LOCAL ROLE kappa_api_oauth_executor` from `neondb_owner` was denied because Neon role membership has SET disabled. The transaction rolled back; synthetic user, tenant and OAuth state collision checks confirm zero residual fixture rows. This is NOT a function failure and is NOT a successful runtime test.
 
 The OTP runtime membership is a limited preparation step, not a runtime cutover. The Python worker still uses direct DML and `DATABASE_URL` in PR #34; refactor it to the six SQL wrappers and require a separate `OTP_WORKER_DATABASE_URL` before the role can be used. No worker code or Render environment was changed in this checkpoint.
@@ -108,3 +108,12 @@ The OTP runtime membership is a limited preparation step, not a runtime cutover.
 ## CI regression and fixture correction (26/11/2026)
 
 The first PR #35 CI run failed one of 280 tests: `test_verified_user_can_request_login_and_receive_second_session`. The test's SMTP mock had no call because its client IP fixture selected from only 255 possible addresses, allowing collision with the shared OTP rate-limit window in the class schema. The test fixture was changed to generate a synthetic client IP with 20 random bits in `172.16.0.0/12`, outside the configured trusted-proxy CIDRs. On HEAD `083919e3b987c7908cb81404c484e4fffa4b8f20`, GitHub Actions `python-tests` completed successfully: **280 tests passed** on PostgreSQL 16. This is regression evidence for the current PR, not QA of Neon runtime roles, RLS, or tenant isolation.
+
+
+## OTP worker integration and runtime credential reconciliation (26/11/2026)
+
+The six SQL wrappers have been verified in the disposable branch. Their signatures are listed in the PR description. The current Python worker still uses direct DML in `otp_email_outbox.py`; the worker CLI reads `DATABASE_URL`, and the live scheduler path calls `run_once(get_db_connection)`, where `get_db_connection` also uses `DATABASE_URL`. The wrappers already update the related `otp_challenges` row atomically, so the Python adapter must pass the attempts value and remove duplicate calls to `otp_core.mark_otp_delivery` after finalization.
+
+The scheduler runs inside the Flask/web process. Merely adding `OTP_WORKER_DATABASE_URL` to that same process does not isolate the credential from the web workload. A separate worker process/service is the stronger isolation boundary but may add cost; no new service or cron is authorized by this record. Keep the existing scheduler unchanged until an architecture decision.
+
+A read-only catalog query also returned `rolpassword IS NOT NULL` for each of the four runtime login roles. No password hash was read and no authentication was attempted. This conflicts with earlier notes and must be reconciled before any use of these roles. No secrets, Render settings, cron, production or persistent migrations were changed.
