@@ -103,3 +103,8 @@ The initial blanket statement that all four runtime logins had no memberships wa
 - A smoke-test attempt to `SET LOCAL ROLE kappa_api_oauth_executor` from `neondb_owner` was denied because Neon role membership has SET disabled. The transaction rolled back; synthetic user, tenant and OAuth state collision checks confirm zero residual fixture rows. This is NOT a function failure and is NOT a successful runtime test.
 
 The OTP runtime membership is a limited preparation step, not a runtime cutover. The Python worker still uses direct DML and `DATABASE_URL` in PR #34; refactor it to the six SQL wrappers and require a separate `OTP_WORKER_DATABASE_URL` before the role can be used. No worker code or Render environment was changed in this checkpoint.
+
+
+## CI regression and fixture correction (26/11/2026)
+
+The first PR #35 CI run failed one of 280 tests: `test_verified_user_can_request_login_and_receive_second_session`. The test's SMTP mock had no call because its client IP fixture selected from only 255 possible addresses, allowing collision with the shared OTP rate-limit window in the class schema. The test fixture was changed to generate a synthetic client IP with 20 random bits in `172.16.0.0/12`, outside the configured trusted-proxy CIDRs. On HEAD `083919e3b987c7908cb81404c484e4fffa4b8f20`, GitHub Actions `python-tests` completed successfully: **280 tests passed** on PostgreSQL 16. This is regression evidence for the current PR, not QA of Neon runtime roles, RLS, or tenant isolation.
