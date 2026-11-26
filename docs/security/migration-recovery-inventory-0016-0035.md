@@ -144,3 +144,18 @@ The six functions in 0032 can replace the worker's direct DML, but the current P
 The producer-side `enqueue` remains a separate trust boundary. Do not grant the worker enqueue capability; create/use an authenticated OTP producer capability for inserting a challenge and outbox record atomically. Split producer and worker interfaces if needed so the worker process cannot call enqueue.
 
 The wrapper signatures and return types were read from 0032; no adapter code was changed and no SQL was executed.
+
+
+### Structural reconciliation of 0016 — catalog evidence
+
+A read-only catalog comparison on `br-delicate-snow-b6qpdscm` confirms that the two tables created by 0016 match the source migration's declared columns, types/lengths, defaults, nullability, primary/unique/foreign/check constraints and indexes:
+
+- `kappa_domain_events`: 7 columns; `event_type varchar(100)`, `idempotency_key varchar(160)`; payload-object check; unique `(tenant_id,idempotency_key)); FK to `tenants(id)); tenant/time index.
+- `kappa_event_deliveries`: 12 columns; `consumer_key varchar(40)`, `status varchar(20)`, `last_error_code varchar(60)`; event/consumer unique; FK to `kappa_domain_events`; consumer/status/attempts/lease/delivered checks; due, lease and backlog indexes.
+- Existing rows: 8 domain events and 9 delivery records.
+
+This is strong structural evidence that 0016's schema is present on this branch, but not proof that the exact SQL file was executed. Since there is live data and no ledger row, do not reapply; reconcile historical execution/provenance instead.
+
+### 0020 disposition
+
+The source 0020 only changes `consent_events_decision_check` to additionally allow `acknowledged`. The current catalog check excludes that value and the table currently has zero rows. This makes 0020 a narrow candidate for the disposable homologation branch, but no write was authorized or performed. Confirm product/legal semantics of acknowledgement versus consent before any application, and record the target branch explicitly.
