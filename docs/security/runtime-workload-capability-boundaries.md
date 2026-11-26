@@ -96,13 +96,13 @@ The sampled `has_column_privilege` checks returned true for these grants. This i
 
 The initial blanket statement that all four runtime logins had no memberships was superseded by a narrowly scoped grant:
 
-- `kappa_otp_worker_runtime_login` is a member of `kappa_otp_outbox_worker_executor` with INHERIT and SET enabled. Effective checks show EXECUTE on `kappa_otp_outbox_claim_one()`, while direct UPDATE on `otp_email_outbox` and direct DML on `app_users` remain false.
+- `kappa_otp_worker_runtime_login` is a member of `kappa_otp_outbox_worker_executor` with INHERIT and SET enabled. Effective checks show EXECUTE on exactly the six `kappa_otp_outbox_*` functions, while direct DML on `otp_email_outbox`, `otp_challenges`, and `app_users` remains false. No other SECURITY DEFINER function EXECUTE was observed for this login.
 - `kappa_web_runtime_login` has no executor membership. Temporary grants to OAuth and event enqueue executors were revoked after confirming that the OAuth create functions rely on caller-set `app.user_id`, `app.tenant_id`, and `app.actor_role` GUCs. Do not grant these until a trusted bearer/session capability derives the principal and tenant inside the database.
 - `kappa_scheduler_runtime_login` and `kappa_analytics_runtime_login` remain without memberships or direct privileges.
 - Earlier notes stated that no passwords had been provisioned and Neon password reset was unavailable for these SQL-created roles. A subsequent read-only catalog check found a non-null password verifier for all four roles. The origin is unresolved; do not authenticate with them or configure them in Render until reconciled.
 - A smoke-test attempt to `SET LOCAL ROLE kappa_api_oauth_executor` from `neondb_owner` was denied because Neon role membership has SET disabled. The transaction rolled back; synthetic user, tenant and OAuth state collision checks confirm zero residual fixture rows. This is NOT a function failure and is NOT a successful runtime test.
 
-The OTP runtime membership is a limited preparation step, not a runtime cutover. The Python worker still uses direct DML and `DATABASE_URL` in PR #34; refactor it to the six SQL wrappers and require a separate `OTP_WORKER_DATABASE_URL` before the role can be used. No worker code or Render environment was changed in this checkpoint.
+The OTP runtime membership is a limited preparation step, not a runtime cutover. The Python worker still uses direct DML and `DATABASE_URL` in PR #34; refactor it to the six SQL wrappers before the role can be used. The scheduler invokes the worker inside the Flask/web process; merely adding `OTP_WORKER_DATABASE_URL` to that process does not provide process isolation. No worker code or Render environment was changed in this checkpoint.
 
 
 ## CI regression and fixture correction (26/11/2026)
@@ -117,3 +117,20 @@ The six SQL wrappers have been verified in the disposable branch. Their signatur
 The scheduler runs inside the Flask/web process. Merely adding `OTP_WORKER_DATABASE_URL` to that same process does not isolate the credential from the web workload. A separate worker process/service is the stronger isolation boundary but may add cost; no new service or cron is authorized by this record. Keep the existing scheduler unchanged until an architecture decision.
 
 A read-only catalog query also returned `rolpassword IS NOT NULL` for each of the four runtime login roles. No password hash was read and no authentication was attempted. This conflicts with earlier notes and must be reconciled before any use of these roles. No secrets, Render settings, cron, production or persistent migrations were changed.
+
+
+## Event worker capability review (26/11/2026)
+
+A read-only catalog review of the five event SECURITY DEFINER functions found:
+
+- `kappa_claim_event_delivery(p_consumer, p_limit)` accepts five consumer keys: `push_notifications`, `calendar_sync`, `gmail_integrations`, `analytics`, and `lyla_assistant`. It enforces `p_limit = 1`, claims due or expired-lease work with `FOR UPDATE SKIP LOCKED`, increments attempts and creates a 120-second lease.
+- `kappa_ack_event_delivery` requires the matching active lease token and unexpired lease.
+- `kappa_retry_event_delivery` requires matching delivery, token, lease and attempt count; validates error code and applies bounded backoff/dead-letter at attempt 8.
+- `kappa_recover_exhausted_event_leases` moves expired processing leases at attempt 8 to dead-letter for the supplied consumer.
+- `kappa_enqueue_calendar_sync_request` remains the fifth function and has the caller-GUC identity issue recorded above.
+
+The event worker functions are service capabilities, not user-session capabilities. However, the shared event worker executor surface allows a caller with EXECUTE to claim/ack/retry/recover across all five consumer keys by choosing `p_consumer`. Before granting a runtime login, determine whether one worker process is intentionally trusted for all consumers. If not, split consumer-specific executor roles/functions or enforce the consumer binding against the authenticated workload identity (e.g. `session_user`) inside each capability. Do not grant a broad event worker executor to web/scheduler/analytics by convenience. Runtime event membership was not granted or changed in this review.
+
+The four OAuth state consume functions atomically mark an unconsumed, unexpired state hash consumed and return the server-stored user/tenant (plus provider-specific PKCE/purpose data). Ticket consume functions require matching hash, user_id and tenant_id and atomically consume an unexpired ticket. Their security still depends on the hash remaining secret and server-side callers using the user/tenant returned by the state consume result; do not treat client-provided user/tenant as authority. Add replay, wrong-user, wrong-tenant and state-to-ticket binding tests.
+
+This was static definition review only. No functions were executed and no grants, memberships or data were changed.
