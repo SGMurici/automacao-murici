@@ -691,7 +691,7 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             """INSERT INTO otp_challenges
                (id, identity_type, identity_lookup_hash, purpose, code_hash, expires_at)
                VALUES (%s, 'email', %s, 'login', %s, NOW() + INTERVAL '5 minutes')""",
-            (challenge_id, hashlib.sha256(b"uncertain-email").digest(), b"otp-hash"),
+            (challenge_id, hashlib.sha256(b"uncertain-email").digest(), b"o" * 32),
         )
         self.conn.execute(
             """INSERT INTO otp_email_outbox
@@ -727,7 +727,7 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             """INSERT INTO otp_challenges
                (id, identity_type, identity_lookup_hash, purpose, code_hash, expires_at)
                VALUES (%s, 'email', %s, 'login', %s, NOW() + INTERVAL '5 minutes')""",
-            (challenge_id, hashlib.sha256(b"dispatching-expired").digest(), b"otp-hash"),
+            (challenge_id, hashlib.sha256(b"dispatching-expired").digest(), b"o" * 32),
         )
         self.conn.execute(
             """INSERT INTO otp_email_outbox
