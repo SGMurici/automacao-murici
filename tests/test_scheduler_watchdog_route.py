@@ -19,7 +19,7 @@ class SchedulerWatchdogRouteTests(unittest.TestCase):
         connection, cursor = self._locked_connection(True)
         with (
             patch.object(application, "require_publish_secret", return_value=None),
-            patch.object(application, "ensure_scheduler_tables"),
+            patch.object(application, "require_scheduler_schema"),
             patch.object(application, "get_db_connection", return_value=connection),
             patch.object(application, "scheduler_recover_expired_processing", return_value=2) as recover,
         ):
@@ -35,7 +35,7 @@ class SchedulerWatchdogRouteTests(unittest.TestCase):
         connection, _cursor = self._locked_connection(False)
         with (
             patch.object(application, "require_publish_secret", return_value=None),
-            patch.object(application, "ensure_scheduler_tables"),
+            patch.object(application, "require_scheduler_schema"),
             patch.object(application, "get_db_connection", return_value=connection),
             patch.object(application, "scheduler_recover_expired_processing") as recover,
         ):
