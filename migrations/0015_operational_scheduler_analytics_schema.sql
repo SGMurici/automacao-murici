@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS linkedin_post_metrics (
         UNIQUE (linkedin_post_id, measured_at)
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS linkedin_post_metrics_unique_snapshot
+    ON linkedin_post_metrics(linkedin_post_id, measured_at);
 CREATE INDEX IF NOT EXISTS idx_linkedin_post_metrics_post
     ON linkedin_post_metrics(linkedin_post_id);
 CREATE INDEX IF NOT EXISTS idx_linkedin_post_metrics_editorial
