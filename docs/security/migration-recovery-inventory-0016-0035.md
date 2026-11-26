@@ -159,3 +159,10 @@ This is strong structural evidence that 0016's schema is present on this branch,
 ### 0020 disposition
 
 The source 0020 only changes `consent_events_decision_check` to additionally allow `acknowledged`. The current catalog check excludes that value and the table currently has zero rows. This makes 0020 a narrow candidate for the disposable homologation branch, but no write was authorized or performed. Confirm product/legal semantics of acknowledgement versus consent before any application, and record the target branch explicitly.
+
+
+### RLS and event-consumer boundary recheck — read-only
+
+- The disposable homologation branch has 40 public ordinary tables; RLS is enabled on 0/40 and FORCE RLS on 0/40. This is not acceptable as a general tenant-isolation control. Keep runtime direct table DML denied and do not treat this branch as a production-ready security posture. Any production rollout needs an explicit RLS/capability authorization design and independent tenant-isolation tests.
+- 0031 `kappa_claim_event_delivery(p_consumer,p_limit)` accepts any of five consumer keys (`push_notifications`, `calendar_sync`, `gmail_integrations`, `analytics`, `lyla_assistant`) and grants the same `kappa_event_worker_executor` role EXECUTE on claim/ack/retry/recovery wrappers. The function enforces a limit of exactly one, but the executor is not bound to one consumer identity. If one runtime receives this role, it can request all five consumer queues. Split executor identities/capabilities per consumer or validate a server-derived worker identity before connecting any event worker.
+- The role snapshot contains `kappa_event_worker_executor` and `kappa_event_api_enqueue_executor` as NOLOGIN roles but no dedicated LOGIN event-worker role. Runtime provisioning and per-consumer trust boundary remain open; do not create memberships by assumption.
