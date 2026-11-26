@@ -64,3 +64,35 @@ SHA-256 values below are the values reported by the local read-only scan. For 00
 ## Safety
 
 This register is documentation only. No SQL was executed, no Neon ledger was modified, no schema/role/grant/RLS change was made, and no Render or Vercel service was changed.
+
+
+## Follow-up static and catalog audit — 2026-11-26
+
+### Checksum correction
+
+A read-back of `migrations/0028_oauth_ticket_tenant_provider_fks.sql` and an independent SHA-256 calculation over the GitHub-served file content confirmed the correct digest is:
+
+`29343abcd874e78464a3a3238b3b427ce76f5dabba2e360f09090be6d1fd83ab`
+
+The original `SHA256SUMS.kappa-otp-0016-0035` entry omitted the `b` before `e6`. It was corrected in commit `abb069d3e9e0fd06acfc2a16ac1e73dda45c1184`. The corrected entry was read back from GitHub and matches the independently calculated digest. No SQL source file was changed.
+
+### Read-only Neon catalog recheck
+
+Target: project `sweet-dust-48417314`, disposable branch `br-delicate-snow-b6qpdscm`.
+
+- Ledger rows were present for 0017–0019 and 0021–0034 with the states previously recorded; no ledger rows for 0016, 0020 or 0035.
+- `kappa_domain_events` exists with 8 rows; `kappa_event_deliveries` exists with 9 rows. 0016 must not be reapplied to this branch. Its missing ledger row requires provenance reconciliation, not execution.
+- `consent_events_decision_check` still permits only `granted`, `denied`, `revoked`; `consent_events` has 0 rows. 0020 is a plausible isolated-branch candidate, but remains unapplied and requires explicit target-specific approval.
+- The 15 named external-connection capability functions introduced by 0035 are absent from this branch. 0035 remains unapplied here.
+
+### Security finding — 0035 remains BLOCKED (P0)
+
+Static review of `kappa_oauth_connection_context_valid(uuid,uuid)` in 0035 shows it reads `app.user_id`, `app.tenant_id` and `app.actor_role` from caller-settable PostgreSQL GUCs and then validates that the supplied user has an active tenant membership matching the supplied role. The function does not derive identity from or validate a bearer/session record in `auth_sessions`. A caller able to set these GUCs can potentially impersonate another active tenant member when invoking the granted SECURITY DEFINER capabilities. Keep the API executor from receiving these EXECUTE grants until the identity context is derived from a trusted, validated session and independent negative spoofing tests pass.
+
+This finding is consistent with the broader P0 noted for 0033/0034 OAuth state/capability functions. It is not a reason to rewrite the recovered source files in place; create a separately reviewed corrective migration after the trust boundary is designed and tested.
+
+### CI / review state
+
+At the time of this audit, the recovery PR has no submitted reviews or inline review threads. The latest checksum-correction commit has no PR-triggered workflow runs and no combined status checks returned by GitHub. This is not a passing CI result; static review and independent QA remain required.
+
+No SQL was executed and no Neon objects, roles, grants, RLS settings, Render/Vercel services, secrets or production resources were changed.
