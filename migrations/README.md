@@ -38,6 +38,12 @@ The explicit list in `tests/test_identity_migrations_postgres.py` is the test ha
 - `legacy/0004_customer_drive_oauth.sql` is preserved for historical traceability only. Customer Google Drive backup is out of product scope. Do not apply this migration to new or existing environments as part of the approved product path.
 - The corresponding customer Drive backup modules and tests have been removed from the active integration branch. The historical design note is under `docs/archive/`.
 
+## Recovered KAPPA / OTP source files 0016–0035 — import pending
+
+The local read-only recovery inventory found 20 migration files (0016–0035), with 30 local copies. The canonical target is this repository's `migrations/` directory. **The SQL source files have not yet been committed to GitHub.** Their local names, byte sizes, SHA-256 values, and Neon ledger comparison are recorded in [the recovery inventory](../docs/security/migration-recovery-inventory-0016-0035.md).
+
+Do not treat the inventory as SQL source, do not reconstruct missing SQL from hashes, and do not execute these migrations from this record. The files may be marked as versioned only after their exact bytes are transferred, re-hashed, and committed. In particular, 0016, 0020 and 0035 have no row in the queried Neon homologation ledger; 0017–0034 have the ledger states described in the provenance register.
+
 ## Mandatory preflight before any database write
 
 1. Confirm the target project and branch by ID and name.
