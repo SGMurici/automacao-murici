@@ -96,3 +96,20 @@ This finding is consistent with the broader P0 noted for 0033/0034 OAuth state/c
 At the time of this audit, the recovery PR has no submitted reviews or inline review threads. The latest checksum-correction commit has no PR-triggered workflow runs and no combined status checks returned by GitHub. This is not a passing CI result; static review and independent QA remain required.
 
 No SQL was executed and no Neon objects, roles, grants, RLS settings, Render/Vercel services, secrets or production resources were changed.
+
+
+### Application integration check — static review of PR #34 branch
+
+Reviewed `app.py`, `identity_core.py`, `identity_auth_core.py`, `otp_core.py`, `authorization_core.py` and `otp_email_outbox.py` on `fix/remove-runtime-ddl-2026-11-26`.
+
+- `app.py` calls `identity_core.validate_session(conn, token)` on the inspected authenticated routes, but contains no references to the `kappa_*` capability functions and no `set_config` / `current_setting` setup for `app.user_id`, `app.tenant_id` or `app.actor_role`.
+- The inspected identity and OTP Python modules also contain no GUC-setting bridge.
+- The inspected source therefore does not demonstrate that the authenticated bearer identity is transferred into a trusted database context for 0033–0035. It also does not show the new capability wrappers replacing the existing direct-DML paths.
+- This is a static integration gap, not proof of runtime exploitability by itself. The database-side GUC trust issue remains P0 because the SECURITY DEFINER functions accept caller-set identity context; do not grant them to a callable runtime until the bridge is designed to derive the user/tenant/role from a validated session and adversarial tests verify it.
+
+Exact caller-GUC consumers found:
+- 0033: `kappa_enqueue_calendar_sync_request` (reads `app.tenant_id`, `app.user_id`, `app.actor_role`).
+- 0034: `kappa_create_google_oauth_state`, `kappa_create_microsoft_oauth_state`, `kappa_create_linkedin_oauth_state`, `kappa_create_linkedin_analytics_oauth_state`.
+- 0035: `kappa_oauth_connection_context_valid`, called by all 14 provider connection read/write/revoke capabilities in that migration.
+
+Required remediation design: one trusted session-context capability must validate the bearer/session hash against `auth_sessions`, verify active user and tenant membership, and set transaction-local identity context from that database-derived result. Caller-provided user/tenant/role parameters must not be treated as proof. Test absent, expired, revoked, cross-tenant and spoofed GUC cases with actual workload roles before exposing the wrappers.
