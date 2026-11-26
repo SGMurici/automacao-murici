@@ -1,0 +1,157 @@
+# Runtime workload roles and capability boundary — homologation
+
+Date: 2026-11-26
+
+## Scope and immutable references
+
+- Repository: `SGMurici/automacao-murici`
+- Candidate base: PR #34 HEAD `a7195382132c3f771a5d48c395d16d5a0d221507`
+- This work branch: `security/runtime-capability-boundaries-2026-11-26`
+- Neon project: `sweet-dust-48417314` (Automação Murici)
+- Disposable target branch: `br-delicate-snow-b6qpdscm`, name `kappa-otp-runtime-grants-test-2026-11-25`
+- Preserved parent: `br-wild-math-b6o7j6sd`, name `kappa-otp-runtime-baseline-preserved-2026-11-25`
+- Target is non-default, non-primary, unprotected, and derived from the preserved baseline. Production/default is `br-young-field-b65u7hwg`; it was not modified.
+
+## Runtime logins provisioned in the disposable branch
+
+Four LOGIN roles were created in one transaction on the disposable branch:
+
+| Role | LOGIN | INHERIT | Superuser / CREATEDB / CREATEROLE / REPLICATION / BYPASSRLS |
+|---|---:|---:|---|
+| `kappa_web_runtime_login` | true | true | all false |
+| `kappa_scheduler_runtime_login` | true | true | all false |
+| `kappa_otp_worker_runtime_login` | true | true | all false |
+| `kappa_analytics_runtime_login` | true | true | all false |
+
+At initial creation, all four had no direct table privileges, no sequence privileges, no function EXECUTE privileges, and no memberships in executor/capability-owner roles. This was superseded by a later narrow OTP-only membership: `kappa_otp_worker_runtime_login` is a member of `kappa_otp_outbox_worker_executor`; web, scheduler and analytics have no executor memberships. A later read-only catalog check found a non-null password verifier for all four roles, contrary to the initial script comment that no passwords were set. Provenance is unresolved; do not authenticate with or configure these roles until reconciled. This remains fail-closed staging.
+
+The exact provisioning SQL is in `ops/homologation/provision_runtime_login_roles.sql`. It is explicitly homologation-only and must not be treated as a production migration.
+
+## Current executor/capability inventory observed in the target
+
+- `kappa_api_oauth_executor`: EXECUTE on the existing client OAuth state/ticket capabilities.
+- `kappa_event_api_enqueue_executor`: EXECUTE on the calendar-sync enqueue capability.
+- `kappa_event_worker_executor`: EXECUTE on event delivery claim/ack/retry/recovery capabilities.
+- `kappa_otp_outbox_worker_executor`: EXECUTE on the six OTP outbox capabilities.
+- Capability owners for OAuth, event and OTP outbox remain NOLOGIN.
+- The 23 SECURITY DEFINER functions observed have `search_path=pg_catalog`, no PUBLIC EXECUTE, and executor-specific ACLs.
+- No RLS policies were found; RLS/FORCE RLS is disabled on all 40 public tables.
+- The new runtime logins have not been granted broad executor roles. The only current membership is the narrow OTP worker executor membership described above; web, scheduler and analytics remain without memberships. Additional memberships require reviewed function allowlists and removal of direct DML.
+
+## Capability mapping still required
+
+| Workload | Required capability surface | Current state |
+|---|---|---|
+| Web/API | bearer/session resolution, OTP request/verify, signup/login completion, tenant membership derivation, OAuth state/ticket, limited event enqueue | Existing OAuth/event enqueue wrappers only partially cover the path. Identity/session/OTP business capabilities are incomplete. |
+| Scheduler | publishing queue claim/complete/uncertain/reconcile, pending-signup cleanup, event dispatch only if assigned | Publishing and cleanup still contain direct DML in PR #34. No membership granted. |
+| OTP worker | outbox claim, dispatching, sent/failure/uncertain, expiry | Six SQL wrappers exist, but Python worker still contains direct DML. Runtime membership is withheld until Python adapter uses wrappers. |
+| Analytics | collection-run lifecycle, snapshot insertion, OAuth connection access with tenant scope | Dedicated analytics capability owner/executor and functions not yet evidenced. No membership granted. |
+
+No workload login may own tables, inherit `neondb_owner`, use BYPASSRLS, execute arbitrary SQL, or receive broad table DML.
+
+## Critical findings before credentials or workload cutover
+
+1. PR #34 application modules still use `DATABASE_URL` and direct DML for identity, sessions, OTP, outbox, publishing, analytics and signup cleanup. A runtime login without table privileges will fail closed; do not point Render at it yet.
+2. Existing SQL OAuth capabilities cover client-specific OAuth state/tickets, not necessarily the legacy `oauth_states` table or operational Google/LinkedIn credential UPSERT/refresh paths.
+3. Five existing SECURITY DEFINER functions rely on transaction/session GUCs `app.user_id`, `app.tenant_id`, and `app.actor_role`. These values are not identity proof. A trusted capability must validate the bearer/session and derive membership before setting transaction-local context. No client-provided GUC may be trusted.
+4. RLS/FORCE RLS is absent on 40/40 tables. Capability-only isolation must be demonstrated end-to-end; RLS is an additional defense, not a substitute for secure capabilities.
+5. `kappa_schema_migrations` contains 17 records (0017–0019, 0021–0034). 0017–0029 are marked `reconciled/manual_equivalent_sql`; 0030–0034 are marked `applied/segmented_sql_transaction`. Migration 0020 is absent. The current PR #34 tree contains migrations 0001–0015 but no source files 0017–0034. Their ledger hashes therefore cannot currently be reproduced from the PR source tree.
+6. The target branch is PostgreSQL 18.7, while PR CI is PostgreSQL 16. CI results are useful regression evidence but do not establish compatibility or effective privilege behavior on this branch.
+7. Passwords and Render environment variables have not been read, rotated, or changed. No credentials have been issued for the four new logins.
+
+## Next implementation order
+
+1. Recover and verify the exact SQL sources/hashes for migrations 0017–0034; reconcile ledger, current catalog, and baseline migrations. Do not invent replacement hashes.
+2. Build one transaction-local trusted principal context from a validated bearer/session; prove reset on pooled connection reuse and reject spoofed GUC.
+3. Implement complete business capabilities for auth/session/OTP, not generic table wrappers. Reuse existing outbox functions and remove duplicate Python DML.
+4. Add capabilities for legacy OAuth state, operational credential link/refresh, publishing, analytics and pending-signup cleanup.
+5. Assign each login only its required executor membership. Then issue ephemeral homologation credentials and run positive/negative tests as actual login roles.
+6. Chat 3 independently tests DML denial, function allowlists, GUC spoofing, pool reuse, tenant A/B isolation, OTP/outbox concurrency, OAuth replay, publishing ambiguity and analytics isolation.
+7. Only after QA evidence and separate authorization: prepare production migration and credential/Render transition plan. No merge, deployment, secret rotation, cron changes or worker scheduling are part of this PR.
+
+## Changes performed
+
+- Created the four LOGIN roles only in `br-delicate-snow-b6qpdscm`.
+- Verified LOGIN=true and all administrative flags false.
+- Verified no table SELECT/INSERT/UPDATE privileges and no sampled OAuth/OTP function EXECUTE privileges for the new logins.
+- Created a GitHub work branch from PR #34 HEAD and added the homologation-only SQL script and this audit record.
+- No production/default Neon branch, Render service, secret, cron, customer data, PR #33/#34, or Windows/KAPPA environment was changed.
+- No tests were executed as part of this checkpoint. QA remains BLOCKED/NOT RUN pending complete capabilities and credentials.
+
+
+## Clarification — owner column-level grants verified (26/11/2026)
+
+A second catalog query included `information_schema.column_privileges`; the earlier table-level query alone did not expose these grants. The target branch has **150 effective column-level grants** across the three existing capability owners:
+
+| Capability owner | Grants | Tables | Distinct columns | Operations |
+|---|---:|---:|---:|---|
+| `kappa_event_capability_owner` | 39 | 4 | 25 | INSERT, SELECT, UPDATE |
+| `kappa_oauth_capability_owner` | 82 | 10 | 55 | INSERT, SELECT, UPDATE |
+| `kappa_otp_outbox_capability_owner` | 29 | 2 | 20 | SELECT, UPDATE |
+
+The sampled `has_column_privilege` checks returned true for these grants. This is distinct from table-level grants, which remain absent. The earlier audit statement “zero table grants” must not be read as “zero privileges”: column-level grants are present and effective for the capability owners. Executors and the four newly created runtime logins still have no direct table/column grants. This confirms the owners' current minimum column-level grants exist, but does not prove every function succeeds or that the grant set is minimal; runtime positive/negative tests are still required.
+
+
+## Runtime membership refinement and smoke-test boundary (26/11/2026)
+
+The initial blanket statement that all four runtime logins had no memberships was superseded by a narrowly scoped grant:
+
+- `kappa_otp_worker_runtime_login` is a member of `kappa_otp_outbox_worker_executor` with INHERIT and SET enabled. Effective checks show EXECUTE on exactly the six `kappa_otp_outbox_*` functions, while direct DML on `otp_email_outbox`, `otp_challenges`, and `app_users` remains false. No other SECURITY DEFINER function EXECUTE was observed for this login.
+- `kappa_web_runtime_login` has no executor membership. Temporary grants to OAuth and event enqueue executors were revoked after confirming that the OAuth create functions rely on caller-set `app.user_id`, `app.tenant_id`, and `app.actor_role` GUCs. Do not grant these until a trusted bearer/session capability derives the principal and tenant inside the database.
+- `kappa_scheduler_runtime_login` and `kappa_analytics_runtime_login` remain without memberships or direct privileges.
+- Earlier notes stated that no passwords had been provisioned and Neon password reset was unavailable for these SQL-created roles. A subsequent read-only catalog check found a non-null password verifier for all four roles. The origin is unresolved; do not authenticate with them or configure them in Render until reconciled.
+- A smoke-test attempt to `SET LOCAL ROLE kappa_api_oauth_executor` from `neondb_owner` was denied because Neon role membership has SET disabled. The transaction rolled back; synthetic user, tenant and OAuth state collision checks confirm zero residual fixture rows. This is NOT a function failure and is NOT a successful runtime test.
+
+The OTP runtime membership is a limited preparation step, not a runtime cutover. The Python worker still uses direct DML and `DATABASE_URL` in PR #34; refactor it to the six SQL wrappers before the role can be used. The scheduler invokes the worker inside the Flask/web process; merely adding `OTP_WORKER_DATABASE_URL` to that process does not provide process isolation. No worker code or Render environment was changed in this checkpoint.
+
+
+## CI regression and fixture correction (26/11/2026)
+
+The first PR #35 CI run failed one of 280 tests: `test_verified_user_can_request_login_and_receive_second_session`. The test's SMTP mock had no call because its client IP fixture selected from only 255 possible addresses, allowing collision with the shared OTP rate-limit window in the class schema. The test fixture was changed to generate a synthetic client IP with 20 random bits in `172.16.0.0/12`, outside the configured trusted-proxy CIDRs. On HEAD `083919e3b987c7908cb81404c484e4fffa4b8f20`, GitHub Actions `python-tests` completed successfully: **280 tests passed** on PostgreSQL 16. This is regression evidence for the current PR, not QA of Neon runtime roles, RLS, or tenant isolation.
+
+
+## OTP worker integration and runtime credential reconciliation (26/11/2026)
+
+The six SQL wrappers have been verified in the disposable branch. Their signatures are listed in the PR description. The current Python worker still uses direct DML in `otp_email_outbox.py`; the worker CLI reads `DATABASE_URL`, and the live scheduler path calls `run_once(get_db_connection)`, where `get_db_connection` also uses `DATABASE_URL`. The wrappers already update the related `otp_challenges` row atomically, so the Python adapter must pass the attempts value and remove duplicate calls to `otp_core.mark_otp_delivery` after finalization.
+
+The scheduler runs inside the Flask/web process. Merely adding `OTP_WORKER_DATABASE_URL` to that same process does not isolate the credential from the web workload. A separate worker process/service is the stronger isolation boundary but may add cost; no new service or cron is authorized by this record. Keep the existing scheduler unchanged until an architecture decision.
+
+A read-only catalog query also returned `rolpassword IS NOT NULL` for each of the four runtime login roles. No password hash was read and no authentication was attempted. This conflicts with earlier notes and must be reconciled before any use of these roles. No secrets, Render settings, cron, production or persistent migrations were changed.
+
+
+## Event worker capability review (26/11/2026)
+
+A read-only catalog review of the five event SECURITY DEFINER functions found:
+
+- `kappa_claim_event_delivery(p_consumer, p_limit)` accepts five consumer keys: `push_notifications`, `calendar_sync`, `gmail_integrations`, `analytics`, and `lyla_assistant`. It enforces `p_limit = 1`, claims due or expired-lease work with `FOR UPDATE SKIP LOCKED`, increments attempts and creates a 120-second lease.
+- `kappa_ack_event_delivery` requires the matching active lease token and unexpired lease.
+- `kappa_retry_event_delivery` requires matching delivery, token, lease and attempt count; validates error code and applies bounded backoff/dead-letter at attempt 8.
+- `kappa_recover_exhausted_event_leases` moves expired processing leases at attempt 8 to dead-letter for the supplied consumer.
+- `kappa_enqueue_calendar_sync_request` remains the fifth function and has the caller-GUC identity issue recorded above.
+
+The event worker functions are service capabilities, not user-session capabilities. However, the shared event worker executor surface allows a caller with EXECUTE to claim/ack/retry/recover across all five consumer keys by choosing `p_consumer`. Before granting a runtime login, determine whether one worker process is intentionally trusted for all consumers. If not, split consumer-specific executor roles/functions or enforce the consumer binding against the authenticated workload identity (e.g. `session_user`) inside each capability. Do not grant a broad event worker executor to web/scheduler/analytics by convenience. Runtime event membership was not granted or changed in this review.
+
+The four OAuth state consume functions atomically mark an unconsumed, unexpired state hash consumed and return the server-stored user/tenant (plus provider-specific PKCE/purpose data). Ticket consume functions require matching hash, user_id and tenant_id and atomically consume an unexpired ticket. Their security still depends on the hash remaining secret and server-side callers using the user/tenant returned by the state consume result; do not treat client-provided user/tenant as authority. Add replay, wrong-user, wrong-tenant and state-to-ticket binding tests.
+
+This was static definition review only. No functions were executed and no grants, memberships or data were changed.
+
+
+## OTP/session hash contract and schema constraints (26/11/2026)
+
+Static source review of `otp_core.py`, `identity_lookup.py`, `identity_core.py`, `identity_auth_core.py` and the auth routes in `app.py`, plus read-only catalog inspection of the disposable Neon branch, establishes:
+
+- OTP: uniformly generated 8-digit ASCII decimal code via `secrets.randbelow(10**8)`; 600-second TTL at the route (helper permits 60–900 seconds); five attempts at the route (helper permits 1–10). Stored `code_hash` is HMAC-SHA256 binary digest over UTF-8 `kappa-otp-v1:{challenge_uuid}:{purpose}:{code}`, keyed by `OTP_PEPPER` (minimum 32 bytes). Challenge UUID and purpose are domain-bound. Verification uses `hmac.compare_digest`.
+- Identity lookup: normalized email (NFC/casefold local part, IDNA lowercase domain) or E.164 phone; HMAC-SHA256 binary digest over `kappa:identity-lookup:v1\\0 + identity_type + \\0 + normalized_value`, keyed by `IDENTITY_LOOKUP_PEPPER` (minimum 32 bytes).
+- Rate-limit dimensions: separate HMAC-SHA256 using `OTP_RATE_LIMIT_PEPPER`, domain-separated by dimension and issuance/verification context. Startup checks the identity, OTP and rate-limit peppers are distinct; the delivery encryption key is also required to be independent.
+- Session: 48 random bytes encoded by `secrets.token_urlsafe(48)` (384 bits of entropy; typically 64 URL-safe characters); only SHA-256 hex digest (64 lowercase hex chars) is stored in `auth_sessions.token_hash`. No pepper is needed for a high-entropy random bearer token; validation checks active user, revocation and expiry.
+
+The Neon schema currently has no fixed-size/format CHECK for `otp_challenges.code_hash` (BYTEA), `otp_challenges.identity_lookup_hash` (BYTEA), `user_identities.identity_lookup_hash` (BYTEA), or lowercase-hex format of `auth_sessions.token_hash` (CHAR(64)). The separate `otp_request_limits.dimension_hash` already has a 32-byte check. Other OTP policy constraints exist (purpose/status enums, max_attempts 1–10, failed_attempts nonnegative and <= max_attempts, expiry after creation). Recommend forward constraints: `octet_length(code_hash)=32`, `octet_length(identity_lookup_hash)=32` on both tables, and `token_hash ~ '^[0-9a-f]{64}$'`. Do not add/apply a migration until original migration sources and ledger sequence are reconciled.
+
+### OTP transaction guarantees and remaining edge cases
+
+- Verification locks the challenge row with `SELECT ... FOR UPDATE`; checks purpose, expiry, sent status, consumed state and attempt ceiling; successful comparison consumes once; failed comparison increments attempts under the same lock. Route and helper operate inside one connection transaction. This supports serialization of concurrent attempts, but the Chat 3 two-session race test is still required.
+- The request route returns a generic accepted response with a random placeholder challenge ID when the identity is ineligible, avoiding direct response-body enumeration. Timing equivalence has not been demonstrated: eligible and ineligible paths perform materially different database work. Add timing-distribution tests and keep external status/body identical.
+- Resend/new challenge invalidates previous pending/sent challenges for the same identity and purpose before inserting the new challenge and encrypted outbox intent in one transaction. Rate limits are identity 5/hour with 60-second cooldown, IP 100/hour, optional device 10/hour; verification quotas are separately domain-separated. The `resend_after` column is set to 60 seconds after successful delivery, but the route's observed enforcement is through the identity rate-limit ledger; no direct `resend_after` predicate was observed.
+- Race to test: worker commits `dispatching` before SMTP. A concurrent new request can then consume the old challenge while SMTP is already in progress; an email may still be delivered with a now-invalid code, and subsequent mark_sent will fail because the challenge was consumed. This is fail-closed for authentication but can confuse users. Test this interleaving and define whether requests should reject/serialize while a previous challenge is dispatching or whether delivery must be cancelled before external send.
+
+This is source/catalog analysis only. No test, SQL function execution, migration, role, grant, credential, Render setting or production operation was performed.
