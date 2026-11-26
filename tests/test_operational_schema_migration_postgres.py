@@ -109,6 +109,28 @@ class OperationalSchemaMigrationTests(unittest.TestCase):
             )"""
         )
         self.conn.execute(
+            """CREATE TABLE linkedin_post_metrics (
+                id BIGSERIAL PRIMARY KEY,
+                editorial_post_id BIGINT REFERENCES editorial_posts(id) ON DELETE SET NULL,
+                linkedin_post_id TEXT NOT NULL,
+                measured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                impressions BIGINT,
+                members_reached BIGINT,
+                reactions BIGINT,
+                comments BIGINT,
+                reposts BIGINT,
+                post_saves BIGINT,
+                post_sends BIGINT,
+                link_clicks BIGINT,
+                premium_cta_clicks BIGINT,
+                followers_gained_from_content BIGINT,
+                profile_views_from_content BIGINT,
+                engagement_total BIGINT,
+                source VARCHAR(50) NOT NULL DEFAULT 'linkedin_api',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )"""
+        )
+        self.conn.execute(
             """CREATE UNIQUE INDEX uq_linkedin_publish_queue_active_post_number
                ON linkedin_publish_queue(post_number)
                WHERE post_number IS NOT NULL
@@ -120,6 +142,7 @@ class OperationalSchemaMigrationTests(unittest.TestCase):
         columns = self._columns("linkedin_publish_queue")
         self.assertIn("reconciliation_required_at", columns)
         self.assertIn("drive_file_id", columns)
+        self.assertIn("linkedin_post_metrics_unique_snapshot", self._indexes("linkedin_post_metrics"))
         indexes = self._indexes("linkedin_publish_queue")
         self.assertIn("uq_linkedin_publish_queue_active_post_number", indexes)
         self.assertIn("uq_linkedin_publish_queue_reserved_post_number", indexes)
