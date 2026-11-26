@@ -156,7 +156,7 @@ class SchedulerLeaseRecoveryIntegrationTests(unittest.TestCase):
 
         with (
             patch.object(application, "require_publish_secret", return_value=None),
-            patch.object(application, "ensure_scheduler_tables"),
+            patch.object(application, "require_scheduler_schema"),
             patch.object(
                 application, "get_db_connection", side_effect=self._application_db_connection
             ),

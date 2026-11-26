@@ -20,10 +20,17 @@ Apply in this order to a disposable PostgreSQL schema:
 
 The explicit list in `tests/test_identity_migrations_postgres.py` is the test harness source of truth for this subset. This is not blanket authorization to apply the migrations to any shared database.
 
+## Operational scheduler and analytics schema
+
+- `0015_operational_scheduler_analytics_schema.sql` creates the LinkedIn publishing queue, analytics snapshots, collection-run ledger, and required indexes. It requires the existing `editorial_posts` table.
+- The migration is additive and idempotent. On an existing queue it adds `reconciliation_required_at` when missing and preserves legacy columns such as historical Drive/media metadata.
+- The active backend validates the required schema at runtime but performs no DDL in HTTP or scheduler requests. Apply this migration in a disposable environment and verify it before deploying that code.
+- When `0015` is applied, the older `0008_scheduler_lease_recovery.sql` is redundant. Keep `0008` only as a targeted upgrade for legacy databases that already have the queue table and are not applying `0015`.
+
 ## Conditional legacy application migrations
 
 - `0007_observation_editorial_post_fk.sql` requires the existing editorial tables and a preflight for orphan observations. Validate independently against a disposable copy of the editorial schema.
-- `0008_scheduler_lease_recovery.sql` requires the existing LinkedIn scheduler queue schema. Validate independently against a disposable copy of the scheduler schema.
+- `0008_scheduler_lease_recovery.sql` requires the existing LinkedIn scheduler queue schema. Validate independently against a disposable copy of the scheduler schema when `0015` is not being applied.
 - Neither migration is part of the isolated identity-only test subset above.
 
 ## Archived / excluded migration

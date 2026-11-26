@@ -54,7 +54,7 @@ class SchedulerReconciliationPrivacyTests(unittest.TestCase):
 
         with (
             patch.object(application, "require_publish_secret", return_value=None),
-            patch.object(application, "ensure_scheduler_tables"),
+            patch.object(application, "require_scheduler_schema"),
             patch.object(application, "get_db_connection", return_value=connection),
         ):
             response = application.app.test_client().get("/scheduler/reconciliation")
@@ -71,7 +71,7 @@ class SchedulerReconciliationPrivacyTests(unittest.TestCase):
         with (
             patch.object(application, "require_publish_secret", return_value=auth_error),
             patch.object(application, "get_db_connection") as database,
-            patch.object(application, "ensure_scheduler_tables") as ensure_tables,
+            patch.object(application, "require_scheduler_schema") as ensure_tables,
         ):
             response = application.app.test_client().get("/scheduler/reconciliation")
 

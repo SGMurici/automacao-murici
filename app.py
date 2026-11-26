@@ -275,192 +275,68 @@ def decrypt_value(value):
     return fernet.decrypt(value.encode()).decode()
 
 
-def ensure_analytics_tables():
-    """
-    Garante as tabelas atuais de armazenamento das metricas do LinkedIn.
-    """
+def require_analytics_schema():
+    """Fail closed when the analytics migration has not been applied.
 
+    This function is read-only. Schema changes are managed exclusively by
+    versioned migrations outside HTTP request and scheduler execution paths.
+    """
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS linkedin_post_metrics (
-                    id BIGSERIAL PRIMARY KEY,
-
-                    editorial_post_id BIGINT
-                        REFERENCES editorial_posts(id)
-                        ON DELETE SET NULL,
-
-                    linkedin_post_id TEXT NOT NULL,
-
-                    measured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-                    impressions BIGINT,
-                    members_reached BIGINT,
-                    reactions BIGINT,
-                    comments BIGINT,
-                    reposts BIGINT,
-
-                    post_saves BIGINT,
-                    post_sends BIGINT,
-                    link_clicks BIGINT,
-                    premium_cta_clicks BIGINT,
-
-                    followers_gained_from_content BIGINT,
-                    profile_views_from_content BIGINT,
-
-                    engagement_total BIGINT,
-
-                    source VARCHAR(50) NOT NULL DEFAULT 'linkedin_api',
-
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-                    CONSTRAINT linkedin_post_metrics_unique_snapshot
-                        UNIQUE (linkedin_post_id, measured_at)
-                );
-                """
+                """SELECT id, editorial_post_id, linkedin_post_id, measured_at,
+                          impressions, members_reached, reactions, comments,
+                          reposts, post_saves, post_sends, link_clicks,
+                          premium_cta_clicks, followers_gained_from_content,
+                          profile_views_from_content, engagement_total, source,
+                          created_at
+                   FROM linkedin_post_metrics
+                   LIMIT 0"""
             )
-
             cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_linkedin_post_metrics_post
-                    ON linkedin_post_metrics(linkedin_post_id);
-                """
+                """SELECT id, started_at, finished_at, status, posts_found,
+                          posts_updated, metrics_saved, error_message, created_at
+                   FROM linkedin_metrics_collection_runs
+                   LIMIT 0"""
             )
-
             cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_linkedin_post_metrics_editorial
-                    ON linkedin_post_metrics(editorial_post_id);
-                """
+                """SELECT EXISTS (
+                       SELECT 1 FROM pg_indexes
+                       WHERE schemaname = current_schema()
+                         AND tablename = 'linkedin_post_metrics'
+                         AND indexname = 'linkedin_post_metrics_unique_snapshot'
+                   )"""
             )
-
-            cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_linkedin_post_metrics_measured_at
-                    ON linkedin_post_metrics(measured_at);
-                """
-            )
-
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS linkedin_metrics_collection_runs (
-                    id BIGSERIAL PRIMARY KEY,
-
-                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    finished_at TIMESTAMPTZ,
-
-                    status VARCHAR(30) NOT NULL DEFAULT 'started',
-
-                    posts_found INTEGER DEFAULT 0,
-                    posts_updated INTEGER DEFAULT 0,
-                    metrics_saved INTEGER DEFAULT 0,
-
-                    error_message TEXT,
-
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-                """
-            )
-
-            cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_linkedin_metrics_runs_started
-                    ON linkedin_metrics_collection_runs(started_at);
-                """
-            )
-
-        conn.commit()
+            if not cur.fetchone()[0]:
+                raise RuntimeError(
+                    "Migration 0015 operational scheduler/analytics schema is required."
+                )
 
 
-def ensure_scheduler_tables():
-    """
-    Garante a fila de publicacoes automaticas.
-    """
-
+def require_scheduler_schema():
+    """Validate scheduler schema and its non-retryable reservation index without DDL."""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS linkedin_publish_queue (
-                    id BIGSERIAL PRIMARY KEY,
-
-                    post_number INTEGER,
-
-                    title TEXT,
-
-                    content TEXT NOT NULL,
-
-                    scheduled_for TIMESTAMPTZ NOT NULL,
-
-                    status VARCHAR(30) NOT NULL DEFAULT 'agendado',
-
-                    attempts INTEGER NOT NULL DEFAULT 0,
-
-                    locked_at TIMESTAMPTZ,
-
-                    reconciliation_required_at TIMESTAMPTZ,
-
-                    published_at TIMESTAMPTZ,
-
-                    linkedin_post_id TEXT,
-
-                    editorial_post_id BIGINT
-                        REFERENCES editorial_posts(id)
-                        ON DELETE SET NULL,
-
-                    error_message TEXT,
-
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-                """
+                """SELECT id, post_number, title, content, scheduled_for, status,
+                          attempts, locked_at, reconciliation_required_at,
+                          published_at, linkedin_post_id, editorial_post_id,
+                          error_message, created_at, updated_at
+                   FROM linkedin_publish_queue
+                   LIMIT 0"""
             )
-
             cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS
-                    idx_linkedin_publish_queue_due
-                ON linkedin_publish_queue(
-                    status,
-                    scheduled_for
-                );
-                """
+                """SELECT EXISTS (
+                       SELECT 1 FROM pg_indexes
+                       WHERE schemaname = current_schema()
+                         AND tablename = 'linkedin_publish_queue'
+                         AND indexname = 'uq_linkedin_publish_queue_reserved_post_number'
+                   )"""
             )
-
-            cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS
-                    idx_linkedin_publish_queue_post_number
-                ON linkedin_publish_queue(post_number);
-                """
-            )
-
-            cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS
-                    idx_linkedin_publish_queue_linkedin_post
-                ON linkedin_publish_queue(linkedin_post_id);
-                """
-            )
-
-            cur.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS
-                    uq_linkedin_publish_queue_reserved_post_number
-                ON linkedin_publish_queue(post_number)
-                WHERE post_number IS NOT NULL
-                  AND status IN (
-                      'agendado',
-                      'processando',
-                      'publicado',
-                      'incerto'
-                  );
-                """
-            )
-
-        conn.commit()
+            if not cur.fetchone()[0]:
+                raise RuntimeError(
+                    "Migration 0015 operational scheduler/analytics schema is required."
+                )
 
 
 def linkedin_token_from_database():
@@ -1214,7 +1090,7 @@ def scheduler_publish_one():
     Mantem uma conexao dedicada aberta durante toda a operacao para que
     o advisory lock continue ativo enquanto a chamada ao LinkedIn ocorre.
     """
-    ensure_scheduler_tables()
+    require_scheduler_schema()
 
     lock_conn = get_db_connection()
     lock_acquired = False
@@ -3080,7 +2956,7 @@ def scheduler_queue():
         ), 400
 
     try:
-        ensure_scheduler_tables()
+        require_scheduler_schema()
 
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -3192,7 +3068,7 @@ def scheduler_recover():
     lock_conn = None
     lock_acquired = False
     try:
-        ensure_scheduler_tables()
+        require_scheduler_schema()
         lock_conn = get_db_connection()
         with lock_conn.cursor() as cur:
             cur.execute("SELECT pg_try_advisory_lock(%s);", (SCHEDULER_LOCK_KEY,))
@@ -3236,7 +3112,7 @@ def scheduler_reconciliation():
         return auth_error
 
     try:
-        ensure_scheduler_tables()
+        require_scheduler_schema()
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -3290,7 +3166,7 @@ def scheduler_status():
         return auth_error
 
     try:
-        ensure_scheduler_tables()
+        require_scheduler_schema()
 
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -3491,13 +3367,13 @@ def analytics_prepare():
         return auth_error
 
     try:
-        ensure_analytics_tables()
+        require_analytics_schema()
 
         return jsonify(
             {
                 "status": "ok",
                 "mensagem": (
-                    "Estrutura de armazenamento de metricas preparada."
+                    "Estrutura de armazenamento de métricas validada. Nenhuma alteração de schema foi executada."
                 ),
                 "tabelas": [
                     "linkedin_post_metrics",
@@ -3587,7 +3463,7 @@ def analytics_record():
         ), 400
 
     try:
-        ensure_analytics_tables()
+        require_analytics_schema()
 
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -3755,7 +3631,7 @@ def analytics_collect():
     metrics_saved = 0
 
     try:
-        ensure_analytics_tables()
+        require_analytics_schema()
 
         with get_db_connection() as conn:
             with conn.cursor() as cur:
