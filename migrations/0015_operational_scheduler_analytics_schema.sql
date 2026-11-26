@@ -1,6 +1,6 @@
 -- Provision the operational scheduler and LinkedIn analytics schema outside request paths.
 -- Requires the existing editorial_posts table.
--- Existing legacy columns are preserved; this migration only adds missing structures.
+-- Existing legacy columns are preserved and only missing structures are added.
 
 CREATE TABLE IF NOT EXISTS linkedin_post_metrics (
     id BIGSERIAL PRIMARY KEY,
