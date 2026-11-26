@@ -113,3 +113,16 @@ Exact caller-GUC consumers found:
 - 0035: `kappa_oauth_connection_context_valid`, called by all 14 provider connection read/write/revoke capabilities in that migration.
 
 Required remediation design: one trusted session-context capability must validate the bearer/session hash against `auth_sessions`, verify active user and tenant membership, and set transaction-local identity context from that database-derived result. Caller-provided user/tenant/role parameters must not be treated as proof. Test absent, expired, revoked, cross-tenant and spoofed GUC cases with actual workload roles before exposing the wrappers.
+
+
+### Runtime-role and OTP worker ACL recheck — read-only
+
+On disposable Neon branch `br-delicate-snow-b6qpdscm`:
+
+- `kappa_otp_worker_runtime_login` is LOGIN, NO SUPERUSER/CREATEDB/CREATEROLE/BYPASSRLS, and is a member of `kappa_otp_outbox_worker_executor` only.
+- `kappa_otp_runtime_homologation` exists but is NOLOGIN and has no memberships.
+- `kappa_web_runtime_login`, `kappa_scheduler_runtime_login`, and `kappa_analytics_runtime_login` are LOGIN roles with no memberships in this snapshot.
+- `kappa_otp_worker_runtime_login` has no direct SELECT/INSERT/UPDATE privilege on `otp_email_outbox`, no UPDATE on `otp_challenges), and no SELECT on `app_users`; it does have EXECUTE on all six OTP outbox wrappers. `kappa_web_runtime_login` has no EXECUTE on those six wrappers.
+- `neondb_owner` has direct DML/SELECT privileges on the sensitive tables and BYPASSRLS. It is an administrative owner role, not an acceptable application runtime identity.
+
+Static Python review of `otp_email_outbox.py` on PR #34 branch found direct SQL DML in `enqueue`, `expire_due`, `claim_batch`, `mark_dispatching`, `mark_sent`, `mark_failure`, and `mark_uncertain`. The module does not invoke the six `kappa_otp_outbox_*` wrappers. Therefore the least-privilege worker login is correctly denied direct DML but the inspected Python worker has not yet been refactored to use its allowed capability wrappers. Do not point this worker at the least-privilege login until that adapter refactor and integration tests are complete.
