@@ -16,6 +16,7 @@ Apply in this order to a disposable PostgreSQL schema:
 8. `0011_otp_email_transactional_outbox.sql`
 9. `0012_global_administrators.sql`
 10. `0013_otp_delivery_uncertainty.sql`
+11. `0014_identity_hash_format_constraints.sql`
 
 The explicit list in `tests/test_identity_migrations_postgres.py` is the test harness source of truth for this subset. This is not blanket authorization to apply the migrations to any shared database.
 
