@@ -35,6 +35,7 @@ MIGRATIONS = (
     ROOT / "migrations" / "0011_otp_email_transactional_outbox.sql",
     ROOT / "migrations" / "0012_global_administrators.sql",
     ROOT / "migrations" / "0013_otp_delivery_uncertainty.sql",
+    ROOT / "migrations" / "0014_identity_hash_format_constraints.sql",
 )
 
 
@@ -173,6 +174,45 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             1,
         )
 
+    def test_hash_columns_reject_malformed_sha256_digests(self):
+        def assert_check_violation(statement, params):
+            self.conn.execute("SAVEPOINT hash_constraint_probe")
+            with self.assertRaises(psycopg.errors.CheckViolation):
+                self.conn.execute(statement, params)
+            self.conn.execute("ROLLBACK TO SAVEPOINT hash_constraint_probe")
+            self.conn.execute("RELEASE SAVEPOINT hash_constraint_probe")
+
+        assert_check_violation(
+            """INSERT INTO user_identities
+               (id, user_id, identity_type, identity_lookup_hash,
+                identity_value_ciphertext)
+               VALUES (%s, %s, 'email', %s, %s)""",
+            (uuid.uuid4(), self.user_id, b"i" * 31, b"ciphertext"),
+        )
+        assert_check_violation(
+            """INSERT INTO otp_challenges
+               (id, identity_type, identity_lookup_hash, purpose, code_hash, expires_at)
+               VALUES (%s, 'email', %s, 'login', %s, NOW() + INTERVAL '5 minutes')""",
+            (uuid.uuid4(), b"i" * 32, b"c" * 31),
+        )
+        assert_check_violation(
+            """INSERT INTO auth_sessions (token_hash, user_id, expires_at)
+               VALUES (%s, %s, NOW() + INTERVAL '1 day')""",
+            ("g" * 64, self.user_id),
+        )
+        assert_check_violation(
+            """INSERT INTO auth_sessions
+               (token_hash, user_id, expires_at, replaced_by_token_hash)
+               VALUES (%s, %s, NOW() + INTERVAL '1 day', %s)""",
+            ("a" * 64, self.user_id, "g" * 64),
+        )
+        assert_check_violation(
+            """INSERT INTO oauth_states
+               (state_hash, provider, browser_session_id, expires_at)
+               VALUES (%s, 'google', %s, NOW() + INTERVAL '5 minutes')""",
+            ("z" * 64, "browser-hash-constraint-test"),
+        )
+
     def test_valid_identity_session_consent_and_audit_rows(self):
         identity_id = uuid.uuid4()
         self.conn.execute(
@@ -180,7 +220,7 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
                (id, user_id, identity_type, identity_lookup_hash,
                 identity_value_ciphertext, verified_at, is_primary)
                VALUES (%s, %s, 'email', %s, %s, NOW(), TRUE)""",
-            (identity_id, self.user_id, b"lookup-hash", b"ciphertext"),
+            (identity_id, self.user_id, b"l" * 32, b"ciphertext"),
         )
         self.conn.execute(
             """INSERT INTO auth_sessions
@@ -400,7 +440,7 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
         )
 
     def test_primary_database_purge_waits_for_other_systems_and_is_auditable(self):
-        identity_hash = b"deletion-identity-hash"
+        identity_hash = b"d" * 32
         self.conn.execute(
             """INSERT INTO user_identities
                (id, user_id, identity_type, identity_lookup_hash,
@@ -412,7 +452,7 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             """INSERT INTO otp_challenges
                (id, identity_type, identity_lookup_hash, purpose, code_hash, expires_at)
                VALUES (%s, 'email', %s, 'recovery', %s, NOW() + INTERVAL '5 minutes')""",
-            (uuid.uuid4(), identity_hash, b"otp-hash"),
+            (uuid.uuid4(), identity_hash, b"o" * 32),
         )
         self.conn.execute(
             """INSERT INTO consent_events
@@ -526,7 +566,7 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
         )
 
     def test_duplicate_identity_lookup_is_rejected(self):
-        values = (self.user_id, b"same-hash", b"ciphertext")
+        values = (self.user_id, b"s" * 32, b"ciphertext")
         statement = """INSERT INTO user_identities
             (id, user_id, identity_type, identity_lookup_hash, identity_value_ciphertext)
             VALUES (%s, %s, 'email', %s, %s)"""
@@ -651,7 +691,7 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             """INSERT INTO otp_challenges
                (id, identity_type, identity_lookup_hash, purpose, code_hash, expires_at)
                VALUES (%s, 'email', %s, 'login', %s, NOW() + INTERVAL '5 minutes')""",
-            (challenge_id, hashlib.sha256(b"uncertain-email").digest(), b"otp-hash"),
+            (challenge_id, hashlib.sha256(b"uncertain-email").digest(), b"o" * 32),
         )
         self.conn.execute(
             """INSERT INTO otp_email_outbox
@@ -687,7 +727,7 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
             """INSERT INTO otp_challenges
                (id, identity_type, identity_lookup_hash, purpose, code_hash, expires_at)
                VALUES (%s, 'email', %s, 'login', %s, NOW() + INTERVAL '5 minutes')""",
-            (challenge_id, hashlib.sha256(b"dispatching-expired").digest(), b"otp-hash"),
+            (challenge_id, hashlib.sha256(b"dispatching-expired").digest(), b"o" * 32),
         )
         self.conn.execute(
             """INSERT INTO otp_email_outbox
@@ -729,7 +769,7 @@ class IdentityMigrationIntegrationTests(unittest.TestCase):
                         expires_at, max_attempts)
                        VALUES (%s, 'email', %s, 'login', %s,
                                NOW() + INTERVAL '5 minutes', 11)""",
-                    (uuid.uuid4(), b"lookup", b"code-hash"),
+                    (uuid.uuid4(), b"l" * 32, b"c" * 32),
                 )
         with self.assertRaises(psycopg.errors.CheckViolation):
             with self.conn.transaction():
