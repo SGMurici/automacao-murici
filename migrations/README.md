@@ -70,8 +70,9 @@ The read-only check also found the current `consent_events_decision_check` allow
 
 - Do not apply all SQL files by glob and do not use the recovery sequence as an execution plan.
 - 0027–0029 validate composite foreign keys and require data preflight for tenant/provider mismatches before any fresh environment application.
-- 0030–0034 require the OAuth, event and OTP outbox capability roles, owners, executors, protected tables and grants. They are already represented in this homologation branch's catalog/ledger.
-- 0035 adds the external-connection capability surface and depends on the provider/tenant schema plus OAuth capability roles. Its current GUC-based context check does not establish that identity came from a validated session; the security audit tracks this as P0. Do not apply or grant its functions to runtime until fixed and tested.
+- 0030–0032 require the OAuth, event and OTP outbox capability roles, owners, executors, protected tables and grants. They are already represented in this homologation branch's catalog/ledger.
+- 0033–0035 contain API-facing SECURITY DEFINER capabilities that consume caller-set `app.user_id`, `app.tenant_id` and/or `app.actor_role` GUCs. The inspected backend does not demonstrate a trusted bridge from `auth_sessions` to these GUCs or calls to these wrappers. Do not grant these capabilities to a runtime or apply 0035 until each wrapper derives identity from a validated session (or an equally strong unforgeable context) and independent spoofing tests pass.
+- The Python OTP worker still performs direct DML in `otp_email_outbox.py` and does not call the six wrappers from 0032. The least-privilege OTP worker login has EXECUTE on those wrappers but no direct table DML; do not configure the current worker to use that login until its adapter is refactored and integration-tested.
 - The production/default Neon branch is a separate environment and currently does not contain this KAPPA schema/ledger. Do not target production with this recovery package.
 - The historical ledger records 0030–0034 as segmented SQL transactions, not checksum-aware migration-runner executions.
 
