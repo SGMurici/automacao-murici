@@ -38,11 +38,34 @@ The explicit list in `tests/test_identity_migrations_postgres.py` is the test ha
 - `legacy/0004_customer_drive_oauth.sql` is preserved for historical traceability only. Customer Google Drive backup is out of product scope. Do not apply this migration to new or existing environments as part of the approved product path.
 - The corresponding customer Drive backup modules and tests have been removed from the active integration branch. The historical design note is under `docs/archive/`.
 
-## Recovered KAPPA / OTP source files 0016–0035 — import pending
+## Recovered KAPPA / OTP source files 0016–0035 — versioned, execution gate open
 
-The local read-only recovery inventory found 20 migration files (0016–0035), with 30 local copies. The canonical target is this repository's `migrations/` directory. **The SQL source files have not yet been committed to GitHub.** Their local names, byte sizes, SHA-256 values, and Neon ledger comparison are recorded in [the recovery inventory](../docs/security/migration-recovery-inventory-0016-0035.md).
+The 20 recovered SQL sources are now present in this canonical directory, byte-for-byte, with SHA-256 values recorded in `SHA256SUMS.kappa-otp-0016-0035`. Each destination Git blob ID was compared with the corresponding source blob ID in the verified recovery repository; all 20 are identical.
 
-Do not treat the inventory as SQL source, do not reconstruct missing SQL from hashes, and do not execute these migrations from this record. The files may be marked as versioned only after their exact bytes are transferred, re-hashed, and committed. In particular, 0016, 0020 and 0035 have no row in the queried Neon homologation ledger; 0017–0034 have the ledger states described in the provenance register.
+This confirms source-byte identity during transfer; it does **not** prove historical execution or that every file should be applied to every environment.
+
+### Provenance and observed homologation ledger
+
+- 0017–0019 and 0021–0029: source SHA-256 matches the ledger on the queried Neon homologation branch; ledger status `reconciled`, mode `manual_equivalent_sql`.
+- 0030–0034: source SHA-256 matches the ledger; status `applied`, mode `segmented_sql_transaction`.
+- 0016, 0020 and 0035: no row in the queried ledger table on that branch; execution/provenance remains unconfirmed.
+- A missing ledger row is not proof that a migration was never applied. Inspect actual schema and data before any attempt to apply.
+
+### Execution constraints
+
+- Do not apply all SQL files by glob.
+- 0030 requires the OAuth capability owner/executor roles and protected tables described in the security role plan.
+- 0031 requires the event worker capability roles and matching event schema.
+- 0032 requires the OTP outbox capability roles and OTP outbox schema.
+- 0033 depends on the event capability owner/executor created by the earlier capability setup.
+- 0034 depends on the OAuth capability roles and state tables.
+- 0035 changes the external-connection capability surface and depends on the provider/tenant schema plus capability-role prerequisites.
+- The role/bootstrap scripts are separate from these migrations. Do not infer that the migration principal can safely provision or own runtime roles.
+- 0016 and 0020 have no matching row in the queried ledger; inspect their exact effects against the target catalog before deciding whether to apply.
+- 0027–0029 validate composite foreign keys and can fail if existing rows violate tenant/provider ownership.
+- The historical ledger records 0030–0034 as segmented SQL transactions, not checksum-aware runner executions.
+
+This directory is now the canonical source location. It is **not yet a blanket approval to apply 0016–0035**. The exact target branch, existing schema, role memberships, ownership, ACLs, RLS/context model, and rollback plan must be validated first.
 
 ## Mandatory preflight before any database write
 
