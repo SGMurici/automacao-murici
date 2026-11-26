@@ -51,19 +51,29 @@ This confirms source-byte identity during transfer; it does **not** prove histor
 - 0016, 0020 and 0035: no row in the queried ledger table on that branch; execution/provenance remains unconfirmed.
 - A missing ledger row is not proof that a migration was never applied. Inspect actual schema and data before any attempt to apply.
 
-### Execution constraints
+### Current homologation catalog check (read-only, 2026-11-26)
 
-- Do not apply all SQL files by glob.
-- 0030 requires the OAuth capability owner/executor roles and protected tables described in the security role plan.
-- 0031 requires the event worker capability roles and matching event schema.
-- 0032 requires the OTP outbox capability roles and OTP outbox schema.
-- 0033 depends on the event capability owner/executor created by the earlier capability setup.
-- 0034 depends on the OAuth capability roles and state tables.
-- 0035 changes the external-connection capability surface and depends on the provider/tenant schema plus capability-role prerequisites.
-- The role/bootstrap scripts are separate from these migrations. Do not infer that the migration principal can safely provision or own runtime roles.
-- 0016 and 0020 have no matching row in the queried ledger; inspect their exact effects against the target catalog before deciding whether to apply.
-- 0027–0029 validate composite foreign keys and can fail if existing rows violate tenant/provider ownership.
-- The historical ledger records 0030–0034 as segmented SQL transactions, not checksum-aware runner executions.
+Target checked: Neon project `sweet-dust-48417314`, disposable branch `br-delicate-snow-b6qpdscm`, PostgreSQL 18.7.
+
+| Migration(s) | Observed state on this branch | Operational decision |
+|---|---|---|
+| 0016 | No ledger row. Both `kappa_domain_events` and `kappa_event_deliveries` already exist and contain rows (8 and 9 respectively). | Do not reapply. Reconcile its provenance/DDL against catalog. |
+| 0017–0019 | Ledger `reconciled / manual_equivalent_sql`; corresponding constraints/columns are present. | Do not reapply. |
+| 0020 | No ledger row. `consent_events_decision_check` still excludes `acknowledged`; current table has no rows. | Candidate for the disposable branch only after explicit approval; not yet applied. |
+| 0021–0029 | Ledger `reconciled / manual_equivalent_sql`; catalog reflects the corresponding tables/columns/constraints. | Do not reapply. |
+| 0030–0034 | Ledger `applied / segmented_sql_transaction`; 23 capability functions are present. | Do not reapply on this branch. |
+| 0035 | No ledger row; its 15 external-connection capability functions are absent. Required OAuth owner/executor roles exist, but the migration's context validator trusts caller-set `app.user_id`, `app.tenant_id` and `app.actor_role` GUCs. | BLOCKED. Do not apply until a trusted server-side session capability prevents valid-user GUC impersonation and independent QA passes. |
+
+The read-only check also found the current `consent_events_decision_check` allows only `granted`, `denied`, and `revoked`; no `acknowledged` rows currently exist. This supports 0020 as the only obvious unapplied schema candidate in this disposable branch, but it does not authorize its application.
+
+### Dependency and execution constraints
+
+- Do not apply all SQL files by glob and do not use the recovery sequence as an execution plan.
+- 0027–0029 validate composite foreign keys and require data preflight for tenant/provider mismatches before any fresh environment application.
+- 0030–0034 require the OAuth, event and OTP outbox capability roles, owners, executors, protected tables and grants. They are already represented in this homologation branch's catalog/ledger.
+- 0035 adds the external-connection capability surface and depends on the provider/tenant schema plus OAuth capability roles. Its current GUC-based context check does not establish that identity came from a validated session; the security audit tracks this as P0. Do not apply or grant its functions to runtime until fixed and tested.
+- The production/default Neon branch is a separate environment and currently does not contain this KAPPA schema/ledger. Do not target production with this recovery package.
+- The historical ledger records 0030–0034 as segmented SQL transactions, not checksum-aware migration-runner executions.
 
 This directory is now the canonical source location. It is **not yet a blanket approval to apply 0016–0035**. The exact target branch, existing schema, role memberships, ownership, ACLs, RLS/context model, and rollback plan must be validated first.
 
