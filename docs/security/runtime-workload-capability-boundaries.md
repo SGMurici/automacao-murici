@@ -77,3 +77,16 @@ No workload login may own tables, inherit `neondb_owner`, use BYPASSRLS, execute
 - Created a GitHub work branch from PR #34 HEAD and added the homologation-only SQL script and this audit record.
 - No production/default Neon branch, Render service, secret, cron, customer data, PR #33/#34, or Windows/KAPPA environment was changed.
 - No tests were executed as part of this checkpoint. QA remains BLOCKED/NOT RUN pending complete capabilities and credentials.
+
+
+## Clarification — owner column-level grants verified (26/11/2026)
+
+A second catalog query included `information_schema.column_privileges`; the earlier table-level query alone did not expose these grants. The target branch has **150 effective column-level grants** across the three existing capability owners:
+
+| Capability owner | Grants | Tables | Distinct columns | Operations |
+|---|---:|---:|---:|---|
+| `kappa_event_capability_owner` | 39 | 4 | 25 | INSERT, SELECT, UPDATE |
+| `kappa_oauth_capability_owner` | 82 | 10 | 55 | INSERT, SELECT, UPDATE |
+| `kappa_otp_outbox_capability_owner` | 29 | 2 | 20 | SELECT, UPDATE |
+
+The sampled `has_column_privilege` checks returned true for these grants. This is distinct from table-level grants, which remain absent. The earlier audit statement “zero table grants” must not be read as “zero privileges”: column-level grants are present and effective for the capability owners. Executors and the four newly created runtime logins still have no direct table/column grants. This confirms the owners' current minimum column-level grants exist, but does not prove every function succeeds or that the grant set is minimal; runtime positive/negative tests are still required.
