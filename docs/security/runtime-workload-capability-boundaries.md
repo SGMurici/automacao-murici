@@ -90,3 +90,16 @@ A second catalog query included `information_schema.column_privileges`; the earl
 | `kappa_otp_outbox_capability_owner` | 29 | 2 | 20 | SELECT, UPDATE |
 
 The sampled `has_column_privilege` checks returned true for these grants. This is distinct from table-level grants, which remain absent. The earlier audit statement “zero table grants” must not be read as “zero privileges”: column-level grants are present and effective for the capability owners. Executors and the four newly created runtime logins still have no direct table/column grants. This confirms the owners' current minimum column-level grants exist, but does not prove every function succeeds or that the grant set is minimal; runtime positive/negative tests are still required.
+
+
+## Runtime membership refinement and smoke-test boundary (26/11/2026)
+
+The initial blanket statement that all four runtime logins had no memberships was superseded by a narrowly scoped grant:
+
+- `kappa_otp_worker_runtime_login` is a member of `kappa_otp_outbox_worker_executor` with INHERIT and SET enabled. Effective checks show EXECUTE on `kappa_otp_outbox_claim_one()`, while direct UPDATE on `otp_email_outbox` and direct DML on `app_users` remain false.
+- `kappa_web_runtime_login` has no executor membership. Temporary grants to OAuth and event enqueue executors were revoked after confirming that the OAuth create functions rely on caller-set `app.user_id`, `app.tenant_id`, and `app.actor_role` GUCs. Do not grant these until a trusted bearer/session capability derives the principal and tenant inside the database.
+- `kappa_scheduler_runtime_login` and `kappa_analytics_runtime_login` remain without memberships or direct privileges.
+- No passwords have been provisioned. Neon password reset was not available for these SQL-created roles because they have no Neon API password record. Do not configure them in Render.
+- A smoke-test attempt to `SET LOCAL ROLE kappa_api_oauth_executor` from `neondb_owner` was denied because Neon role membership has SET disabled. The transaction rolled back; synthetic user, tenant and OAuth state collision checks confirm zero residual fixture rows. This is NOT a function failure and is NOT a successful runtime test.
+
+The OTP runtime membership is a limited preparation step, not a runtime cutover. The Python worker still uses direct DML and `DATABASE_URL` in PR #34; refactor it to the six SQL wrappers and require a separate `OTP_WORKER_DATABASE_URL` before the role can be used. No worker code or Render environment was changed in this checkpoint.
