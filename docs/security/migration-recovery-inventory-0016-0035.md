@@ -7,7 +7,7 @@ Recovery branch: `recovery/kappa-migrations-0016-0035-2026-11-26`
 
 ## Important status
 
-This document records the local inventory reported by the read-only Desktop Commander investigation and establishes the intended canonical location. **The SQL source files 0016–0035 have not yet been committed to this repository.** The GitHub connector used for this update cannot read files from the Windows working tree; only names, sizes, local paths and SHA-256 values were available from the Notion investigation record. Do not treat this inventory as the migration files themselves and do not execute SQL from this register.
+This document records the local read-only Desktop Commander inventory and the subsequent byte-preserving import. **All 20 SQL source files 0016–0035 are now committed in the canonical `migrations/` directory** on recovery branch `recovery/kappa-migrations-0016-0035-2026-11-26`. The transfer used base64 file bytes and the destination Git blob ID was compared with the source Git blob ID for every file: 20/20 identical. SHA-256 values remain listed below and in `migrations/SHA256SUMS.kappa-otp-0016-0035`. This confirms transfer integrity, not historical execution or approval to apply.
 
 The local files were reported under:
 
@@ -52,16 +52,14 @@ SHA-256 values below are the values reported by the local read-only scan. For 00
 - 0016, 0020 and 0035: no row was found in the queried homologation ledger. Do not infer that they were applied.
 - The ledger is from a disposable Neon homologation branch, not production/default.
 
-## Import gate
+## Import result and remaining execution gate
 
-Before committing the SQL files into this canonical directory:
-
-1. Obtain the actual file bytes from the local source (for example, by attaching a ZIP containing only the `migrations/` directory to the conversation).
-2. Recompute SHA-256 on the received bytes and compare every file with this register.
-3. Preserve exact source bytes; do not normalize line endings or regenerate SQL.
-4. Review the 0016, 0020 and 0035 provenance separately.
-5. Check naming collisions and existing files before adding anything.
-6. Update this inventory from “pending import” to “versioned” only after the SQL files are actually present in GitHub.
+- Imported to `migrations/` on commit `10517d64f480178a7e851c9b18e3049c5111ca36`.
+- All 20 destination Git blob IDs match the corresponding source Git blob IDs; the 20 SHA-256 values are recorded in `migrations/SHA256SUMS.kappa-otp-0016-0035`.
+- `migrations/.gitattributes` disables line-ending conversion for SQL files.
+- The recovery inventory is now versioned, but it is not an execution manifest. Review actual target catalog/data and role prerequisites before applying any file.
+- Review the 0016, 0020 and 0035 provenance separately; missing ledger rows do not prove non-application.
+- Do not run these files by glob. Use an explicitly reviewed per-environment plan, and do not re-run 0030–0034 on the homologation branch where the ledger already marks them applied.
 
 ## Safety
 
